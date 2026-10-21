@@ -218,7 +218,7 @@ export class ArenaEngine {
     if (packet.feintPrimed) slot.feintPrimed = true;
     this.remoteInputs.set(packet.slotId, packet);
 
-    // Sync client-predicted coordinates (clamped to court bounds) so Host hit-detection matches Client screen
+    // If player was just spawned or teleported (>220px), snap once; otherwise smooth in step(dt) at 60/144fps!
     if (
       slot.alive &&
       typeof packet.clientX === 'number' &&
@@ -226,9 +226,9 @@ export class ArenaEngine {
     ) {
       const dx = packet.clientX - slot.x;
       const dy = packet.clientY - slot.y;
-      if (Math.hypot(dx, dy) < 220) {
-        slot.x += dx * 0.72;
-        slot.y += dy * 0.72;
+      if (Math.hypot(dx, dy) > 220) {
+        slot.x = packet.clientX;
+        slot.y = packet.clientY;
       }
     }
 
@@ -528,6 +528,22 @@ export class ArenaEngine {
           }
           p.aimAngle = input.aimAngle;
 
+          // Frame-rate independent smooth convergence toward remote client's predicted position (zero 28Hz stutter!)
+          if (
+            p.id > 0 &&
+            typeof input.clientX === 'number' &&
+            typeof input.clientY === 'number'
+          ) {
+            const cDist = Math.hypot(input.clientX - p.x, input.clientY - p.y);
+            if (cDist < 220) {
+              const blend = 1 - Math.exp(-15 * dt);
+              p.x += (input.clientX - p.x) * blend;
+              p.y += (input.clientY - p.y) * blend;
+              input.clientX += p.vx * dt;
+              input.clientY += p.vy * dt;
+            }
+          }
+
           if (input.chargingParry) {
             p.chargeTime += dt;
             if (p.chargeTime >= 0.18) {
@@ -778,46 +794,63 @@ export class ArenaEngine {
   }
 
   /**
-   * Client-side prediction step: runs on non-Host tabs at 60fps so local movement,
-   * dash, bat swing, and ball trajectory feel 100% instant (0ms input lag).
+   * Client-side prediction & dead-reckoning step: runs on non-Host tabs at 60/120/144fps
+   * so local movement, remote players, and gyro-balls glide with 0ms input lag and zero stutters!
    */
   public stepClientPrediction(dt: number, localSlotId: number, input: ClientInputPacket): void {
     if (this.phase !== 'PLAYING') return;
     const p = this.players[localSlotId];
-    if (p && p.alive) {
-      if (p.parryTimer > 0) p.parryTimer = Math.max(0, p.parryTimer - dt);
-      if (p.parryCooldown > 0) p.parryCooldown = Math.max(0, p.parryCooldown - dt);
-      if (p.dashTimer > 0) p.dashTimer = Math.max(0, p.dashTimer - dt);
-      if (p.dashCooldown > 0) p.dashCooldown = Math.max(0, p.dashCooldown - dt);
 
-      const moveSpeed = 235 * p.speedMult;
-      if (input.moveX !== 0 || input.moveY !== 0) {
-        const len = Math.hypot(input.moveX, input.moveY);
-        p.vx += (input.moveX / len) * moveSpeed * 9.5 * dt;
-        p.vy += (input.moveY / len) * moveSpeed * 9.5 * dt;
+    // Step ALL alive players (local prediction + remote velocity dead-reckoning)
+    this.players.forEach((pl) => {
+      if (!pl.alive) return;
+      if (pl.parryTimer > 0) pl.parryTimer = Math.max(0, pl.parryTimer - dt);
+      if (pl.parryCooldown > 0) pl.parryCooldown = Math.max(0, pl.parryCooldown - dt);
+      if (pl.dashTimer > 0) pl.dashTimer = Math.max(0, pl.dashTimer - dt);
+      if (pl.dashCooldown > 0) pl.dashCooldown = Math.max(0, pl.dashCooldown - dt);
+
+      if (pl.id === localSlotId) {
+        const moveSpeed = 235 * pl.speedMult;
+        if (input.moveX !== 0 || input.moveY !== 0) {
+          const len = Math.hypot(input.moveX, input.moveY);
+          pl.vx += (input.moveX / len) * moveSpeed * 9.5 * dt;
+          pl.vy += (input.moveY / len) * moveSpeed * 9.5 * dt;
+        }
+        pl.aimAngle = input.aimAngle;
       }
-      p.aimAngle = input.aimAngle;
 
-      const damping = p.dashTimer > 0 ? 0.94 : 0.83;
-      p.vx *= Math.pow(damping, dt * 60);
-      p.vy *= Math.pow(damping, dt * 60);
-      p.x += p.vx * dt;
-      p.y += p.vy * dt;
+      const damping = pl.dashTimer > 0 ? 0.94 : 0.83;
+      pl.vx *= Math.pow(damping, dt * 60);
+      pl.vy *= Math.pow(damping, dt * 60);
+      pl.x += pl.vx * dt;
+      pl.y += pl.vy * dt;
 
-      const spd = Math.hypot(p.vx, p.vy);
-      p.walkCycle = spd > 15 ? p.walkCycle + spd * dt * 0.11 : 0;
-      p.tiltX = Math.max(-0.22, Math.min(0.22, p.vx * 0.0008));
+      // Collide with Pinball Bumpers locally so movement never clips
+      this.bumpers.forEach((bmp) => {
+        const d = Math.hypot(pl.x - bmp.x, pl.y - bmp.y);
+        const minDist = pl.radius + bmp.radius;
+        if (d < minDist && d > 0.001) {
+          const nx = (pl.x - bmp.x) / d;
+          const ny = (pl.y - bmp.y) / d;
+          pl.x = bmp.x + nx * minDist;
+          pl.y = bmp.y + ny * minDist;
+        }
+      });
 
-      const ex = (p.x - COURT_CENTER_X) / (COURT_RX - p.radius);
-      const ey = (p.y - COURT_CENTER_Y) / (COURT_RY - p.radius);
+      const spd = Math.hypot(pl.vx, pl.vy);
+      pl.walkCycle = spd > 15 ? pl.walkCycle + spd * dt * 0.11 : 0;
+      pl.tiltX = Math.max(-0.22, Math.min(0.22, pl.vx * 0.0008));
+
+      const ex = (pl.x - COURT_CENTER_X) / (COURT_RX - pl.radius);
+      const ey = (pl.y - COURT_CENTER_Y) / (COURT_RY - pl.radius);
       const eLen = Math.hypot(ex, ey);
       if (eLen > 1) {
-        p.x = COURT_CENTER_X + (ex / eLen) * (COURT_RX - p.radius);
-        p.y = COURT_CENTER_Y + (ey / eLen) * (COURT_RY - p.radius);
+        pl.x = COURT_CENTER_X + (ex / eLen) * (COURT_RX - pl.radius);
+        pl.y = COURT_CENTER_Y + (ey / eLen) * (COURT_RY - pl.radius);
       }
-    }
+    });
 
-    // Dead-reckon balls between snapshots (with local wall bounce & local parry prediction!)
+    // Dead-reckon balls between snapshots with full curveSpin, bumper & wall bounce physics!
     this.balls.forEach((ball) => {
       if (p && p.alive && p.parryTimer > 0 && ball.ownerId !== p.id) {
         const d = Math.hypot(ball.x - p.x, ball.y - p.y);
@@ -829,6 +862,18 @@ export class ArenaEngine {
           sfx.playBatParry(this.comboCount + 1, true, false);
         }
       }
+
+      if (Math.abs(ball.curveSpin) > 0.02) {
+        const perpX = -ball.vy;
+        const perpY = ball.vx;
+        ball.vx += perpX * ball.curveSpin * dt;
+        ball.vy += perpY * ball.curveSpin * dt;
+        ball.curveSpin *= Math.pow(0.96, dt * 60);
+      }
+
+      const curLen = Math.hypot(ball.vx, ball.vy) || 1;
+      ball.vx = (ball.vx / curLen) * ball.speed;
+      ball.vy = (ball.vy / curLen) * ball.speed;
 
       ball.x += ball.vx * dt;
       ball.y += ball.vy * dt;
@@ -870,7 +915,7 @@ export class ArenaEngine {
 
     const botsActive = this.botDifficulty !== 'OFF';
 
-    // Preserve local player's predicted movement/swing to eliminate rubber-banding & input lag
+    // Preserve local player's predicted movement 100% while moving to eliminate backward rubber-banding ("tirones")!
     this.players = snap.players.map((sp) => {
       const sanitizedAlive = sp.isBot && !botsActive ? false : sp.alive;
       const prev = this.players[sp.id];
@@ -878,12 +923,14 @@ export class ArenaEngine {
 
       if (localSlotId !== undefined && sp.id === localSlotId && sanitizedAlive && prev.alive) {
         const dist = Math.hypot(sp.x - prev.x, sp.y - prev.y);
-        if (dist < 160) {
+        if (dist < 240) {
+          const isLocallyMoving = Math.hypot(prev.vx, prev.vy) > 18;
+          const pullFactor = isLocallyMoving ? 0.0 : 0.08;
           return {
             ...sp,
             alive: sanitizedAlive,
-            x: prev.x + (sp.x - prev.x) * 0.12,
-            y: prev.y + (sp.y - prev.y) * 0.12,
+            x: prev.x + (sp.x - prev.x) * pullFactor,
+            y: prev.y + (sp.y - prev.y) * pullFactor,
             vx: prev.vx,
             vy: prev.vy,
             aimAngle: prev.aimAngle,
@@ -895,14 +942,14 @@ export class ArenaEngine {
         }
       }
 
-      // Smoothly interpolate remote players
+      // Smoothly blend remote players (velocity is extrapolated at 60/144fps in stepClientPrediction!)
       const rDist = Math.hypot(sp.x - prev.x, sp.y - prev.y);
-      if (sanitizedAlive && prev.alive && rDist < 120) {
+      if (sanitizedAlive && prev.alive && rDist < 160) {
         return {
           ...sp,
           alive: sanitizedAlive,
-          x: prev.x + (sp.x - prev.x) * 0.65,
-          y: prev.y + (sp.y - prev.y) * 0.65
+          x: prev.x + (sp.x - prev.x) * 0.36,
+          y: prev.y + (sp.y - prev.y) * 0.36
         };
       }
       return { ...sp, alive: sanitizedAlive };
@@ -910,11 +957,13 @@ export class ArenaEngine {
 
     this.balls = snap.balls.map((sb) => {
       const prevB = this.balls.find((b) => b.id === sb.id);
-      if (prevB && Math.hypot(sb.x - prevB.x, sb.y - prevB.y) < 140) {
+      if (prevB && Math.hypot(sb.x - prevB.x, sb.y - prevB.y) < 160) {
+        const samePass = prevB.passId === sb.passId && prevB.ownerId === sb.ownerId;
+        const posBlend = samePass ? 0.25 : 0.82;
         return {
           ...sb,
-          x: prevB.x + (sb.x - prevB.x) * 0.72,
-          y: prevB.y + (sb.y - prevB.y) * 0.72,
+          x: prevB.x + (sb.x - prevB.x) * posBlend,
+          y: prevB.y + (sb.y - prevB.y) * posBlend,
           trail: prevB.trail
         };
       }

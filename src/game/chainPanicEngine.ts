@@ -349,16 +349,16 @@ export class ChainPanicEngine {
     if (!p) return;
     if (packet.name) p.name = packet.name.slice(0, 10).toUpperCase();
 
-    // Lag-compensation: honor client's jump height & position so lasers never hit a player who jumped on their screen
+    // Lag-compensation: honor client's jump height & smooth position in step(dt) at 60/144fps
     if (typeof packet.clientZ === 'number' && packet.clientZ > p.z) {
       p.z = packet.clientZ;
       p.onGround = false;
     }
     if (typeof packet.clientX === 'number' && typeof packet.clientY === 'number') {
       const dist = Math.hypot(packet.clientX - p.x, packet.clientY - p.y);
-      if (dist < 180) {
-        p.x += (packet.clientX - p.x) * 0.6;
-        p.y += (packet.clientY - p.y) * 0.6;
+      if (dist > 200) {
+        p.x = packet.clientX;
+        p.y = packet.clientY;
       }
     }
 
@@ -583,6 +583,21 @@ export class ChainPanicEngine {
             const len = Math.hypot(inp.moveX, inp.moveY);
             p.vx += (inp.moveX / len) * moveAccel * 9 * dt;
             p.vy += (inp.moveY / len) * moveAccel * 9 * dt;
+          }
+          if (
+            p.id > 0 &&
+            !p.isDangling &&
+            typeof inp.clientX === 'number' &&
+            typeof inp.clientY === 'number'
+          ) {
+            const cDist = Math.hypot(inp.clientX - p.x, inp.clientY - p.y);
+            if (cDist < 180) {
+              const blend = 1 - Math.exp(-14 * dt);
+              p.x += (inp.clientX - p.x) * blend;
+              p.y += (inp.clientY - p.y) * blend;
+              inp.clientX += p.vx * dt;
+              inp.clientY += p.vy * dt;
+            }
           }
         }
       } else {
@@ -969,11 +984,16 @@ export class ChainPanicEngine {
       p.walkCycle = spd > 12 ? p.walkCycle + spd * dt * 0.12 : 0;
     }
 
-    // Dead-reckon remote players smoothly between snapshots
+    // Dead-reckon remote players smoothly between snapshots at 60/144fps
     this.players.forEach((other) => {
       if (other.id === localSlotId) return;
-      other.x += other.vx * dt * 0.55;
-      other.y += other.vy * dt * 0.55;
+      const damp = other.isAnchored ? 0.65 : 0.82;
+      other.vx *= Math.pow(damp, dt * 60);
+      other.vy *= Math.pow(damp, dt * 60);
+      other.x += other.vx * dt;
+      other.y += other.vy * dt;
+      const spd = Math.hypot(other.vx, other.vy);
+      other.walkCycle = spd > 12 ? other.walkCycle + spd * dt * 0.12 : 0;
     });
   }
 
@@ -995,11 +1015,14 @@ export class ChainPanicEngine {
 
       if (localSlotId !== undefined && sp.id === localSlotId && !sp.isDangling) {
         const dist = Math.hypot(sp.x - prev.x, sp.y - prev.y);
-        if (dist < 170) {
+        if (dist < 180) {
+          const isLocallyMoving = Math.hypot(prev.vx, prev.vy) > 15;
+          // Only pull gently if the elastic cable is taut (dist > 95) or player is standing still
+          const pullFactor = dist > 95 ? 0.16 : isLocallyMoving ? 0.0 : 0.08;
           return {
             ...sp,
-            x: prev.x + (sp.x - prev.x) * 0.14,
-            y: prev.y + (sp.y - prev.y) * 0.14,
+            x: prev.x + (sp.x - prev.x) * pullFactor,
+            y: prev.y + (sp.y - prev.y) * pullFactor,
             vx: prev.vx,
             vy: prev.vy,
             z: Math.max(prev.z, sp.z),
@@ -1011,11 +1034,11 @@ export class ChainPanicEngine {
       }
 
       const rDist = Math.hypot(sp.x - prev.x, sp.y - prev.y);
-      if (rDist < 130) {
+      if (rDist < 150) {
         return {
           ...sp,
-          x: prev.x + (sp.x - prev.x) * 0.62,
-          y: prev.y + (sp.y - prev.y) * 0.62
+          x: prev.x + (sp.x - prev.x) * 0.36,
+          y: prev.y + (sp.y - prev.y) * 0.36
         };
       }
       return { ...sp };

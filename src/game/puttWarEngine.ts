@@ -1182,12 +1182,17 @@ export class PuttWarEngine {
 
       if (localSlotId !== undefined && sp.id === localSlotId) {
         const dist = Math.hypot(sp.x - prev.x, sp.y - prev.y);
+        // If local player just shot and Host snapshot hasn't caught up yet, keep 100% local ball trajectory!
+        const shotInFlight = prev.puttCooldown > 0.2 && Math.hypot(sp.vx, sp.vy) < 25;
+        const posPull = shotInFlight ? 0.0 : dist < 160 ? 0.16 : 1.0;
         return {
           ...sp,
-          x: dist < 140 ? prev.x + (sp.x - prev.x) * 0.28 : sp.x,
-          y: dist < 140 ? prev.y + (sp.y - prev.y) * 0.28 : sp.y,
-          vx: Math.hypot(prev.vx, prev.vy) > Math.hypot(sp.vx, sp.vy) ? prev.vx : sp.vx,
-          vy: Math.hypot(prev.vx, prev.vy) > Math.hypot(sp.vy, sp.vy) ? prev.vy : sp.vy,
+          x: prev.x + (sp.x - prev.x) * posPull,
+          y: prev.y + (sp.y - prev.y) * posPull,
+          vx: shotInFlight ? prev.vx : sp.vx,
+          vy: shotInFlight ? prev.vy : sp.vy,
+          strokes: Math.max(prev.strokes, sp.strokes),
+          puttCooldown: Math.max(prev.puttCooldown, sp.puttCooldown),
           aimAngle: prev.aimAngle,
           isCharging: prev.isCharging,
           chargePower: prev.isCharging ? prev.chargePower : sp.chargePower
@@ -1195,11 +1200,11 @@ export class PuttWarEngine {
       }
 
       const rDist = Math.hypot(sp.x - prev.x, sp.y - prev.y);
-      if (rDist < 130) {
+      if (rDist < 150) {
         return {
           ...sp,
-          x: prev.x + (sp.x - prev.x) * 0.6,
-          y: prev.y + (sp.y - prev.y) * 0.6
+          x: prev.x + (sp.x - prev.x) * 0.35,
+          y: prev.y + (sp.y - prev.y) * 0.35
         };
       }
       return { ...sp };
