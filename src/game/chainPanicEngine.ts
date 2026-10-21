@@ -201,6 +201,7 @@ export class ChainPanicEngine {
   public callouts: FloatingCallout[] = [];
 
   private remoteInputs = new Map<number, ClientInputPacket>();
+  private lastActionSeqBySlot = new Map<number, number>();
   private time = 0;
   private windCycleTimer = 0;
 
@@ -355,20 +356,30 @@ export class ChainPanicEngine {
     }
     if (typeof packet.clientX === 'number' && typeof packet.clientY === 'number') {
       const dist = Math.hypot(packet.clientX - p.x, packet.clientY - p.y);
-      if (dist < 140) {
-        p.x += (packet.clientX - p.x) * 0.45;
-        p.y += (packet.clientY - p.y) * 0.45;
+      if (dist < 180) {
+        p.x += (packet.clientX - p.x) * 0.6;
+        p.y += (packet.clientY - p.y) * 0.6;
       }
     }
 
-    if (packet.emotePressed > 0) {
-      this.triggerEmote(p, packet.emotePressed);
+    const isDuplicateAction =
+      typeof packet.actionSeq === 'number' &&
+      packet.actionSeq > 0 &&
+      this.lastActionSeqBySlot.get(packet.slotId) === packet.actionSeq;
+    if (typeof packet.actionSeq === 'number' && packet.actionSeq > 0) {
+      this.lastActionSeqBySlot.set(packet.slotId, packet.actionSeq);
     }
-    if (packet.parryPressed) {
-      this.triggerJump(p);
-    }
-    if (packet.yankPressed) {
-      this.triggerCableYank(p);
+
+    if (!isDuplicateAction) {
+      if (packet.emotePressed > 0) {
+        this.triggerEmote(p, packet.emotePressed);
+      }
+      if (packet.parryPressed) {
+        this.triggerJump(p);
+      }
+      if (packet.yankPressed) {
+        this.triggerCableYank(p);
+      }
     }
   }
 
@@ -900,7 +911,73 @@ export class ChainPanicEngine {
     };
   }
 
-  public applySnapshot(snap: ChainPanicSnapshot): void {
+  /**
+   * Client-side prediction & dead-reckoning for 02 // CHAIN-PANIC:
+   * Steps local walking, jumping, anchor, and laser rotation at 60/144fps so even 500ms ping feels instant!
+   */
+  public stepClientPrediction(dt: number, localSlotId: number, input: ClientInputPacket): void {
+    this.time += dt;
+    for (let i = this.particles.length - 1; i >= 0; i--) {
+      const pt = this.particles[i];
+      pt.x += pt.vx * dt;
+      pt.y += pt.vy * dt;
+      pt.life -= pt.decay * dt;
+      if (pt.type === 'ring') pt.size += 180 * dt;
+      if (pt.life <= 0) this.particles.splice(i, 1);
+    }
+    for (let i = this.callouts.length - 1; i >= 0; i--) {
+      const c = this.callouts[i];
+      c.y -= 34 * dt;
+      c.life -= 1.2 * dt;
+      if (c.life <= 0) this.callouts.splice(i, 1);
+    }
+
+    if (this.status !== 'PLAYING') return;
+
+    this.rotaryLasers.forEach((rl) => {
+      rl.angle = (rl.angle + rl.speed * dt) % (Math.PI * 2);
+    });
+
+    const p = this.players[localSlotId];
+    if (p) {
+      if (p.yankCooldown > 0) p.yankCooldown = Math.max(0, p.yankCooldown - dt);
+      p.isAnchored = Boolean(input.anchorHeld) && p.onGround && !p.isDangling;
+      const moveAccel = p.isAnchored ? 40 : 215;
+
+      if (!p.isDangling && (input.moveX !== 0 || input.moveY !== 0)) {
+        const len = Math.hypot(input.moveX, input.moveY);
+        p.vx += (input.moveX / len) * moveAccel * 9 * dt;
+        p.vy += (input.moveY / len) * moveAccel * 9 * dt;
+      }
+
+      if (p.z > 0 || p.vz !== 0) {
+        p.z += p.vz * dt;
+        p.vz -= 680 * dt;
+        if (p.z <= 0) {
+          p.z = 0;
+          p.vz = 0;
+          p.onGround = true;
+        }
+      }
+
+      const damp = p.isAnchored ? 0.65 : 0.82;
+      p.vx *= Math.pow(damp, dt * 60);
+      p.vy *= Math.pow(damp, dt * 60);
+      p.x = Math.max(48, Math.min(952, p.x + p.vx * dt));
+      p.y = Math.max(62, Math.min(458, p.y + p.vy * dt));
+      const spd = Math.hypot(p.vx, p.vy);
+      p.walkCycle = spd > 12 ? p.walkCycle + spd * dt * 0.12 : 0;
+    }
+
+    // Dead-reckon remote players smoothly between snapshots
+    this.players.forEach((other) => {
+      if (other.id === localSlotId) return;
+      other.x += other.vx * dt * 0.55;
+      other.y += other.vy * dt * 0.55;
+    });
+  }
+
+  public applySnapshot(snap: ChainPanicSnapshot, localSlotId?: number): void {
     this.levelIndex = snap.levelIndex;
     this.mode = snap.mode;
     this.status = snap.status;
@@ -911,7 +988,39 @@ export class ChainPanicEngine {
     this.windForceY = snap.windForceY;
     this.completions = snap.completions;
     this.wipes = snap.wipes;
-    this.players = snap.players;
+
+    this.players = snap.players.map((sp) => {
+      const prev = this.players[sp.id];
+      if (!prev || this.status !== 'PLAYING') return { ...sp };
+
+      if (localSlotId !== undefined && sp.id === localSlotId && !sp.isDangling) {
+        const dist = Math.hypot(sp.x - prev.x, sp.y - prev.y);
+        if (dist < 170) {
+          return {
+            ...sp,
+            x: prev.x + (sp.x - prev.x) * 0.14,
+            y: prev.y + (sp.y - prev.y) * 0.14,
+            vx: prev.vx,
+            vy: prev.vy,
+            z: Math.max(prev.z, sp.z),
+            vz: prev.z > 0 ? prev.vz : sp.vz,
+            onGround: prev.z > 0 ? false : sp.onGround,
+            walkCycle: prev.walkCycle
+          };
+        }
+      }
+
+      const rDist = Math.hypot(sp.x - prev.x, sp.y - prev.y);
+      if (rDist < 130) {
+        return {
+          ...sp,
+          x: prev.x + (sp.x - prev.x) * 0.62,
+          y: prev.y + (sp.y - prev.y) * 0.62
+        };
+      }
+      return { ...sp };
+    });
+
     this.switches = snap.switches;
     this.lasers = snap.lasers;
     this.rotaryLasers = snap.rotaryLasers || [];

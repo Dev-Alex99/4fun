@@ -88,8 +88,16 @@ const DEFAULT_BOT_NAMES = ['UNIT-01', 'LEO-BOT', 'MAX-BOT', 'NICO-BOT'];
 const ICE_SERVERS: RTCIceServer[] = [
   { urls: 'stun:stun.l.google.com:19302' },
   { urls: 'stun:stun1.l.google.com:19302' },
-  { urls: 'stun:stun2.l.google.com:19302' }
+  { urls: 'stun:stun2.l.google.com:19302' },
+  { urls: 'stun:stun3.l.google.com:19302' },
+  { urls: 'stun:stun.cloudflare.com:3478' }
 ];
+
+function compactJsonStringify(env: NetEnvelope): string {
+  return JSON.stringify(env, (_key, val: unknown) =>
+    typeof val === 'number' && !Number.isInteger(val) ? Math.round(val * 100) / 100 : val
+  );
+}
 
 export function generateRoomCode(): string {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -135,6 +143,17 @@ export class MultiplayerRoomManager {
   private lastRtcSnapSentAt = 0;
   private lastClientInputSentAt = 0;
   private lastChargingState = false;
+  private clientActionSeq = 0;
+  private activeActionBurst: {
+    actionSeq: number;
+    remainingSends: number;
+    parryPressed: boolean;
+    dashPressed: boolean;
+    yankPressed?: boolean;
+    emotePressed: number;
+    shotReleasedPower?: number;
+    feintPrimed?: boolean;
+  } | null = null;
   private rtcBroadcastCounter = 0;
   private nextToastId = 1;
   private joinRetryTimer: ReturnType<typeof setInterval> | null = null;
@@ -211,7 +230,7 @@ export class MultiplayerRoomManager {
   private sendOverConn(conn: DataConnection | null | undefined, env: NetEnvelope): void {
     if (!conn || !conn.open) return;
     try {
-      conn.send(JSON.stringify(env));
+      conn.send(compactJsonStringify(env));
     } catch {
       // Ignore transient WebRTC send error
     }
@@ -219,7 +238,7 @@ export class MultiplayerRoomManager {
 
   private sendToAllClients(env: NetEnvelope): void {
     this.localBus?.postMessage(env);
-    const serialized = JSON.stringify(env);
+    const serialized = compactJsonStringify(env);
     this.clientConns.forEach((conn) => {
       if (conn.open) {
         try {
@@ -463,9 +482,9 @@ export class MultiplayerRoomManager {
             // Ignore reconnect error
           }
         }
-        // Check if any remote human peer timed out (>8.5 seconds without any packet)
+        // Tolerate up to 25 seconds of bad Wi-Fi freeze before freeing a human player's slot!
         this.peerLastSeen.forEach((lastSeen, peerId) => {
-          if (now - lastSeen > 8500) {
+          if (now - lastSeen > 25000) {
             this.freeSlotForPeer(peerId);
           }
         });
@@ -478,12 +497,11 @@ export class MultiplayerRoomManager {
         };
         this.sendToHost(pingEnv);
 
-        // If Host connection dropped for >6.5 seconds, reconnect to Host peer NON-DESTRUCTIVELY
-        // (NEVER reset to Host or spawn bots on the client!)
+        // If Host connection dropped for >12 seconds, reconnect to Host peer NON-DESTRUCTIVELY
         if (
           this.connectionState === 'CONNECTED_CLIENT' &&
           this.lastHostSnapReceivedAt > 0 &&
-          now - this.lastHostSnapReceivedAt > 6500
+          now - this.lastHostSnapReceivedAt > 12000
         ) {
           this.connectionState = 'RECONNECTING';
           this.onStatusUpdate();
@@ -1053,10 +1071,10 @@ export class MultiplayerRoomManager {
       this.syncEnginesRoster();
 
       if (snap.chainState) {
-        this.chainEngine.applySnapshot(snap.chainState);
+        this.chainEngine.applySnapshot(snap.chainState, this.localSlotId);
       }
       if (snap.puttState) {
-        this.puttEngine?.applySnapshot(snap.puttState);
+        this.puttEngine?.applySnapshot(snap.puttState, this.localSlotId);
       }
       this.syncEnginesRoster();
 
@@ -1112,30 +1130,66 @@ export class MultiplayerRoomManager {
   public sendClientInput(input: ClientInputPacket): void {
     if (this.isHost) return;
     const now = performance.now();
-    const isUrgentAction =
+    const hasDiscreteAction =
       input.parryPressed ||
       input.dashPressed ||
       Boolean(input.yankPressed) ||
       input.emotePressed > 0 ||
-      Boolean(input.shotReleasedPower && input.shotReleasedPower > 0) ||
-      input.chargingParry !== this.lastChargingState;
+      Boolean(input.shotReleasedPower && input.shotReleasedPower > 0);
+
+    // If a discrete action occurred, latch it into a 3-packet redundant burst so packet loss never drops it!
+    if (hasDiscreteAction) {
+      this.clientActionSeq++;
+      this.activeActionBurst = {
+        actionSeq: this.clientActionSeq,
+        remainingSends: 3,
+        parryPressed: input.parryPressed,
+        dashPressed: input.dashPressed,
+        yankPressed: input.yankPressed,
+        emotePressed: input.emotePressed,
+        shotReleasedPower: input.shotReleasedPower,
+        feintPrimed: input.feintPrimed
+      };
+    }
+
+    const isUrgentAction =
+      hasDiscreteAction || input.chargingParry !== this.lastChargingState;
 
     this.lastChargingState = input.chargingParry;
 
-    if (!isUrgentAction && now - this.lastClientInputSentAt < 22) {
+    // Throttle continuous movement packets to ~28Hz (35ms) so slow/congested Wi-Fi links never choke,
+    // while transmitting urgent action presses/releases immediately (0ms delay)!
+    if (!isUrgentAction && now - this.lastClientInputSentAt < 35) {
       return;
     }
     this.lastClientInputSentAt = now;
 
+    const outgoingPayload: ClientInputPacket = { ...input };
+    if (this.activeActionBurst && this.activeActionBurst.remainingSends > 0) {
+      outgoingPayload.actionSeq = this.activeActionBurst.actionSeq;
+      outgoingPayload.parryPressed = this.activeActionBurst.parryPressed;
+      outgoingPayload.dashPressed = this.activeActionBurst.dashPressed;
+      outgoingPayload.yankPressed = this.activeActionBurst.yankPressed;
+      outgoingPayload.emotePressed = this.activeActionBurst.emotePressed;
+      outgoingPayload.shotReleasedPower = this.activeActionBurst.shotReleasedPower;
+      if (this.activeActionBurst.feintPrimed) {
+        outgoingPayload.feintPrimed = true;
+      }
+      this.activeActionBurst.remainingSends--;
+      if (this.activeActionBurst.remainingSends <= 0) {
+        this.activeActionBurst = null;
+      }
+    }
+
     const env: NetEnvelope = {
       sender: this.localPeerId,
       type: 'CLIENT_INPUT',
-      payload: input
+      payload: outgoingPayload
     };
     this.sendToHost(env);
 
     this.rtcBroadcastCounter++;
-    if (this.rtcBroadcastCounter % 25 === 0) {
+    if (this.rtcBroadcastCounter % 20 === 0) {
       const pingEnv: NetEnvelope = {
         sender: this.localPeerId,
         type: 'PING_REQ',
@@ -1149,7 +1203,9 @@ export class MultiplayerRoomManager {
     if (!this.isHost) return;
     const now = performance.now();
 
-    if (!forceRtc && now - this.lastRtcSnapSentAt < 32) {
+    // Adaptive 21Hz (46ms) quantized snapshot tickrate: keeps bandwidth < 6 KB/sec for terrible connections
+    // while 60/144fps client-side prediction & dead-reckoning keep visuals 100% smooth!
+    if (!forceRtc && now - this.lastRtcSnapSentAt < 46) {
       return;
     }
     this.lastRtcSnapSentAt = now;
@@ -1174,11 +1230,13 @@ export class MultiplayerRoomManager {
 
     this.localBus?.postMessage(env);
 
-    const serialized = JSON.stringify(env);
+    const serialized = compactJsonStringify(env);
     this.clientConns.forEach((conn) => {
       if (!conn.open) return;
+      // Strict 8KB SCTP backpressure guard: if a friend's Wi-Fi is stalling, skip intermediate frames
+      // so old snapshots never pile up in their buffer (zero bufferbloat!)
       const dc = (conn as unknown as { dataChannel?: RTCDataChannel }).dataChannel;
-      if (!forceRtc && dc && dc.bufferedAmount > 32768) {
+      if (!forceRtc && dc && dc.bufferedAmount > 8192) {
         return;
       }
       try {

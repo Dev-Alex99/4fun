@@ -56,6 +56,9 @@ export class ArenaEngine {
 
   private nextPassId = 1;
   private remoteInputs = new Map<number, ClientInputPacket>();
+  private lastActionSeqBySlot = new Map<number, number>();
+  private roundEndTimer: ReturnType<typeof setTimeout> | null = null;
+  private pendingWinnerAwardedId: number | null = null;
   private onPhaseChange?: () => void;
 
   constructor(onPhaseChange?: () => void) {
@@ -126,6 +129,11 @@ export class ArenaEngine {
   }
 
   public spawnRound(): void {
+    if (this.roundEndTimer) {
+      clearTimeout(this.roundEndTimer);
+      this.roundEndTimer = null;
+    }
+    this.pendingWinnerAwardedId = null;
     this.courtLayout = LAYOUT_ORDER[this.roundIndex % LAYOUT_ORDER.length];
     this.roundIndex++;
     this.roundTimer = 0;
@@ -218,29 +226,49 @@ export class ArenaEngine {
     ) {
       const dx = packet.clientX - slot.x;
       const dy = packet.clientY - slot.y;
-      if (Math.hypot(dx, dy) < 180) {
-        slot.x += dx * 0.65;
-        slot.y += dy * 0.65;
+      if (Math.hypot(dx, dy) < 220) {
+        slot.x += dx * 0.72;
+        slot.y += dy * 0.72;
       }
     }
 
-    if (packet.emotePressed > 0) {
+    // Deduplicate redundant 3-packet action bursts while allowing the first arrived packet to execute
+    const isDuplicateAction =
+      typeof packet.actionSeq === 'number' &&
+      packet.actionSeq > 0 &&
+      this.lastActionSeqBySlot.get(packet.slotId) === packet.actionSeq;
+    if (typeof packet.actionSeq === 'number' && packet.actionSeq > 0) {
+      this.lastActionSeqBySlot.set(packet.slotId, packet.actionSeq);
+    }
+
+    if (!isDuplicateAction && packet.emotePressed > 0) {
       this.triggerEmote(slot, packet.emotePressed);
     }
 
-    // FAVOR-THE-DEFENDER ROLLBACK RESCUE:
-    // If the client pressed parry on time on their screen, but due to network RTT (up to 280ms)
-    // the Host just marked them K.O. moments ago, rollback the K.O. and deflect the ball!
+    // FAVOR-THE-DEFENDER ROLLBACK RESCUE (Up to 650ms for terrible connections!):
+    // If the client pressed parry on time on their screen, but due to high network RTT (up to 650ms)
+    // the Host just marked them K.O. moments ago, rollback the K.O., cancel any pending round end, and deflect!
     if (
       !slot.alive &&
-      this.phase === 'PLAYING' &&
       packet.parryPressed &&
       slot.lastKOAt &&
-      performance.now() - slot.lastKOAt <= 280 &&
+      performance.now() - slot.lastKOAt <= 650 &&
       this.balls.length > 0
     ) {
-      const batReach = (slot.radius + 32) * slot.parryRadiusMult;
-      if (packet.clientBallDist <= batReach + 36) {
+      const batReach = (slot.radius + 36) * slot.parryRadiusMult;
+      if (packet.clientBallDist <= batReach + 58) {
+        if (this.roundEndTimer) {
+          clearTimeout(this.roundEndTimer);
+          this.roundEndTimer = null;
+        }
+        if (this.pendingWinnerAwardedId !== null) {
+          const prevWinner = this.players[this.pendingWinnerAwardedId];
+          if (prevWinner && prevWinner.score > 0) {
+            prevWinner.score -= 1;
+          }
+          this.pendingWinnerAwardedId = null;
+        }
+        this.phase = 'PLAYING';
         slot.alive = true;
         slot.lastKOAt = undefined;
         slot.aimAngle = packet.aimAngle;
@@ -253,7 +281,7 @@ export class ArenaEngine {
       }
     }
 
-    if (this.phase === 'PLAYING' && slot.alive) {
+    if (this.phase === 'PLAYING' && slot.alive && !isDuplicateAction) {
       if (packet.parryPressed) {
         slot.aimAngle = packet.aimAngle;
         this.triggerParry(slot, packet.clientBallDist);
@@ -268,19 +296,19 @@ export class ArenaEngine {
 
   public triggerParry(p: PlayerState, clientBallDist?: number): void {
     if (!p.alive || p.parryCooldown > 0) return;
-    p.parryTimer = 0.24 + p.parryWindowBonus;
-    p.parryCooldown = 0.45;
+    p.parryTimer = 0.26 + p.parryWindowBonus;
+    p.parryCooldown = 0.42;
     p.batSwingDir *= -1;
 
-    // Lag-Compensated Parry Validation for remote clients
+    // Lag-Compensated Parry Validation for remote clients (generous +46px tolerance for high jitter)
     if (clientBallDist !== undefined && this.balls.length > 0) {
-      const batReach = (p.radius + 26) * p.parryRadiusMult;
+      const batReach = (p.radius + 28) * p.parryRadiusMult;
       const closestBall = this.balls.reduce((best, b) => {
         const d = Math.hypot(b.x - p.x, b.y - p.y);
         return d < Math.hypot(best.x - p.x, best.y - p.y) ? b : best;
       }, this.balls[0]);
 
-      if (clientBallDist <= batReach + closestBall.radius + 28 && closestBall.ownerId !== p.id) {
+      if (clientBallDist <= batReach + closestBall.radius + 46 && closestBall.ownerId !== p.id) {
         this.executeDeflection(p, closestBall, true);
       }
     }
@@ -691,21 +719,28 @@ export class ArenaEngine {
             if (winner) {
               winner.score += 1;
               this.lastRoundWinnerId = winner.id;
+              this.pendingWinnerAwardedId = winner.id;
             } else {
               this.lastRoundWinnerId = null;
+              this.pendingWinnerAwardedId = null;
             }
 
+            if (this.roundEndTimer) clearTimeout(this.roundEndTimer);
             if (winner && winner.score >= WINNING_SCORE) {
-              setTimeout(() => {
+              this.roundEndTimer = setTimeout(() => {
+                this.roundEndTimer = null;
+                this.pendingWinnerAwardedId = null;
                 this.phase = 'MATCH_OVER';
                 this.onPhaseChange?.();
-              }, 700);
+              }, 750);
             } else {
               this.draftOptions = pickRandomModIds(3);
-              setTimeout(() => {
+              this.roundEndTimer = setTimeout(() => {
+                this.roundEndTimer = null;
+                this.pendingWinnerAwardedId = null;
                 this.phase = 'CARD_DRAFT';
                 this.onPhaseChange?.();
-              }, 700);
+              }, 750);
             }
           } else if (remaining.length === 0) {
             this.spawnRound();
@@ -782,10 +817,36 @@ export class ArenaEngine {
       }
     }
 
-    // Dead-reckon balls between snapshots for smooth 60/120fps visuals
+    // Dead-reckon balls between snapshots (with local wall bounce & local parry prediction!)
     this.balls.forEach((ball) => {
+      if (p && p.alive && p.parryTimer > 0 && ball.ownerId !== p.id) {
+        const d = Math.hypot(ball.x - p.x, ball.y - p.y);
+        const batReach = (p.radius + 30) * p.parryRadiusMult;
+        if (d <= batReach + ball.radius) {
+          ball.ownerId = p.id;
+          ball.vx = Math.cos(p.aimAngle) * ball.speed * 1.15;
+          ball.vy = Math.sin(p.aimAngle) * ball.speed * 1.15;
+          sfx.playBatParry(this.comboCount + 1, true, false);
+        }
+      }
+
       ball.x += ball.vx * dt;
       ball.y += ball.vy * dt;
+
+      // Predict arena wall bounce so ball never flies outside the court during a Wi-Fi lag spike!
+      const bx = (ball.x - COURT_CENTER_X) / (COURT_RX - ball.radius);
+      const by = (ball.y - COURT_CENTER_Y) / (COURT_RY - ball.radius);
+      const bLen = Math.hypot(bx, by);
+      if (bLen > 1) {
+        ball.x = COURT_CENTER_X + (bx / bLen) * (COURT_RX - ball.radius);
+        ball.y = COURT_CENTER_Y + (by / bLen) * (COURT_RY - ball.radius);
+        const nx = bx / bLen;
+        const ny = by / bLen;
+        const dot = ball.vx * nx + ball.vy * ny;
+        ball.vx -= 2 * dot * nx;
+        ball.vy -= 2 * dot * ny;
+      }
+
       ball.rotation += ball.speed * dt * 0.04;
       ball.trail.push({ x: ball.x, y: ball.y, z: ball.z });
       if (ball.trail.length > 11) ball.trail.shift();

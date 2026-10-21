@@ -335,6 +335,7 @@ export interface PuttWarSnapshot {
 export interface ClientInputPacket {
   slotId: number;
   name: string;
+  actionSeq?: number; // Monotonic action ID for 3-packet redundant burst deduplication
   moveX: number;
   moveY: number;
   aimAngle: number;

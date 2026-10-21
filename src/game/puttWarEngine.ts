@@ -279,6 +279,7 @@ export class PuttWarEngine {
 
   public botsEnabled = true;
   private remoteInputs = new Map<number, ClientInputPacket>();
+  private lastActionSeqBySlot = new Map<number, number>();
   private nextBombId = 1;
   private sunkCount = 0;
 
@@ -544,11 +545,22 @@ export class PuttWarEngine {
     if (!p) return;
     p.name = input.name.slice(0, 10).toUpperCase();
     p.aimAngle = input.aimAngle;
-    if (input.emotePressed > 0) this.triggerEmote(p, input.emotePressed);
-    if (input.yankPressed) this.lobBombOrWeapon(p);
-    if (input.dashPressed) this.triggerShockwaveOrPowerup(p);
-    if (input.shotReleasedPower && input.shotReleasedPower > 0.05) {
-      this.executePutt(p, input.shotReleasedPower, input.aimAngle);
+
+    const isDuplicateAction =
+      typeof input.actionSeq === 'number' &&
+      input.actionSeq > 0 &&
+      this.lastActionSeqBySlot.get(input.slotId) === input.actionSeq;
+    if (typeof input.actionSeq === 'number' && input.actionSeq > 0) {
+      this.lastActionSeqBySlot.set(input.slotId, input.actionSeq);
+    }
+
+    if (!isDuplicateAction) {
+      if (input.emotePressed > 0) this.triggerEmote(p, input.emotePressed);
+      if (input.yankPressed) this.lobBombOrWeapon(p);
+      if (input.dashPressed) this.triggerShockwaveOrPowerup(p);
+      if (input.shotReleasedPower && input.shotReleasedPower > 0.05) {
+        this.executePutt(p, input.shotReleasedPower, input.aimAngle);
+      }
     }
     this.remoteInputs.set(input.slotId, input);
   }
@@ -1085,7 +1097,73 @@ export class PuttWarEngine {
     };
   }
 
-  public applySnapshot(snap: PuttWarSnapshot): void {
+  /**
+   * Client-side prediction & dead-reckoning for 03 // TURBO-PUTT:
+   * Predicts local shot charging/putt release and dead-reckons rolling balls, bombs, and windmills at 60fps!
+   */
+  public stepClientPrediction(
+    dt: number,
+    localSlotId: number,
+    input: ClientInputPacket
+  ): number | undefined {
+    let releasedPower: number | undefined;
+
+    for (let i = this.callouts.length - 1; i >= 0; i--) {
+      this.callouts[i].y -= 24 * dt;
+      this.callouts[i].life -= dt * 1.1;
+      if (this.callouts[i].life <= 0) this.callouts.splice(i, 1);
+    }
+    for (let i = this.explosions.length - 1; i >= 0; i--) {
+      const ex = this.explosions[i];
+      ex.life -= dt * 2.6;
+      ex.radius = ex.maxRadius * (1 - ex.life * 0.65);
+      if (ex.life <= 0) this.explosions.splice(i, 1);
+    }
+
+    if (this.status !== 'PLAYING') return undefined;
+
+    for (const wm of this.windmills) {
+      wm.angle += wm.speed * dt;
+    }
+
+    for (const b of this.bombs) {
+      b.x += b.vx * dt;
+      b.y += b.vy * dt;
+      b.timer = Math.max(0, b.timer - dt);
+    }
+
+    const myP = this.players[localSlotId];
+    if (myP && !myP.sunkInCup) {
+      if (myP.puttCooldown > 0) myP.puttCooldown = Math.max(0, myP.puttCooldown - dt);
+      myP.aimAngle = input.aimAngle;
+      if (input.chargingParry && myP.puttCooldown <= 0) {
+        myP.isCharging = true;
+        myP.chargePower = Math.min(1.0, myP.chargePower + dt * 1.15);
+      } else if (myP.isCharging && !input.chargingParry) {
+        releasedPower = Math.max(0.32, myP.chargePower);
+        this.executePutt(myP, releasedPower, myP.aimAngle);
+      } else if (input.shotReleasedPower && input.shotReleasedPower > 0.05) {
+        releasedPower = input.shotReleasedPower;
+        this.executePutt(myP, releasedPower, myP.aimAngle);
+      }
+    }
+
+    // Dead-reckon all rolling golf balls with surface friction and wall bounces
+    for (const p of this.getActivePlayers()) {
+      if (p.sunkInCup) continue;
+      p.x += p.vx * dt;
+      p.y += p.vy * dt;
+      p.vx *= Math.pow(0.983, dt * 60);
+      p.vy *= Math.pow(0.983, dt * 60);
+      for (const w of this.walls) {
+        this.resolveCircleRectBounce(p, w);
+      }
+    }
+
+    return releasedPower;
+  }
+
+  public applySnapshot(snap: PuttWarSnapshot, localSlotId?: number): void {
     if (this.holeIndex !== snap.holeIndex) {
       this.loadHole(snap.holeIndex);
     }
@@ -1097,7 +1175,36 @@ export class PuttWarEngine {
     this.statusTimer = snap.statusTimer;
     this.cupX = snap.cupX;
     this.cupY = snap.cupY;
-    this.players = snap.players.map((p) => ({ ...p }));
+
+    this.players = snap.players.map((sp) => {
+      const prev = this.players[sp.id];
+      if (!prev || this.status !== 'PLAYING' || sp.sunkInCup) return { ...sp };
+
+      if (localSlotId !== undefined && sp.id === localSlotId) {
+        const dist = Math.hypot(sp.x - prev.x, sp.y - prev.y);
+        return {
+          ...sp,
+          x: dist < 140 ? prev.x + (sp.x - prev.x) * 0.28 : sp.x,
+          y: dist < 140 ? prev.y + (sp.y - prev.y) * 0.28 : sp.y,
+          vx: Math.hypot(prev.vx, prev.vy) > Math.hypot(sp.vx, sp.vy) ? prev.vx : sp.vx,
+          vy: Math.hypot(prev.vx, prev.vy) > Math.hypot(sp.vy, sp.vy) ? prev.vy : sp.vy,
+          aimAngle: prev.aimAngle,
+          isCharging: prev.isCharging,
+          chargePower: prev.isCharging ? prev.chargePower : sp.chargePower
+        };
+      }
+
+      const rDist = Math.hypot(sp.x - prev.x, sp.y - prev.y);
+      if (rDist < 130) {
+        return {
+          ...sp,
+          x: prev.x + (sp.x - prev.x) * 0.6,
+          y: prev.y + (sp.y - prev.y) * 0.6
+        };
+      }
+      return { ...sp };
+    });
+
     this.bombs = snap.bombs.map((b) => ({ ...b }));
     this.crates = snap.crates.map((c) => ({ ...c }));
     this.bumpers = snap.bumpers.map((b) => ({ ...b }));

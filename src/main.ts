@@ -883,11 +883,16 @@ function stepGameFrame(dt: number): void {
     }
     net.broadcastHostSnapshot();
   } else {
-    // Client-side prediction: step local player and ball extrapolation at 60fps for 0ms input lag!
+    // Client-side prediction & dead-reckoning across all 3 games at 60/144fps for 0ms input lag!
     if (net.activeGame === 'BASH_BOT') {
       arenaEngine.stepClientPrediction(dt, net.localSlotId, inputPacket);
+    } else if (net.activeGame === 'CHAIN_PANIC') {
+      chainEngine.stepClientPrediction(dt, net.localSlotId, inputPacket);
     } else if (net.activeGame === 'TURBO_PUTT') {
-      myPuttPlayer.aimAngle = aimAngle;
+      const releasedPwr = puttEngine.stepClientPrediction(dt, net.localSlotId, inputPacket);
+      if (releasedPwr) {
+        inputPacket.shotReleasedPower = releasedPwr;
+      }
     }
     net.sendClientInput(inputPacket);
   }
