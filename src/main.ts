@@ -44,9 +44,13 @@ const roomToastContainer = document.getElementById('roomToastContainer') as HTML
 const hubOverlay = document.getElementById('hubOverlay') as HTMLDivElement;
 const hubConnectionBadge = document.getElementById('hubConnectionBadge') as HTMLDivElement;
 const hubRoomCodeText = document.getElementById('hubRoomCodeText') as HTMLSpanElement;
+const hubBotsToggleBtn = document.getElementById('hubBotsToggleBtn') as HTMLButtonElement;
 const hubCopyInviteBtn = document.getElementById('hubCopyInviteBtn') as HTMLButtonElement;
 const hubNewRoomBtn = document.getElementById('hubNewRoomBtn') as HTMLButtonElement;
+const hubLeaveRoomBtn = document.getElementById('hubLeaveRoomBtn') as HTMLButtonElement;
 const hubPilotNameInput = document.getElementById('hubPilotNameInput') as HTMLInputElement;
+const hubJoinCodeInput = document.getElementById('hubJoinCodeInput') as HTMLInputElement;
+const hubJoinRoomBtn = document.getElementById('hubJoinRoomBtn') as HTMLButtonElement;
 const hubRosterList = document.getElementById('hubRosterList') as HTMLDivElement;
 const unbanAllBtn = document.getElementById('unbanAllBtn') as HTMLButtonElement;
 const kickNoticeBanner = document.getElementById('kickNoticeBanner') as HTMLDivElement;
@@ -77,12 +81,25 @@ let anchorHeld = false;
 let pendingEmote = 0;
 
 const urlParams = new URLSearchParams(window.location.search);
-const urlRoom = urlParams.get('room');
+const urlJoinParam = urlParams.get('join');
+const urlRoom =
+  urlJoinParam && urlJoinParam !== '1' ? urlJoinParam : urlParams.get('room');
 const sessionRoom =
   typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('tp04_my_room') : null;
+const hostedRoomInTab =
+  typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('tp04_hosted_room') : null;
 const initialRoom = (urlRoom || sessionRoom || generateRoomCode()).toUpperCase().slice(0, 8);
+
+// Explicit Host vs Client determination:
+// If URL has ?join=1 or ?room=XXXX that wasn't created as Host in this tab, join strictly as CLIENT!
+const startAsClient =
+  urlJoinParam !== null || Boolean(urlRoom && hostedRoomInTab !== initialRoom);
+
 try {
   sessionStorage.setItem('tp04_my_room', initialRoom);
+  if (!startAsClient) {
+    sessionStorage.setItem('tp04_hosted_room', initialRoom);
+  }
   if (!urlRoom) {
     const nextUrl = new URL(window.location.href);
     nextUrl.searchParams.set('room', initialRoom);
@@ -125,24 +142,32 @@ function syncOverlaysAndHUD(): void {
 
   const pingSuffix = !net.isHost && net.pingMs > 0 ? ` • ${net.pingMs}ms` : '';
   if (net.connectionState === 'CONNECTING') {
-    netRoleLabel.textContent = `🟡 CONECTANDO A SALA #${net.roomCode}...`;
+    netRoleLabel.textContent = `🟡 CLIENTE -> UNIENDOSE A SALA #${net.roomCode}...`;
     if (hubConnectionBadge) {
-      hubConnectionBadge.textContent = `🟡 CONECTANDO CON EL ANFITRIÓN DE SALA #${net.roomCode}...`;
+      hubConnectionBadge.textContent = `🟡 MODO CLIENTE // CONECTANDO CON EL HOST DE SALA #${net.roomCode}...`;
     }
   } else if (net.connectionState === 'RECONNECTING') {
-    netRoleLabel.textContent = `🔄 RECONECTANDO A SALA #${net.roomCode}...`;
+    netRoleLabel.textContent = `🔄 CLIENTE -> RECONECTANDO A #${net.roomCode}...`;
     if (hubConnectionBadge) {
-      hubConnectionBadge.textContent = `🔄 RECONECTANDO CON LA SALA #${net.roomCode}...`;
+      hubConnectionBadge.textContent = `🔄 MODO CLIENTE // RECONECTANDO CON LA SALA #${net.roomCode}...`;
     }
   } else if (net.isHost) {
-    netRoleLabel.textContent = `🟢 SALA #${net.roomCode} • ANFITRIÓN (${humanCount}/4 EN LÍNEA)`;
+    netRoleLabel.textContent = `👑 HOST DE SALA #${net.roomCode} (${humanCount}/4 EN LÍNEA)`;
     if (hubConnectionBadge) {
-      hubConnectionBadge.textContent = `🟢 ERES ANFITRIÓN DE SALA #${net.roomCode} (${humanCount}/4 HUMANOS EN LÍNEA)`;
+      hubConnectionBadge.textContent = `👑 ERES EL ANFITRIÓN (HOST) DE SALA #${net.roomCode} (${humanCount}/4 HUMANOS EN LÍNEA)`;
     }
   } else {
-    netRoleLabel.textContent = `🟢 SALA #${net.roomCode} • JUGADOR ${net.localSlotId + 1}${pingSuffix}`;
+    netRoleLabel.textContent = `🎮 CLIENTE EN #${net.roomCode} (HOST: ${net.hostName}) • SLOT ${net.localSlotId + 1}${pingSuffix}`;
     if (hubConnectionBadge) {
-      hubConnectionBadge.textContent = `🟢 CONECTADO A SALA #${net.roomCode} • ERES JUGADOR ${net.localSlotId + 1}${pingSuffix}`;
+      hubConnectionBadge.textContent = `🎮 ERES CLIENTE EN SALA #${net.roomCode} (ANFITRIÓN: ${net.hostName}) • SLOT ${net.localSlotId + 1}${pingSuffix}`;
+    }
+  }
+
+  if (hubLeaveRoomBtn) {
+    if (net.isHost) {
+      hubLeaveRoomBtn.classList.add('hidden');
+    } else {
+      hubLeaveRoomBtn.classList.remove('hidden');
     }
   }
 
@@ -183,6 +208,7 @@ function syncOverlaysAndHUD(): void {
   const botLabel = DIFFICULTY_LABELS[arenaEngine.botDifficulty] || '🤖 BOTS: NORMAL';
   if (toggleBotsBtn) toggleBotsBtn.textContent = botLabel;
   if (topBotsToggleBtn) topBotsToggleBtn.textContent = botLabel;
+  if (hubBotsToggleBtn) hubBotsToggleBtn.textContent = botLabel;
 
   tabButtons.forEach((btn) => {
     if (btn.dataset.game === net.activeGame) {
@@ -298,15 +324,25 @@ function syncOverlaysAndHUD(): void {
     })
     .join('');
 
-  // Render Live Room Roster inside Hub with [✕ VETAR] controls
+  // Render Live 4-Slot Room Roster inside Hub with clear HOST / CLIENT / BOT / EMPTY badges
   if (hubRosterList) {
-    hubRosterList.innerHTML = visibleRoster
+    hubRosterList.innerHTML = arenaEngine.players
       .map((p) => {
         const canKick = net.isHost && p.id > 0 && !p.isBot;
-        const roleTag = p.id === 0 ? 'HOST' : p.isBot ? 'BOT' : 'HUMANO';
+        const isEmptyBotSlot = p.isBot && !botsActive;
+        const roleTag =
+          p.id === 0
+            ? '👑 HOST'
+            : !p.isBot
+              ? '🟢 CLIENTE'
+              : botsActive
+                ? '🤖 BOT'
+                : '⚪ VACÍO';
+        const displayName = isEmptyBotSlot ? 'ESPERANDO AMIGO...' : p.name;
+        const chipBg = isEmptyBotSlot ? '#52525B' : p.bodyColor;
         return `
-        <div class="roster-chip" style="background:${p.bodyColor}">
-          <span>S${p.id + 1}: ${p.name} [${roleTag}]</span>
+        <div class="roster-chip" style="background:${chipBg}">
+          <span>S${p.id + 1}: ${displayName} [${roleTag}]</span>
           ${
             canKick
               ? `<button class="kick-btn" data-kick-slot="${p.id}" title="Vetar jugador de la sala">✕ VETAR</button>`
@@ -404,6 +440,7 @@ function isTypingInInput(): boolean {
     el === roomCodeInput ||
     el === playerNameInput ||
     el === hubPilotNameInput ||
+    el === hubJoinCodeInput ||
     el === onboardingNameInput
   );
 }
@@ -557,24 +594,36 @@ window.addEventListener('pointerup', (e) => {
 
 canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 
-function switchRoomAndUrl(rawCode: string): void {
-  const code = rawCode.trim().toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8) || generateRoomCode();
+function joinExistingRoomAsClient(rawCode: string): void {
+  const code = rawCode.trim().toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8);
+  if (!code) {
+    net.pushToast('⚠️ Escribe el código de 4 letras de la sala de tu amigo', 'warn');
+    return;
+  }
   roomCodeInput.value = code;
+  if (hubJoinCodeInput) hubJoinCodeInput.value = code;
   if (hubRoomCodeText) hubRoomCodeText.textContent = code;
   try {
     sessionStorage.setItem('tp04_my_room', code);
+    sessionStorage.removeItem('tp04_hosted_room');
     const nextUrl = new URL(window.location.href);
     nextUrl.searchParams.set('room', code);
+    nextUrl.searchParams.set('join', '1');
     window.history.replaceState({}, '', nextUrl.toString());
   } catch {
     // Ignore URL errors
   }
-  net.connectToRoom(code, playerNameInput.value);
+  net.joinRoomAsClient(code, playerNameInput.value);
 }
 
 joinRoomBtn.addEventListener('click', () => {
   sfx.playCartridgeClick();
-  switchRoomAndUrl(roomCodeInput.value);
+  joinExistingRoomAsClient(roomCodeInput.value);
+});
+
+hubJoinRoomBtn?.addEventListener('click', () => {
+  sfx.playCartridgeClick();
+  joinExistingRoomAsClient(hubJoinCodeInput?.value || roomCodeInput.value);
 });
 
 roomCodeInput.addEventListener('keydown', (e) => {
@@ -584,22 +633,44 @@ roomCodeInput.addEventListener('keydown', (e) => {
   }
 });
 
+hubJoinCodeInput?.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    hubJoinRoomBtn?.click();
+  }
+});
+
 function createFreshRoom(): void {
   sfx.playCartridgeClick();
   const freshCode = generateRoomCode();
-  switchRoomAndUrl(freshCode);
-  net.pushToast(`👑 NUEVA SALA #${freshCode} CREADA — COMPARTE EL LINK`, 'info');
+  roomCodeInput.value = freshCode;
+  if (hubJoinCodeInput) hubJoinCodeInput.value = '';
+  if (hubRoomCodeText) hubRoomCodeText.textContent = freshCode;
+  try {
+    sessionStorage.setItem('tp04_my_room', freshCode);
+    sessionStorage.setItem('tp04_hosted_room', freshCode);
+    const nextUrl = new URL(window.location.href);
+    nextUrl.searchParams.set('room', freshCode);
+    nextUrl.searchParams.delete('join');
+    window.history.replaceState({}, '', nextUrl.toString());
+  } catch {
+    // Ignore URL errors
+  }
+  net.hostRoom(freshCode, playerNameInput.value);
+  net.pushToast(`👑 SALA #${freshCode} CREADA COMO ANFITRIÓN — COMPARTE EL LINK`, 'info');
 }
 
 createNewRoomBtn?.addEventListener('click', createFreshRoom);
 hubNewRoomBtn?.addEventListener('click', createFreshRoom);
+hubLeaveRoomBtn?.addEventListener('click', createFreshRoom);
 
 function copyRoomInviteLink(): void {
   sfx.playCartridgeClick();
   const inviteUrl = new URL(window.location.href);
   inviteUrl.searchParams.set('room', net.roomCode);
+  inviteUrl.searchParams.set('join', '1');
   navigator.clipboard.writeText(inviteUrl.toString()).then(() => {
-    net.pushToast(`🔗 LINK DE SALA #${net.roomCode} COPIADO AL PORTAPAPELES`, 'join');
+    net.pushToast(`🔗 LINK DE INVITADO (#${net.roomCode}) COPIADO AL PORTAPAPELES`, 'join');
     const prevTop = copyInviteBtn.textContent;
     copyInviteBtn.textContent = '¡LINK COPIADO!';
     if (hubCopyInviteBtn) hubCopyInviteBtn.textContent = '¡LINK COPIADO!';
@@ -735,6 +806,7 @@ function cycleBotMode(): void {
 
 toggleBotsBtn.addEventListener('click', cycleBotMode);
 topBotsToggleBtn.addEventListener('click', cycleBotMode);
+hubBotsToggleBtn?.addEventListener('click', cycleBotMode);
 
 // 7. Game Step & Main Loop
 function stepGameFrame(dt: number): void {
@@ -834,7 +906,11 @@ setInterval(() => {
 }, 33);
 
 // 8. Start Room Connection & Render Loop (Last!)
-net.connectToRoom(initialRoom, savedName);
+if (startAsClient) {
+  net.joinRoomAsClient(initialRoom, savedName);
+} else {
+  net.hostRoom(initialRoom, savedName);
+}
 syncOverlaysAndHUD();
 
 let lastTime = performance.now();

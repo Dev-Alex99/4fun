@@ -138,11 +138,17 @@
                   </p>
                 </div>
                 <div class="hub-banner-actions">
+                  <button id="hubBotsToggleBtn" class="keycap-btn" title="Activar o quitar bots de la sala">
+                    🤖 BOTS: NORMAL
+                  </button>
                   <button id="hubCopyInviteBtn" class="keycap-btn keycap-orange">
                     📋 COPIAR LINK DE SALA
                   </button>
                   <button id="hubNewRoomBtn" class="keycap-btn">
-                    + CREAR SALA NUEVA
+                    👑 CREAR SALA (HOST)
+                  </button>
+                  <button id="hubLeaveRoomBtn" class="keycap-btn hidden">
+                    🚪 SALIR A MI SALA
                   </button>
                 </div>
               </div>
@@ -150,10 +156,10 @@
               <!-- Kick / Ban Notification Banner -->
               <div id="kickNoticeBanner" class="kick-banner hidden"></div>
 
-              <!-- In-Hub Pilot Name & Room Roster / Moderation Bar -->
+              <!-- In-Hub Pilot Name, Direct Client Join & Room Roster Bar -->
               <div class="hub-lobby-strip">
                 <div class="hub-pilot-box">
-                  <label class="hub-strip-label" for="hubPilotNameInput">PILOTO (TU NOMBRE):</label>
+                  <label class="hub-strip-label" for="hubPilotNameInput">1. TU PILOTO:</label>
                   <div class="hub-pilot-input-row">
                     <input
                       id="hubPilotNameInput"
@@ -163,15 +169,29 @@
                       placeholder="TU NOMBRE"
                       value="ALEX"
                     />
-                    <span class="net-compensation-tag" title="Predicción local 0ms + Compensación de Latencia activa">
-                      ⚡ ROLLBACK NETCODE
-                    </span>
+                  </div>
+                </div>
+
+                <div class="hub-pilot-box">
+                  <label class="hub-strip-label" for="hubJoinCodeInput">2. UNIRSE A SALA DE AMIGO (CLIENTE):</label>
+                  <div class="hub-pilot-input-row">
+                    <input
+                      id="hubJoinCodeInput"
+                      class="hub-pilot-input"
+                      type="text"
+                      maxlength="8"
+                      placeholder="CÓDIGO"
+                      value=""
+                    />
+                    <button id="hubJoinRoomBtn" class="keycap-btn keycap-cobalt">
+                      → ENTRAR COMO CLIENTE
+                    </button>
                   </div>
                 </div>
 
                 <div class="hub-roster-box">
                   <div class="hub-roster-header">
-                    <span class="hub-strip-label">TRIPULACIÓN EN SALA (HOST PUEDE VETAR ✕):</span>
+                    <span class="hub-strip-label">3. JUGADORES EN SALA (4 SLOTS):</span>
                     <button id="unbanAllBtn" class="keycap-btn keycap-sm hidden">
                       DESBLOQUEAR VETADOS
                     </button>

@@ -354,6 +354,8 @@ export interface ClientInputPacket {
 }
 
 export interface WorldSnapshotPacket {
+  stateSeq?: number;
+  hostName?: string;
   activeGame: ActiveGameId;
   botDifficulty?: BotDifficulty;
   tick: number;
