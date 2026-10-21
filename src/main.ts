@@ -6,7 +6,7 @@ import { HARDWARE_MODS } from './game/hardwareMods';
 import { CourtRenderer } from './render/courtRenderer';
 import { ChainPanicRenderer } from './render/chainPanicRenderer';
 import { PuttWarRenderer } from './render/puttWarRenderer';
-import { MultiplayerRoomManager } from './net/multiplayerRoom';
+import { generateRoomCode, MultiplayerRoomManager } from './net/multiplayerRoom';
 import { sfx } from './audio/mechanicalSfx';
 import { ActiveGameId, BotDifficulty, ClientInputPacket } from './types';
 
@@ -27,6 +27,7 @@ const netLed = document.getElementById('netLed') as HTMLDivElement;
 const netRoleLabel = document.getElementById('netRoleLabel') as HTMLDivElement;
 const roomCodeInput = document.getElementById('roomCodeInput') as HTMLInputElement;
 const joinRoomBtn = document.getElementById('joinRoomBtn') as HTMLButtonElement;
+const createNewRoomBtn = document.getElementById('createNewRoomBtn') as HTMLButtonElement;
 const copyInviteBtn = document.getElementById('copyInviteBtn') as HTMLButtonElement;
 const topBotsToggleBtn = document.getElementById('topBotsToggleBtn') as HTMLButtonElement;
 const soundToggleBtn = document.getElementById('soundToggleBtn') as HTMLButtonElement;
@@ -38,9 +39,13 @@ const nextSectorBtn = document.getElementById('nextSectorBtn') as HTMLButtonElem
 const chainModeBtn = document.getElementById('chainModeBtn') as HTMLButtonElement;
 const controlsLegendStrip = document.getElementById('controlsLegendStrip') as HTMLDivElement;
 const installedModsStrip = document.getElementById('installedModsStrip') as HTMLDivElement;
+const roomToastContainer = document.getElementById('roomToastContainer') as HTMLDivElement;
 
 const hubOverlay = document.getElementById('hubOverlay') as HTMLDivElement;
+const hubConnectionBadge = document.getElementById('hubConnectionBadge') as HTMLDivElement;
 const hubRoomCodeText = document.getElementById('hubRoomCodeText') as HTMLSpanElement;
+const hubCopyInviteBtn = document.getElementById('hubCopyInviteBtn') as HTMLButtonElement;
+const hubNewRoomBtn = document.getElementById('hubNewRoomBtn') as HTMLButtonElement;
 const hubPilotNameInput = document.getElementById('hubPilotNameInput') as HTMLInputElement;
 const hubRosterList = document.getElementById('hubRosterList') as HTMLDivElement;
 const unbanAllBtn = document.getElementById('unbanAllBtn') as HTMLButtonElement;
@@ -72,7 +77,20 @@ let anchorHeld = false;
 let pendingEmote = 0;
 
 const urlParams = new URLSearchParams(window.location.search);
-const initialRoom = (urlParams.get('room') || 'TP04').toUpperCase().slice(0, 8);
+const urlRoom = urlParams.get('room');
+const sessionRoom =
+  typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('tp04_my_room') : null;
+const initialRoom = (urlRoom || sessionRoom || generateRoomCode()).toUpperCase().slice(0, 8);
+try {
+  sessionStorage.setItem('tp04_my_room', initialRoom);
+  if (!urlRoom) {
+    const nextUrl = new URL(window.location.href);
+    nextUrl.searchParams.set('room', initialRoom);
+    window.history.replaceState({}, '', nextUrl.toString());
+  }
+} catch {
+  // Ignore URL/storage errors in restricted environments
+}
 roomCodeInput.value = initialRoom;
 hubRoomCodeText.textContent = initialRoom;
 
@@ -100,14 +118,46 @@ const net = new MultiplayerRoomManager(arenaEngine, chainEngine, syncOverlaysAnd
 // 5. UI & HUD Synchronization Function
 function syncOverlaysAndHUD(): void {
   const humanCount = arenaEngine.players.filter((p) => !p.isBot).length;
-  netLed.className = humanCount > 1 ? 'status-led online' : 'status-led';
+  netLed.className =
+    net.connectionState === 'CONNECTED_CLIENT' || humanCount > 1
+      ? 'status-led online'
+      : 'status-led';
+
   const pingSuffix = !net.isHost && net.pingMs > 0 ? ` • ${net.pingMs}ms` : '';
-  netRoleLabel.textContent = net.isHost
-    ? `SALA #${net.roomCode} • HOST (${humanCount}/4 HUMANOS)`
-    : `SALA #${net.roomCode} • SLOT ${net.localSlotId + 1}${pingSuffix}`;
+  if (net.connectionState === 'CONNECTING') {
+    netRoleLabel.textContent = `🟡 CONECTANDO A SALA #${net.roomCode}...`;
+    if (hubConnectionBadge) {
+      hubConnectionBadge.textContent = `🟡 CONECTANDO CON EL ANFITRIÓN DE SALA #${net.roomCode}...`;
+    }
+  } else if (net.connectionState === 'RECONNECTING') {
+    netRoleLabel.textContent = `🔄 RECONECTANDO A SALA #${net.roomCode}...`;
+    if (hubConnectionBadge) {
+      hubConnectionBadge.textContent = `🔄 RECONECTANDO CON LA SALA #${net.roomCode}...`;
+    }
+  } else if (net.isHost) {
+    netRoleLabel.textContent = `🟢 SALA #${net.roomCode} • ANFITRIÓN (${humanCount}/4 EN LÍNEA)`;
+    if (hubConnectionBadge) {
+      hubConnectionBadge.textContent = `🟢 ERES ANFITRIÓN DE SALA #${net.roomCode} (${humanCount}/4 HUMANOS EN LÍNEA)`;
+    }
+  } else {
+    netRoleLabel.textContent = `🟢 SALA #${net.roomCode} • JUGADOR ${net.localSlotId + 1}${pingSuffix}`;
+    if (hubConnectionBadge) {
+      hubConnectionBadge.textContent = `🟢 CONECTADO A SALA #${net.roomCode} • ERES JUGADOR ${net.localSlotId + 1}${pingSuffix}`;
+    }
+  }
+
   if (hubRoomCodeText) hubRoomCodeText.textContent = net.roomCode;
   if (roomCodeInput && document.activeElement !== roomCodeInput) {
     roomCodeInput.value = net.roomCode;
+  }
+
+  // Render Live Join / Leave Toasts
+  if (roomToastContainer) {
+    roomToastContainer.innerHTML = net.toasts
+      .map(
+        (t) => `<div class="room-toast tone-${t.tone}">${t.text}</div>`
+      )
+      .join('');
   }
 
   // Kick Notice Banner
@@ -492,26 +542,61 @@ window.addEventListener('pointerup', (e) => {
 
 canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 
-joinRoomBtn.addEventListener('click', () => {
-  const code = roomCodeInput.value.trim().toUpperCase() || 'TP04';
-  hubRoomCodeText.textContent = code;
-  const nextUrl = new URL(window.location.href);
-  nextUrl.searchParams.set('room', code);
-  window.history.replaceState({}, '', nextUrl.toString());
+function switchRoomAndUrl(rawCode: string): void {
+  const code = rawCode.trim().toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8) || generateRoomCode();
+  roomCodeInput.value = code;
+  if (hubRoomCodeText) hubRoomCodeText.textContent = code;
+  try {
+    sessionStorage.setItem('tp04_my_room', code);
+    const nextUrl = new URL(window.location.href);
+    nextUrl.searchParams.set('room', code);
+    window.history.replaceState({}, '', nextUrl.toString());
+  } catch {
+    // Ignore URL errors
+  }
   net.connectToRoom(code, playerNameInput.value);
+}
+
+joinRoomBtn.addEventListener('click', () => {
+  sfx.playCartridgeClick();
+  switchRoomAndUrl(roomCodeInput.value);
 });
 
-copyInviteBtn.addEventListener('click', () => {
+roomCodeInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    joinRoomBtn.click();
+  }
+});
+
+function createFreshRoom(): void {
+  sfx.playCartridgeClick();
+  const freshCode = generateRoomCode();
+  switchRoomAndUrl(freshCode);
+  net.pushToast(`👑 NUEVA SALA #${freshCode} CREADA — COMPARTE EL LINK`, 'info');
+}
+
+createNewRoomBtn?.addEventListener('click', createFreshRoom);
+hubNewRoomBtn?.addEventListener('click', createFreshRoom);
+
+function copyRoomInviteLink(): void {
+  sfx.playCartridgeClick();
   const inviteUrl = new URL(window.location.href);
   inviteUrl.searchParams.set('room', net.roomCode);
   navigator.clipboard.writeText(inviteUrl.toString()).then(() => {
-    const prev = copyInviteBtn.textContent;
+    net.pushToast(`🔗 LINK DE SALA #${net.roomCode} COPIADO AL PORTAPAPELES`, 'join');
+    const prevTop = copyInviteBtn.textContent;
     copyInviteBtn.textContent = '¡LINK COPIADO!';
+    if (hubCopyInviteBtn) hubCopyInviteBtn.textContent = '¡LINK COPIADO!';
     setTimeout(() => {
-      copyInviteBtn.textContent = prev;
+      copyInviteBtn.textContent = prevTop;
+      if (hubCopyInviteBtn) hubCopyInviteBtn.textContent = '📋 COPIAR LINK DE SALA';
     }, 1600);
   });
-});
+}
+
+copyInviteBtn.addEventListener('click', copyRoomInviteLink);
+hubCopyInviteBtn?.addEventListener('click', copyRoomInviteLink);
 
 soundToggleBtn.addEventListener('click', () => {
   sfx.enabled = !sfx.enabled;

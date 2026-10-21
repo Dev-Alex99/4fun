@@ -244,4 +244,37 @@ describe('MultiplayerRoomManager Anti-Freeze Watchdog & Moderation', () => {
     expect(net.bannedPeerIds.has('P-GRIEFER')).toBe(true);
     expect(arena.players[1].isBot).toBe(true);
   });
+
+  it('tracks peer join & leave cleanly and notifies all players with toasts', () => {
+    const arena = new ArenaEngine();
+    const chain = new ChainPanicEngine();
+    const net = new MultiplayerRoomManager(arena, chain, () => {});
+
+    // Simulate incoming JOIN_CLAIM from friend P-FRIEND1
+    (net as unknown as { handleEnvelope: (env: unknown, reply: () => void) => void }).handleEnvelope(
+      {
+        sender: 'P-FRIEND1',
+        type: 'JOIN_CLAIM',
+        payload: { peerId: 'P-FRIEND1', name: 'MATEO' }
+      },
+      () => {}
+    );
+
+    expect(arena.players[1].isBot).toBe(false);
+    expect(arena.players[1].name).toBe('MATEO');
+    expect(net.toasts.some((t) => t.text.includes('MATEO SE UNIÓ'))).toBe(true);
+
+    // Simulate P-FRIEND1 leaving the room (PEER_LEAVE)
+    (net as unknown as { handleEnvelope: (env: unknown, reply: () => void) => void }).handleEnvelope(
+      {
+        sender: 'P-FRIEND1',
+        type: 'PEER_LEAVE',
+        payload: { peerId: 'P-FRIEND1' }
+      },
+      () => {}
+    );
+
+    expect(arena.players[1].isBot).toBe(true);
+    expect(net.toasts.some((t) => t.text.includes('MATEO SALIÓ'))).toBe(true);
+  });
 });

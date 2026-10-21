@@ -54,12 +54,17 @@
                 type="text"
                 maxlength="8"
                 value="TP04"
-                title="Código de sala (compártelo con tus 3 amigos)"
+                title="Escribe el código de tu amigo y pulsa UNIRSE"
               />
-              <button id="joinRoomBtn" class="keycap-btn keycap-sm">IR</button>
+              <button id="joinRoomBtn" class="keycap-btn keycap-sm" title="Unirse a este código de sala">
+                UNIRSE
+              </button>
+              <button id="createNewRoomBtn" class="keycap-btn keycap-sm" title="Crear una sala nueva con código propio">
+                + NUEVA
+              </button>
             </div>
-            <button id="copyInviteBtn" class="keycap-btn keycap-orange" title="Copiar link directo para Discord">
-              COPIAR LINK (4P)
+            <button id="copyInviteBtn" class="keycap-btn keycap-orange" title="Copiar link directo para WhatsApp/Discord">
+              📋 INVITAR AMIGOS
             </button>
             <button id="topBotsToggleBtn" class="keycap-btn" title="Cambiar dificultad o quitar todos los bots">
               🤖 BOTS: NORMAL
@@ -76,6 +81,9 @@
         <!-- Recessed 3/4 Perspective Tabletop Arena -->
         <section class="arena-well">
           <canvas id="courtCanvas" tabindex="0"></canvas>
+
+          <!-- Live Room Join / Leave Notification Toasts -->
+          <div id="roomToastContainer" class="room-toast-container"></div>
 
           <!-- Floating Top-Left Player Identity & Bot Toggle Bar -->
           <div class="hud-top-bar">
@@ -123,13 +131,20 @@
             <div class="hub-container">
               <div class="hub-banner">
                 <div>
-                  <div class="hub-eyebrow">ESTACIÓN MULTIJUGADOR P2P // 1 LINK PARA LOS 4 AMIGOS</div>
-                  <h1 class="hub-title">SELECCIONA UN CARTUCHO DE JUEGO</h1>
+                  <div class="hub-eyebrow" id="hubConnectionBadge">🟢 SALA ACTIVA // MULTIJUGADOR P2P EN TIEMPO REAL</div>
+                  <h1 class="hub-title">SALA #<span id="hubRoomCodeText">TP04</span> — SELECCIONA UN JUEGO</h1>
                   <p class="hub-desc">
-                    Tus amigos conectados a la sala <strong>#<span id="hubRoomCodeText">TP04</span></strong> cambiarán de juego automáticamente cuando elijas un cartucho aquí o en la barra superior.
+                    Comparte el link con tus amigos para que entren directo a esta sala, o escribe el código de un amigo arriba para unirte.
                   </p>
                 </div>
-                <div class="hazard-badge"></div>
+                <div class="hub-banner-actions">
+                  <button id="hubCopyInviteBtn" class="keycap-btn keycap-orange">
+                    📋 COPIAR LINK DE SALA
+                  </button>
+                  <button id="hubNewRoomBtn" class="keycap-btn">
+                    + CREAR SALA NUEVA
+                  </button>
+                </div>
               </div>
 
               <!-- Kick / Ban Notification Banner -->

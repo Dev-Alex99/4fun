@@ -4,6 +4,14 @@ import { ChainPanicEngine } from '../game/chainPanicEngine';
 import { PuttWarEngine } from '../game/puttWarEngine';
 import { ActiveGameId, ClientInputPacket, WorldSnapshotPacket } from '../types';
 
+export type RoomConnectionState = 'HOSTING' | 'CONNECTING' | 'CONNECTED_CLIENT' | 'RECONNECTING';
+
+export interface RoomToastEvent {
+  id: number;
+  text: string;
+  tone: 'join' | 'leave' | 'info' | 'warn';
+}
+
 interface NetEnvelope {
   sender: string;
   type:
@@ -13,6 +21,8 @@ interface NetEnvelope {
     | 'WORLD_SNAP'
     | 'DRAFT_PICK'
     | 'KICK_PEER'
+    | 'PEER_LEAVE'
+    | 'ROOM_EVENT'
     | 'PING_REQ'
     | 'PING_ACK';
   payload: unknown;
@@ -26,6 +36,7 @@ interface JoinClaimMsg {
 interface SlotAssignMsg {
   peerId: string;
   slotId: number;
+  hostName: string;
 }
 
 interface DraftPickMsg {
@@ -38,19 +49,41 @@ interface KickPeerMsg {
   reason: string;
 }
 
-const HOST_ID_PREFIX = 'tp04-party-deck-v2-';
+interface RoomEventMsg {
+  text: string;
+  tone: 'join' | 'leave' | 'info' | 'warn';
+}
+
+const HOST_ID_PREFIX = 'tp04-deck-room-v3-';
 const DEFAULT_BOT_NAMES = ['UNIT-01', 'LEO-BOT', 'MAX-BOT', 'NICO-BOT'];
+
+const ICE_SERVERS: RTCIceServer[] = [
+  { urls: 'stun:stun.l.google.com:19302' },
+  { urls: 'stun:stun1.l.google.com:19302' },
+  { urls: 'stun:stun2.l.google.com:19302' }
+];
+
+export function generateRoomCode(): string {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let code = '';
+  for (let i = 0; i < 4; i++) {
+    code += chars[Math.floor(Math.random() * chars.length)];
+  }
+  return code;
+}
 
 export class MultiplayerRoomManager {
   public roomCode = 'TP04';
   public localPeerId: string;
   public localSlotId = 0;
   public isHost = true;
+  public connectionState: RoomConnectionState = 'HOSTING';
   public activeGame: ActiveGameId = 'HUB';
   public connectedPeersCount = 0;
   public pingMs = 0;
   public bannedPeerIds = new Set<string>();
   public kickedNotice: string | null = null;
+  public toasts: RoomToastEvent[] = [];
 
   private arenaEngine: ArenaEngine;
   private chainEngine: ChainPanicEngine;
@@ -60,10 +93,17 @@ export class MultiplayerRoomManager {
   private peer: Peer | null = null;
   private hostConn: DataConnection | null = null;
   private clientConns = new Map<string, DataConnection>();
+  private connToLogicalPeer = new Map<string, string>();
+  private peerToSlot = new Map<string, number>();
+  private peerLastSeen = new Map<string, number>();
   private localBus: BroadcastChannel | null = null;
 
   private lastHostSnapReceivedAt = -10000;
   private rtcBroadcastCounter = 0;
+  private nextToastId = 1;
+  private handshakeTimer: ReturnType<typeof setTimeout> | null = null;
+  private heartbeatInterval: ReturnType<typeof setInterval> | null = null;
+  private hostEpoch = 0;
 
   constructor(
     arenaEngine: ArenaEngine,
@@ -75,7 +115,44 @@ export class MultiplayerRoomManager {
     this.chainEngine = chainEngine;
     this.onStatusUpdate = onStatusUpdate;
     this.puttEngine = puttEngine;
-    this.localPeerId = 'P-' + Math.random().toString(36).substring(2, 8).toUpperCase();
+
+    // Persist localPeerId in sessionStorage so refreshing the tab keeps your identity & slot!
+    const existingId =
+      typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('tp04_peer_id') : null;
+    if (existingId) {
+      this.localPeerId = existingId;
+    } else {
+      this.localPeerId = 'P-' + Math.random().toString(36).substring(2, 8).toUpperCase();
+      try {
+        sessionStorage.setItem('tp04_peer_id', this.localPeerId);
+      } catch {
+        // Ignore storage errors
+      }
+    }
+
+    if (typeof window !== 'undefined') {
+      window.addEventListener('beforeunload', () => {
+        this.disconnectCleanly();
+      });
+    }
+
+    this.startHeartbeatMonitor();
+  }
+
+  public pushToast(text: string, tone: 'join' | 'leave' | 'info' | 'warn' = 'info'): void {
+    const id = this.nextToastId++;
+    this.toasts.push({ id, text, tone });
+    if (this.toasts.length > 4) {
+      this.toasts.shift();
+    }
+    this.onStatusUpdate();
+    setTimeout(() => {
+      const idx = this.toasts.findIndex((t) => t.id === id);
+      if (idx !== -1) {
+        this.toasts.splice(idx, 1);
+        this.onStatusUpdate();
+      }
+    }, 4200);
   }
 
   /**
@@ -114,6 +191,7 @@ export class MultiplayerRoomManager {
     if (!target || target.isBot || !target.peerId) return false;
 
     const kickedPeerId = target.peerId;
+    const kickedName = target.name;
     this.bannedPeerIds.add(kickedPeerId);
 
     const kickEnv: NetEnvelope = {
@@ -130,30 +208,121 @@ export class MultiplayerRoomManager {
       if (conn.open) conn.send(kickEnv);
     });
 
-    // Reset slot back to Bot
-    target.peerId = null;
-    target.isBot = true;
-    target.name = DEFAULT_BOT_NAMES[slotId] || `BOT-0${slotId + 1}`;
-    target.alive = this.arenaEngine.botDifficulty !== 'OFF';
-
-    this.syncEnginesRoster();
-    this.broadcastHostSnapshot(true);
-    this.onStatusUpdate();
+    this.freeSlotForPeer(kickedPeerId, `🚫 ${kickedName} FUE VETADO DE LA SALA`);
     return true;
   }
 
   public clearBanList(): void {
     this.bannedPeerIds.clear();
+    this.pushToast('Lista de vetados desbloqueada', 'info');
     this.onStatusUpdate();
   }
 
-  public connectToRoom(rawCode: string, playerName: string): void {
-    const cleanCode = (rawCode.trim().toUpperCase() || 'TP04').replace(/[^A-Z0-9]/g, '').slice(0, 8) || 'TP04';
+  private freeSlotForPeer(peerId: string, customReason?: string): void {
+    const slotPlayer = this.arenaEngine.players.find(
+      (p, idx) => idx > 0 && p.peerId === peerId && !p.isBot
+    );
+    this.peerToSlot.delete(peerId);
+    this.peerLastSeen.delete(peerId);
+
+    if (!slotPlayer) return;
+
+    const departedName = slotPlayer.name;
+    const slotIdx = slotPlayer.id;
+    slotPlayer.peerId = null;
+    slotPlayer.isBot = true;
+    slotPlayer.name = DEFAULT_BOT_NAMES[slotIdx] || `BOT-0${slotIdx + 1}`;
+    slotPlayer.alive = this.arenaEngine.botDifficulty !== 'OFF';
+
+    this.connectedPeersCount = this.arenaEngine.players.filter(
+      (p, idx) => idx > 0 && !p.isBot
+    ).length;
+
+    this.syncEnginesRoster();
+    const msg = customReason || `👋 ${departedName} SALIÓ DE LA SALA`;
+    this.pushToast(msg, 'leave');
+    this.broadcastRoomEvent(msg, 'leave');
+    this.broadcastHostSnapshot(true);
+    this.onStatusUpdate();
+  }
+
+  private broadcastRoomEvent(text: string, tone: 'join' | 'leave' | 'info' | 'warn'): void {
+    if (!this.isHost) return;
+    const env: NetEnvelope = {
+      sender: this.localPeerId,
+      type: 'ROOM_EVENT',
+      payload: { text, tone } satisfies RoomEventMsg
+    };
+    this.localBus?.postMessage(env);
+    this.clientConns.forEach((conn) => {
+      if (conn.open) conn.send(env);
+    });
+  }
+
+  private startHeartbeatMonitor(): void {
+    if (this.heartbeatInterval) clearInterval(this.heartbeatInterval);
+    this.heartbeatInterval = setInterval(() => {
+      const now = performance.now();
+      if (this.isHost) {
+        // Check if any remote human peer timed out (>6.5 seconds without any packet)
+        this.peerLastSeen.forEach((lastSeen, peerId) => {
+          if (now - lastSeen > 6500) {
+            this.freeSlotForPeer(peerId);
+          }
+        });
+      } else {
+        // Client: if Host stopped sending snapshots for >4.5 seconds, attempt automatic reconnect
+        if (
+          this.connectionState === 'CONNECTED_CLIENT' &&
+          this.lastHostSnapReceivedAt > 0 &&
+          now - this.lastHostSnapReceivedAt > 4500
+        ) {
+          this.connectionState = 'RECONNECTING';
+          this.onStatusUpdate();
+          const myName = this.arenaEngine.players[this.localSlotId]?.name || 'PILOTO';
+          this.connectToRoom(this.roomCode, myName);
+        }
+      }
+    }, 1500);
+  }
+
+  public disconnectCleanly(): void {
+    const leaveEnv: NetEnvelope = {
+      sender: this.localPeerId,
+      type: 'PEER_LEAVE',
+      payload: { peerId: this.localPeerId }
+    };
+    try {
+      this.localBus?.postMessage(leaveEnv);
+      if (this.hostConn?.open) {
+        this.hostConn.send(leaveEnv);
+      }
+      this.clientConns.forEach((c) => c.close());
+      this.hostConn?.close();
+      this.peer?.destroy();
+    } catch {
+      // Ignore unload errors
+    }
+  }
+
+  public connectToRoom(rawCode: string, playerName: string, epoch = 0): void {
+    const cleanCode =
+      (rawCode.trim().toUpperCase() || 'TP04').replace(/[^A-Z0-9]/g, '').slice(0, 8) || 'TP04';
     this.roomCode = cleanCode;
+    this.hostEpoch = epoch;
+
+    if (this.handshakeTimer) {
+      clearTimeout(this.handshakeTimer);
+      this.handshakeTimer = null;
+    }
 
     // Clean up previous connections
     this.clientConns.forEach((c) => c.close());
     this.clientConns.clear();
+    this.connToLogicalPeer.clear();
+    this.peerToSlot.clear();
+    this.peerLastSeen.clear();
+
     if (this.hostConn) {
       this.hostConn.close();
       this.hostConn = null;
@@ -167,47 +336,93 @@ export class MultiplayerRoomManager {
       this.localBus = null;
     }
 
+    // Reset slots 1..3 to bots when initializing a new room
     this.isHost = true;
+    this.connectionState = 'HOSTING';
     this.localSlotId = 0;
-    this.arenaEngine.players[0].peerId = this.localPeerId;
-    this.arenaEngine.players[0].isBot = false;
-    this.arenaEngine.players[0].name = playerName.toUpperCase();
-    const roster = this.arenaEngine.players.map((p) => ({ name: p.name, isBot: p.isBot }));
-    const botsActive = this.arenaEngine.botDifficulty !== 'OFF';
-    this.chainEngine.syncPlayerIdentities(roster, botsActive);
-    this.puttEngine?.syncPlayerIdentities(roster, botsActive);
+    this.connectedPeersCount = 0;
 
-    // 1. Setup WebRTC PeerJS (Clean, fast, zero Nostr relay errors)
-    const hostPeerId = `${HOST_ID_PREFIX}${cleanCode}`;
+    this.arenaEngine.players.forEach((p, idx) => {
+      if (idx === 0) {
+        p.peerId = this.localPeerId;
+        p.isBot = false;
+        p.name = playerName.toUpperCase();
+        p.alive = true;
+      } else {
+        p.peerId = null;
+        p.isBot = true;
+        p.name = DEFAULT_BOT_NAMES[idx] || `BOT-0${idx + 1}`;
+        p.alive = this.arenaEngine.botDifficulty !== 'OFF';
+      }
+    });
+    this.syncEnginesRoster();
+
+    // 1. Setup BroadcastChannel for instant same-browser multi-tab sync
+    this.localBus = new BroadcastChannel(`tp04_bus_v3_${cleanCode}`);
+    this.localBus.onmessage = (ev) => {
+      const env = ev.data as NetEnvelope;
+      if (!env || env.sender === this.localPeerId) return;
+      this.handleEnvelope(env, (reply) => {
+        this.localBus?.postMessage(reply);
+      });
+    };
+
+    // Broadcast JOIN_CLAIM on local BroadcastChannel in case another tab in this browser is already Host
+    this.localBus.postMessage({
+      sender: this.localPeerId,
+      type: 'JOIN_CLAIM',
+      payload: { peerId: this.localPeerId, name: playerName.toUpperCase() }
+    } satisfies NetEnvelope);
+
+    // 2. Setup WebRTC PeerJS with explicit Google STUN servers for reliable cross-network P2P
+    const hostPeerId =
+      epoch === 0 ? `${HOST_ID_PREFIX}${cleanCode}` : `${HOST_ID_PREFIX}${cleanCode}-${epoch}`;
     try {
-      const peer = new Peer(hostPeerId);
+      const peer = new Peer(hostPeerId, {
+        config: { iceServers: ICE_SERVERS }
+      });
       this.peer = peer;
 
       peer.on('open', () => {
-        // Successfully claimed the Host ID for this room!
-        this.isHost = true;
-        this.localSlotId = 0;
+        if (!this.isHost) return;
+        this.connectionState = 'HOSTING';
         this.onStatusUpdate();
       });
 
       peer.on('connection', (conn) => {
-        // Incoming friend connection to our Host!
         conn.on('open', () => {
           this.clientConns.set(conn.peer, conn);
-          this.connectedPeersCount = this.clientConns.size;
           this.onStatusUpdate();
         });
 
         conn.on('data', (raw) => {
-          this.handleEnvelope(raw as NetEnvelope, (reply) => {
+          const env = raw as NetEnvelope;
+          if (env && env.sender) {
+            this.connToLogicalPeer.set(conn.peer, env.sender);
+            this.peerLastSeen.set(env.sender, performance.now());
+          }
+          this.handleEnvelope(env, (reply) => {
             if (conn.open) conn.send(reply);
           });
         });
 
         conn.on('close', () => {
           this.clientConns.delete(conn.peer);
-          this.connectedPeersCount = this.clientConns.size;
+          const logicalPeerId = this.connToLogicalPeer.get(conn.peer);
+          this.connToLogicalPeer.delete(conn.peer);
+          if (logicalPeerId) {
+            this.freeSlotForPeer(logicalPeerId);
+          }
           this.onStatusUpdate();
+        });
+
+        conn.on('error', () => {
+          this.clientConns.delete(conn.peer);
+          const logicalPeerId = this.connToLogicalPeer.get(conn.peer);
+          this.connToLogicalPeer.delete(conn.peer);
+          if (logicalPeerId) {
+            this.freeSlotForPeer(logicalPeerId);
+          }
         });
       });
 
@@ -218,25 +433,8 @@ export class MultiplayerRoomManager {
         }
       });
     } catch {
-      // Offline fallback
+      // Offline / test fallback
     }
-
-    // 2. Also setup BroadcastChannel for same-browser multi-tab testing
-    this.localBus = new BroadcastChannel(`tp04_bus_v2_${cleanCode}`);
-    this.localBus.onmessage = (ev) => {
-      const env = ev.data as NetEnvelope;
-      if (!env || env.sender === this.localPeerId) return;
-      this.handleEnvelope(env, (reply) => {
-        this.localBus?.postMessage(reply);
-      });
-    };
-
-    // Only claim join over BroadcastChannel if another tab in the same browser is actively running
-    this.localBus.postMessage({
-      sender: this.localPeerId,
-      type: 'JOIN_CLAIM',
-      payload: { peerId: this.localPeerId, name: playerName }
-    } satisfies NetEnvelope);
 
     this.onStatusUpdate();
   }
@@ -244,35 +442,59 @@ export class MultiplayerRoomManager {
   private connectAsPeerClient(hostPeerId: string, playerName: string): void {
     if (this.peer) {
       this.peer.destroy();
+      this.peer = null;
     }
-    const clientPeer = new Peer();
-    this.peer = clientPeer;
 
-    clientPeer.on('open', () => {
-      const conn = clientPeer.connect(hostPeerId, { reliable: false });
-      this.hostConn = conn;
+    this.connectionState = 'CONNECTING';
+    this.onStatusUpdate();
 
-      conn.on('open', () => {
-        this.connectedPeersCount = 1;
-        conn.send({
-          sender: this.localPeerId,
-          type: 'JOIN_CLAIM',
-          payload: { peerId: this.localPeerId, name: playerName }
-        } satisfies NetEnvelope);
-        this.onStatusUpdate();
+    try {
+      const clientPeer = new Peer({
+        config: { iceServers: ICE_SERVERS }
       });
+      this.peer = clientPeer;
 
-      conn.on('data', (raw) => {
-        this.handleEnvelope(raw as NetEnvelope, () => {});
-      });
+      // Handshake Watchdog: if the Host ID on PeerJS is a dead "ghost" session (e.g. Host refreshed page)
+      // and doesn't answer within 3.8s, automatically take over as Host on epoch+1 so room never breaks!
+      if (this.handshakeTimer) clearTimeout(this.handshakeTimer);
+      this.handshakeTimer = setTimeout(() => {
+        if (this.connectionState === 'CONNECTING') {
+          this.connectToRoom(this.roomCode, playerName, this.hostEpoch + 1);
+        }
+      }, 3800);
 
-      conn.on('close', () => {
-        // Host disconnected -> become local Host so game never freezes
-        this.isHost = true;
-        this.connectedPeersCount = 0;
-        this.onStatusUpdate();
+      clientPeer.on('open', () => {
+        const conn = clientPeer.connect(hostPeerId, { reliable: true });
+        this.hostConn = conn;
+
+        conn.on('open', () => {
+          conn.send({
+            sender: this.localPeerId,
+            type: 'JOIN_CLAIM',
+            payload: { peerId: this.localPeerId, name: playerName.toUpperCase() }
+          } satisfies NetEnvelope);
+          this.onStatusUpdate();
+        });
+
+        conn.on('data', (raw) => {
+          this.handleEnvelope(raw as NetEnvelope, (reply) => {
+            if (conn.open) conn.send(reply);
+          });
+        });
+
+        conn.on('close', () => {
+          // Host closed their tab! Promote this tab or notify
+          this.pushToast('⚠️ EL HOST CERRÓ LA SALA — AHORA ERES EL HOST', 'warn');
+          this.isHost = true;
+          this.connectionState = 'HOSTING';
+          this.connectedPeersCount = 0;
+          this.connectToRoom(this.roomCode, playerName, this.hostEpoch + 1);
+        });
       });
-    });
+    } catch {
+      this.isHost = true;
+      this.connectionState = 'HOSTING';
+    }
   }
 
   private handleEnvelope(
@@ -294,23 +516,52 @@ export class MultiplayerRoomManager {
         });
         return;
       }
+
+      const isNewJoin = !this.arenaEngine.players.some(
+        (p) => p.peerId === claim.peerId && !p.isBot
+      );
       const assignedSlot = this.assignSlotForPeer(claim.peerId, claim.name);
+      this.peerToSlot.set(claim.peerId, assignedSlot);
+      this.peerLastSeen.set(claim.peerId, performance.now());
+
       replyFn({
         sender: this.localPeerId,
         type: 'SLOT_ASSIGN',
-        payload: { peerId: claim.peerId, slotId: assignedSlot } satisfies SlotAssignMsg
+        payload: {
+          peerId: claim.peerId,
+          slotId: assignedSlot,
+          hostName: this.arenaEngine.players[0].name
+        } satisfies SlotAssignMsg
       });
+
+      if (isNewJoin) {
+        const joinText = `🟢 ¡${claim.name.toUpperCase()} SE UNIÓ A LA SALA! (SLOT ${assignedSlot + 1})`;
+        this.pushToast(joinText, 'join');
+        this.broadcastRoomEvent(joinText, 'join');
+      }
+
       this.broadcastHostSnapshot(true);
       this.onStatusUpdate();
+    } else if (env.type === 'PEER_LEAVE' && this.isHost) {
+      const data = env.payload as { peerId: string };
+      if (data?.peerId) {
+        this.freeSlotForPeer(data.peerId);
+      }
+    } else if (env.type === 'ROOM_EVENT' && !this.isHost) {
+      const evMsg = env.payload as RoomEventMsg;
+      if (evMsg?.text) {
+        this.pushToast(evMsg.text, evMsg.tone);
+      }
     } else if (env.type === 'KICK_PEER') {
       const kick = env.payload as KickPeerMsg;
       if (kick.targetPeerId === this.localPeerId) {
         this.kickedNotice = kick.reason;
-        const soloCode = 'SOLO' + Math.floor(10 + Math.random() * 89);
+        const soloCode = generateRoomCode();
         this.connectToRoom(soloCode, this.arenaEngine.players[this.localSlotId]?.name || 'PILOTO');
         this.onStatusUpdate();
       }
     } else if (env.type === 'PING_REQ' && this.isHost) {
+      this.peerLastSeen.set(env.sender, performance.now());
       replyFn({
         sender: this.localPeerId,
         type: 'PING_ACK',
@@ -324,13 +575,26 @@ export class MultiplayerRoomManager {
     } else if (env.type === 'SLOT_ASSIGN') {
       const assign = env.payload as SlotAssignMsg;
       if (assign.peerId === this.localPeerId) {
+        if (this.handshakeTimer) {
+          clearTimeout(this.handshakeTimer);
+          this.handshakeTimer = null;
+        }
+        const wasConnecting = this.connectionState !== 'CONNECTED_CLIENT';
         this.isHost = false;
+        this.connectionState = 'CONNECTED_CLIENT';
         this.localSlotId = assign.slotId;
         this.lastHostSnapReceivedAt = performance.now();
+        if (wasConnecting) {
+          this.pushToast(
+            `🟢 CONECTADO A SALA #${this.roomCode} DE ${assign.hostName} (SLOT ${assign.slotId + 1})`,
+            'join'
+          );
+        }
         this.onStatusUpdate();
       }
     } else if (env.type === 'CLIENT_INPUT' && this.isHost) {
       if (this.bannedPeerIds.has(env.sender)) return;
+      this.peerLastSeen.set(env.sender, performance.now());
       const inp = env.payload as ClientInputPacket;
       const prevName = this.arenaEngine.players[inp.slotId]?.name;
       this.arenaEngine.applyRemoteInput(inp);
@@ -341,9 +605,15 @@ export class MultiplayerRoomManager {
         this.onStatusUpdate();
       }
     } else if (env.type === 'WORLD_SNAP' && !this.isHost) {
+      if (this.handshakeTimer) {
+        clearTimeout(this.handshakeTimer);
+        this.handshakeTimer = null;
+      }
+      this.connectionState = 'CONNECTED_CLIENT';
       this.lastHostSnapReceivedAt = performance.now();
       const snap = env.payload as WorldSnapshotPacket;
       const prevGame = this.activeGame;
+      const prevHumanCount = this.arenaEngine.players.filter((p) => !p.isBot).length;
       this.activeGame = snap.activeGame;
       this.arenaEngine.applySnapshot(snap, this.localSlotId);
       if (snap.chainState) {
@@ -352,10 +622,12 @@ export class MultiplayerRoomManager {
       if (snap.puttState) {
         this.puttEngine?.applySnapshot(snap.puttState);
       }
-      if (prevGame !== this.activeGame) {
+      const newHumanCount = this.arenaEngine.players.filter((p) => !p.isBot).length;
+      if (prevGame !== this.activeGame || prevHumanCount !== newHumanCount) {
         this.onStatusUpdate();
       }
     } else if (env.type === 'DRAFT_PICK' && this.isHost) {
+      this.peerLastSeen.set(env.sender, performance.now());
       const pick = env.payload as DraftPickMsg;
       this.arenaEngine.selectDraftMod(pick.slotId, pick.modId);
     }
@@ -367,10 +639,10 @@ export class MultiplayerRoomManager {
       existing.isBot = false;
       existing.name = name.slice(0, 10).toUpperCase();
       existing.alive = true;
-      const roster = this.arenaEngine.players.map((p) => ({ name: p.name, isBot: p.isBot }));
-      const botsActive = this.arenaEngine.botDifficulty !== 'OFF';
-      this.chainEngine.syncPlayerIdentities(roster, botsActive);
-      this.puttEngine?.syncPlayerIdentities(roster, botsActive);
+      this.connectedPeersCount = this.arenaEngine.players.filter(
+        (p, idx) => idx > 0 && !p.isBot
+      ).length;
+      this.syncEnginesRoster();
       return existing.id;
     }
 
@@ -381,10 +653,10 @@ export class MultiplayerRoomManager {
     targetSlot.name = name.slice(0, 10).toUpperCase();
     targetSlot.alive = true;
 
-    const roster = this.arenaEngine.players.map((p) => ({ name: p.name, isBot: p.isBot }));
-    const botsActive = this.arenaEngine.botDifficulty !== 'OFF';
-    this.chainEngine.syncPlayerIdentities(roster, botsActive);
-    this.puttEngine?.syncPlayerIdentities(roster, botsActive);
+    this.connectedPeersCount = this.arenaEngine.players.filter(
+      (p, idx) => idx > 0 && !p.isBot
+    ).length;
+    this.syncEnginesRoster();
     return targetSlot.id;
   }
 
@@ -400,9 +672,9 @@ export class MultiplayerRoomManager {
       this.hostConn.send(env);
     }
 
-    // Periodic lightweight ping measurement every ~30 frames
+    // Periodic lightweight ping/heartbeat every ~25 frames
     this.rtcBroadcastCounter++;
-    if (this.rtcBroadcastCounter % 30 === 0) {
+    if (this.rtcBroadcastCounter % 25 === 0) {
       const pingEnv: NetEnvelope = {
         sender: this.localPeerId,
         type: 'PING_REQ',
@@ -430,7 +702,7 @@ export class MultiplayerRoomManager {
 
     this.localBus?.postMessage(env);
 
-    // Send at full 60Hz over WebRTC DataChannel (reliable: false) for minimum latency!
+    // Send at full 60Hz over WebRTC DataChannel for minimum latency!
     this.clientConns.forEach((conn) => {
       if (conn.open) conn.send(env);
     });
