@@ -476,6 +476,11 @@ export class ArenaEngine {
         if (p.emoteTimer <= 0) p.emoteText = null;
       }
 
+      if (p.isBot && this.botDifficulty === 'OFF') {
+        p.alive = false;
+        return;
+      }
+
       if (!p.alive) return;
 
       if (p.parryTimer > 0) p.parryTimer = Math.max(0, p.parryTimer - dt);
@@ -716,6 +721,7 @@ export class ArenaEngine {
   }
 
   public getSnapshot(): WorldSnapshotPacket {
+    const botsActive = this.botDifficulty !== 'OFF';
     return {
       activeGame: 'BASH_BOT',
       botDifficulty: this.botDifficulty,
@@ -727,8 +733,11 @@ export class ArenaEngine {
       comboCount: this.comboCount,
       lastRoundWinnerId: this.lastRoundWinnerId,
       draftOptions: this.draftOptions,
-      players: this.players,
-      balls: this.balls,
+      players: this.players.map(({ lastKOAt: _ko, ...p }) => ({
+        ...p,
+        alive: p.isBot && !botsActive ? false : p.alive
+      })),
+      balls: this.balls.map((b) => ({ ...b, trail: [] })),
       bumpers: this.bumpers
     };
   }
@@ -798,16 +807,20 @@ export class ArenaEngine {
     this.lastRoundWinnerId = snap.lastRoundWinnerId;
     this.draftOptions = snap.draftOptions;
 
+    const botsActive = this.botDifficulty !== 'OFF';
+
     // Preserve local player's predicted movement/swing to eliminate rubber-banding & input lag
     this.players = snap.players.map((sp) => {
+      const sanitizedAlive = sp.isBot && !botsActive ? false : sp.alive;
       const prev = this.players[sp.id];
-      if (!prev) return { ...sp };
+      if (!prev) return { ...sp, alive: sanitizedAlive };
 
-      if (localSlotId !== undefined && sp.id === localSlotId && sp.alive && prev.alive) {
+      if (localSlotId !== undefined && sp.id === localSlotId && sanitizedAlive && prev.alive) {
         const dist = Math.hypot(sp.x - prev.x, sp.y - prev.y);
         if (dist < 160) {
           return {
             ...sp,
+            alive: sanitizedAlive,
             x: prev.x + (sp.x - prev.x) * 0.12,
             y: prev.y + (sp.y - prev.y) * 0.12,
             vx: prev.vx,
@@ -823,14 +836,15 @@ export class ArenaEngine {
 
       // Smoothly interpolate remote players
       const rDist = Math.hypot(sp.x - prev.x, sp.y - prev.y);
-      if (sp.alive && prev.alive && rDist < 120) {
+      if (sanitizedAlive && prev.alive && rDist < 120) {
         return {
           ...sp,
+          alive: sanitizedAlive,
           x: prev.x + (sp.x - prev.x) * 0.65,
           y: prev.y + (sp.y - prev.y) * 0.65
         };
       }
-      return { ...sp };
+      return { ...sp, alive: sanitizedAlive };
     });
 
     this.balls = snap.balls.map((sb) => {
@@ -843,7 +857,7 @@ export class ArenaEngine {
           trail: prevB.trail
         };
       }
-      return { ...sb };
+      return { ...sb, trail: prevB ? prevB.trail : [] };
     });
 
     this.bumpers = snap.bumpers;

@@ -138,10 +138,12 @@ export class CourtRenderer {
         : 'MESA 02 // CLÁSICA';
     ctx.fillText(`TP-04 // ${layoutTag}`, COURT_CENTER_X, COURT_CENTER_Y + 62);
 
+    const botsActive = engine.botDifficulty !== 'OFF';
+
     // Target Dotted Guide Lines on Floor for each Ball
     engine.balls.forEach((ball) => {
       const tgt = engine.players[ball.targetId];
-      if (tgt?.alive) {
+      if (tgt?.alive && (!tgt.isBot || botsActive)) {
         ctx.beginPath();
         ctx.setLineDash([7, 7]);
         ctx.moveTo(ball.x, ball.y);
@@ -178,7 +180,9 @@ export class CourtRenderer {
     }> = [];
 
     engine.players.forEach((p) => {
-      if (p.alive) renderables.push({ type: 'player', y: p.y, player: p });
+      if (p.alive && (!p.isBot || botsActive)) {
+        renderables.push({ type: 'player', y: p.y, player: p });
+      }
     });
     engine.bumpers.forEach((b) => {
       renderables.push({ type: 'bumper', y: b.y, bumper: b });

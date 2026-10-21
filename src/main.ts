@@ -507,6 +507,9 @@ window.addEventListener('keyup', (e) => {
   keys[e.code] = false;
   if (e.code === 'Space') {
     chargingParry = false;
+    if (net.activeGame === 'TURBO_PUTT') {
+      flushImmediateClientAction();
+    }
   }
   if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') {
     anchorHeld = false;
@@ -534,6 +537,9 @@ canvas.addEventListener('pointerdown', (e) => {
 window.addEventListener('pointerup', (e) => {
   if (e.button === 0) {
     chargingParry = false;
+    if (net.activeGame === 'TURBO_PUTT') {
+      flushImmediateClientAction();
+    }
   }
   if (e.button === 2) {
     anchorHeld = false;
@@ -799,6 +805,8 @@ function stepGameFrame(dt: number): void {
     // Client-side prediction: step local player and ball extrapolation at 60fps for 0ms input lag!
     if (net.activeGame === 'BASH_BOT') {
       arenaEngine.stepClientPrediction(dt, net.localSlotId, inputPacket);
+    } else if (net.activeGame === 'TURBO_PUTT') {
+      myPuttPlayer.aimAngle = aimAngle;
     }
     net.sendClientInput(inputPacket);
   }

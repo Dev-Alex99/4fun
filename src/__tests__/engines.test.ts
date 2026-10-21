@@ -217,16 +217,16 @@ describe('PuttWarEngine (03 // TURBO-PUTT)', () => {
 });
 
 describe('MultiplayerRoomManager Anti-Freeze Watchdog & Moderation', () => {
-  it('always steps locally if Host snapshots time out (>2000ms)', () => {
+  it('only steps authoritative physics on the Host so Clients never spawn local bots or reset rounds', () => {
     const arena = new ArenaEngine();
     const chain = new ChainPanicEngine();
     const net = new MultiplayerRoomManager(arena, chain, () => {});
 
     expect(net.shouldStepLocally()).toBe(true);
 
-    // Even if marked as client, if no snapshot arrived recently, shouldStepLocally returns true
+    // When connected as a Client, shouldStepLocally MUST be false so local bot AI never runs
     net.isHost = false;
-    expect(net.shouldStepLocally()).toBe(true);
+    expect(net.shouldStepLocally()).toBe(false);
   });
 
   it('allows Host to kick & ban a remote player slot and reset it to a bot', () => {
@@ -339,6 +339,12 @@ describe('MultiplayerRoomManager Anti-Freeze Watchdog & Moderation', () => {
     hostNet.sendOrApplyRoomAction({ kind: 'BOT_DIFF', botDifficulty: 'OFF' });
     expect(hostArena.botDifficulty).toBe('OFF');
     expect(clientArena.botDifficulty).toBe('OFF');
+
+    // Verify bots are completely hidden on BOTH Host and Friend screens across all 3 games!
+    expect(hostArena.players.filter((p) => p.alive).length).toBe(2);
+    expect(clientArena.players.filter((p) => p.alive).length).toBe(2);
+    expect(clientChain.getActivePlayers().length).toBe(2);
+    expect(clientPutt.getActivePlayers().length).toBe(2);
 
     clientNet.sendOrApplyRoomAction({ kind: 'LOAD_STAGE', holeIndex: 3 });
     expect(hostPutt.holeIndex).toBe(3);
