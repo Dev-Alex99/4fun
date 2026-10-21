@@ -43,7 +43,7 @@ export class MultiplayerRoomManager {
   private clientConns = new Map<string, DataConnection>();
   private localBus: BroadcastChannel | null = null;
 
-  private lastHostSnapReceivedAt = 0;
+  private lastHostSnapReceivedAt = -10000;
   private rtcBroadcastCounter = 0;
 
   constructor(

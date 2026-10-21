@@ -3,12 +3,17 @@ class MechanicalAudioEngine {
   public enabled = true;
 
   private ensureContext(): AudioContext | null {
-    if (!this.enabled) return null;
+    if (!this.enabled || typeof window === 'undefined') return null;
     if (!this.ctx) {
       const AC =
         window.AudioContext ||
-        (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-      this.ctx = new AC();
+        (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+      if (typeof AC !== 'function') return null;
+      try {
+        this.ctx = new AC();
+      } catch {
+        return null;
+      }
     }
     if (this.ctx.state === 'suspended') {
       this.ctx.resume().catch(() => {});
