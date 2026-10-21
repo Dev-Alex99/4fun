@@ -1,4 +1,4 @@
-export type ActiveGameId = 'HUB' | 'BASH_BOT' | 'CHAIN_PANIC';
+export type ActiveGameId = 'HUB' | 'BASH_BOT' | 'CHAIN_PANIC' | 'TURBO_PUTT';
 export type RoundPhase = 'PLAYING' | 'CARD_DRAFT' | 'MATCH_OVER';
 export type BotDifficulty = 'CHILL' | 'NORMAL' | 'PRO' | 'OFF';
 export type CourtLayout = 'CLASSIC' | 'PINBALL' | 'CORE';
@@ -218,16 +218,130 @@ export interface ChainPanicSnapshot {
   battery: HeavyBattery | null;
 }
 
+export interface PuttBallPlayer {
+  id: number;
+  name: string;
+  bodyColor: string;
+  shadeColor: string;
+  isBot: boolean;
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  lastSafeX: number;
+  lastSafeY: number;
+  radius: number;
+  aimAngle: number;
+  chargePower: number; // 0..1 while holding
+  isCharging: boolean;
+  puttCooldown: number;
+  bombCooldown: number;
+  shockwaveCooldown: number;
+  heldPowerup: 'NONE' | 'BAZOOKA' | 'NITRO' | 'ANVIL';
+  anvilTimer: number;
+  strokes: number;
+  totalPoints: number;
+  sunkInCup: boolean;
+  sunkOrder: number; // 1st, 2nd, 3rd, 4th
+  emoteText: string | null;
+  emoteTimer: number;
+  botShotTimer: number;
+}
+
+export interface PuttWallRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  bouncy?: boolean;
+}
+
+export interface PuttHazardRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  type: 'ACID' | 'SAND' | 'BOOST';
+  boostVx?: number;
+  boostVy?: number;
+}
+
+export interface PuttBumper {
+  x: number;
+  y: number;
+  radius: number;
+  hitAnim: number;
+}
+
+export interface PuttWindmill {
+  cx: number;
+  cy: number;
+  length: number;
+  angle: number;
+  speed: number;
+}
+
+export interface PuttBomb {
+  id: number;
+  ownerId: number;
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  timer: number;
+  maxTimer: number;
+  isRocket: boolean;
+  targetId: number | null;
+}
+
+export interface PuttWeaponCrate {
+  id: number;
+  x: number;
+  y: number;
+  active: boolean;
+  respawnTimer: number;
+  type: 'BAZOOKA' | 'NITRO' | 'ANVIL';
+}
+
+export interface PuttExplosion {
+  x: number;
+  y: number;
+  radius: number;
+  maxRadius: number;
+  life: number;
+  color: string;
+}
+
+export interface PuttWarSnapshot {
+  holeIndex: number;
+  holeTitle: string;
+  par: number;
+  status: 'PLAYING' | 'HOLE_COMPLETE';
+  hurryTimer: number;
+  hurryActive: boolean;
+  statusTimer: number;
+  cupX: number;
+  cupY: number;
+  cupRadius: number;
+  players: PuttBallPlayer[];
+  bombs: PuttBomb[];
+  crates: PuttWeaponCrate[];
+  bumpers: PuttBumper[];
+  windmills: PuttWindmill[];
+  explosions: PuttExplosion[];
+}
+
 export interface ClientInputPacket {
   slotId: number;
   name: string;
   moveX: number;
   moveY: number;
   aimAngle: number;
-  parryPressed: boolean; // Jump in Chain-Panic
-  chargingParry: boolean;
-  dashPressed: boolean;
-  yankPressed?: boolean; // [E] Cable Yank in Chain-Panic
+  parryPressed: boolean; // Jump in Chain-Panic / Start charge in Turbo-Putt
+  chargingParry: boolean; // Charging putt in Turbo-Putt
+  shotReleasedPower?: number; // Released putt power (0..1) in Turbo-Putt
+  dashPressed: boolean; // Shockwave/Powerup in Turbo-Putt
+  yankPressed?: boolean; // [E] Cable Yank in Chain-Panic / Drop Bomb in Turbo-Putt
   anchorHeld?: boolean; // [Shift / Right-Click] Anchor in Chain-Panic
   emotePressed: number;
   clientBallDist: number;
@@ -247,4 +361,5 @@ export interface WorldSnapshotPacket {
   balls: GyroBallState[];
   bumpers: PinballBumper[];
   chainState?: ChainPanicSnapshot;
+  puttState?: PuttWarSnapshot;
 }

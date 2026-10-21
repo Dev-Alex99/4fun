@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { ArenaEngine, COURT_CENTER_X, COURT_RX } from '../game/arenaEngine';
 import { CHAIN_LEVELS, ChainPanicEngine } from '../game/chainPanicEngine';
+import { PUTT_HOLES, PuttWarEngine } from '../game/puttWarEngine';
 import { MultiplayerRoomManager } from '../net/multiplayerRoom';
 import { ClientInputPacket } from '../types';
 
@@ -137,6 +138,62 @@ describe('ChainPanicEngine (02 // CHAIN-PANIC)', () => {
     active[0].y = 260;
     engine.step(0.016, dummyInput);
     expect(sw0.pressed).toBe(true);
+  });
+});
+
+describe('PuttWarEngine (03 // TURBO-PUTT)', () => {
+  it('loads all 6 combat mini-golf holes without errors', () => {
+    const engine = new PuttWarEngine();
+    expect(PUTT_HOLES.length).toBe(6);
+
+    for (let i = 0; i < PUTT_HOLES.length; i++) {
+      engine.loadHole(i);
+      expect(engine.holeIndex).toBe(i);
+      expect(() => engine.step(0.016, dummyInput)).not.toThrow();
+    }
+  });
+
+  it('executes putt, lobs Worms proximity mine, and blasts rival balls on detonation', () => {
+    const engine = new PuttWarEngine();
+    const p0 = engine.players[0];
+    const p1 = engine.players[1];
+
+    engine.executePutt(p0, 0.75, 0);
+    expect(p0.strokes).toBe(1);
+    expect(p0.vx).toBeGreaterThan(200);
+
+    // Place rival p1 near p0 and lob a bomb
+    p1.x = p0.x + 28;
+    p1.y = p0.y;
+    p1.vx = 0;
+    p1.vy = 0;
+
+    engine.lobBombOrWeapon(p0);
+    expect(engine.bombs.length).toBe(1);
+
+    // Force bomb timer to expire and step physics
+    engine.bombs[0].timer = 0.01;
+    engine.step(0.02, dummyInput);
+
+    expect(engine.bombs.length).toBe(0);
+    expect(Math.hypot(p1.vx, p1.vy)).toBeGreaterThan(150);
+  });
+
+  it('awards points and starts Hurry-Up countdown when a ball sinks into the cup', () => {
+    const engine = new PuttWarEngine();
+    const p0 = engine.players[0];
+
+    p0.x = engine.cupX + 2;
+    p0.y = engine.cupY;
+    p0.vx = 20;
+    p0.vy = 0;
+    p0.strokes = 2;
+
+    engine.step(0.016, dummyInput);
+
+    expect(p0.sunkInCup).toBe(true);
+    expect(p0.totalPoints).toBeGreaterThanOrEqual(3);
+    expect(engine.hurryActive).toBe(true);
   });
 });
 

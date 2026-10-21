@@ -1,9 +1,11 @@
 import './style.css';
 import { ArenaEngine } from './game/arenaEngine';
 import { CHAIN_LEVELS, ChainPanicEngine } from './game/chainPanicEngine';
+import { PUTT_HOLES, PuttWarEngine } from './game/puttWarEngine';
 import { HARDWARE_MODS } from './game/hardwareMods';
 import { CourtRenderer } from './render/courtRenderer';
 import { ChainPanicRenderer } from './render/chainPanicRenderer';
+import { PuttWarRenderer } from './render/puttWarRenderer';
 import { MultiplayerRoomManager } from './net/multiplayerRoom';
 import { sfx } from './audio/mechanicalSfx';
 import { ActiveGameId, BotDifficulty, ClientInputPacket } from './types';
@@ -71,9 +73,11 @@ playerNameInput.value = savedName;
 // 4. Engines & Renderers
 const arenaEngine = new ArenaEngine(syncOverlaysAndHUD);
 const chainEngine = new ChainPanicEngine();
+const puttEngine = new PuttWarEngine();
 const courtRenderer = new CourtRenderer(canvas);
 const chainRenderer = new ChainPanicRenderer(canvas);
-const net = new MultiplayerRoomManager(arenaEngine, chainEngine, syncOverlaysAndHUD);
+const puttRenderer = new PuttWarRenderer(canvas);
+const net = new MultiplayerRoomManager(arenaEngine, chainEngine, syncOverlaysAndHUD, puttEngine);
 
 // 5. UI & HUD Synchronization Function
 function syncOverlaysAndHUD(): void {
@@ -104,6 +108,8 @@ function syncOverlaysAndHUD(): void {
   if (net.activeGame === 'CHAIN_PANIC') {
     prevSectorBtn.classList.remove('hidden');
     nextSectorBtn.classList.remove('hidden');
+    prevSectorBtn.textContent = '◀ SECTOR';
+    nextSectorBtn.textContent = 'SECTOR ▶';
     chainModeBtn.classList.remove('hidden');
     chainModeBtn.textContent =
       chainEngine.mode === 'SABOTAGE' ? 'MODO: TRAIDOR (3v1)' : 'MODO: CO-OP';
@@ -122,6 +128,30 @@ function syncOverlaysAndHUD(): void {
     installedModsStrip.textContent = `SECTOR ${chainEngine.levelIndex + 1}/${
       CHAIN_LEVELS.length
     } • SUPERADOS: ${chainEngine.completions} • CAÍDAS: ${chainEngine.wipes}`;
+  } else if (net.activeGame === 'TURBO_PUTT') {
+    prevSectorBtn.classList.remove('hidden');
+    nextSectorBtn.classList.remove('hidden');
+    prevSectorBtn.textContent = '◀ HOYO';
+    nextSectorBtn.textContent = 'HOYO ▶';
+    chainModeBtn.classList.add('hidden');
+
+    controlsLegendStrip.innerHTML = `
+      <span><strong>[MOUSE]</strong> APUNTAR</span>
+      <span class="sep">•</span>
+      <span><strong>[MANTENER CLIC IZQ / ESPACIO]</strong> CARGAR GOLPE</span>
+      <span class="sep">•</span>
+      <span><strong>[E]</strong> MINA / COHETE WORMS</span>
+      <span class="sep">•</span>
+      <span><strong>[SHIFT / CLIC DER]</strong> PULSO / POWERUP</span>
+      <span class="sep">•</span>
+      <span><strong>[1-4]</strong> BURLA</span>
+    `;
+    const localPutt = puttEngine.players[net.localSlotId] || puttEngine.players[0];
+    installedModsStrip.textContent = `HOYO ${puttEngine.holeIndex + 1}/${
+      PUTT_HOLES.length
+    } (PAR ${puttEngine.par}) • GOLPES: ${localPutt?.strokes ?? 0} • PUNTOS: ${
+      localPutt?.totalPoints ?? 0
+    }`;
   } else {
     prevSectorBtn.classList.add('hidden');
     nextSectorBtn.classList.add('hidden');
@@ -151,19 +181,22 @@ function syncOverlaysAndHUD(): void {
   const visibleRoster = arenaEngine.players.filter((p) => !p.isBot || botsActive);
 
   playerSlotsBar.innerHTML = visibleRoster
-    .map(
-      (p) => `
+    .map((p) => {
+      const puttP = puttEngine.players[p.id];
+      const scoreBadge =
+        net.activeGame === 'CHAIN_PANIC'
+          ? `S${chainEngine.levelIndex + 1}`
+          : net.activeGame === 'TURBO_PUTT'
+            ? `${puttP ? puttP.totalPoints : 0}P`
+            : `${p.score}`;
+      return `
       <div class="player-slot" style="background:${p.bodyColor}">
         <span class="slot-dot"></span>
         <span>${p.name}${p.isBot ? ' [BOT]' : ''}</span>
-        <span class="slot-score">${
-          net.activeGame === 'CHAIN_PANIC'
-            ? `S${chainEngine.levelIndex + 1}`
-            : p.score
-        }</span>
+        <span class="slot-score">${scoreBadge}</span>
       </div>
-    `
-    )
+    `;
+    })
     .join('');
 
   if (net.activeGame === 'BASH_BOT' && arenaEngine.phase === 'CARD_DRAFT') {
@@ -266,7 +299,7 @@ window.addEventListener('keydown', (e) => {
   if ((e.code === 'KeyE' || e.code === 'KeyQ') && !e.repeat) {
     e.preventDefault();
     sfx.unlock();
-    if (net.activeGame === 'CHAIN_PANIC') {
+    if (net.activeGame === 'CHAIN_PANIC' || net.activeGame === 'TURBO_PUTT') {
       pendingYank = true;
     } else {
       const myPlayer = arenaEngine.players[net.localSlotId] || arenaEngine.players[0];
@@ -351,16 +384,23 @@ resetMatchBtn.addEventListener('click', () => {
   if (!net.shouldStepLocally()) return;
   if (net.activeGame === 'CHAIN_PANIC') {
     chainEngine.loadLevel(chainEngine.levelIndex);
+  } else if (net.activeGame === 'TURBO_PUTT') {
+    puttEngine.loadHole(puttEngine.holeIndex);
   } else {
     arenaEngine.resetChampionship();
   }
   net.broadcastHostSnapshot(true);
+  syncOverlaysAndHUD();
 });
 
 prevSectorBtn.addEventListener('click', () => {
   if (!net.shouldStepLocally()) return;
   sfx.playCartridgeClick();
-  chainEngine.loadLevel(chainEngine.levelIndex - 1);
+  if (net.activeGame === 'TURBO_PUTT') {
+    puttEngine.loadHole(puttEngine.holeIndex - 1);
+  } else {
+    chainEngine.loadLevel(chainEngine.levelIndex - 1);
+  }
   net.broadcastHostSnapshot(true);
   syncOverlaysAndHUD();
 });
@@ -368,7 +408,11 @@ prevSectorBtn.addEventListener('click', () => {
 nextSectorBtn.addEventListener('click', () => {
   if (!net.shouldStepLocally()) return;
   sfx.playCartridgeClick();
-  chainEngine.loadLevel(chainEngine.levelIndex + 1);
+  if (net.activeGame === 'TURBO_PUTT') {
+    puttEngine.loadHole(puttEngine.holeIndex + 1);
+  } else {
+    chainEngine.loadLevel(chainEngine.levelIndex + 1);
+  }
   net.broadcastHostSnapshot(true);
   syncOverlaysAndHUD();
 });
@@ -396,10 +440,10 @@ playerNameInput.addEventListener('input', () => {
   const myPlayer = arenaEngine.players[net.localSlotId];
   if (myPlayer) {
     myPlayer.name = clean;
-    chainEngine.syncPlayerIdentities(
-      arenaEngine.players.map((p) => ({ name: p.name, isBot: p.isBot })),
-      arenaEngine.botDifficulty !== 'OFF'
-    );
+    const roster = arenaEngine.players.map((p) => ({ name: p.name, isBot: p.isBot }));
+    const botsActive = arenaEngine.botDifficulty !== 'OFF';
+    chainEngine.syncPlayerIdentities(roster, botsActive);
+    puttEngine.syncPlayerIdentities(roster, botsActive);
     syncOverlaysAndHUD();
   }
 });
@@ -412,12 +456,12 @@ function cycleBotMode(): void {
   arenaEngine.botDifficulty = nextDiff;
 
   const botsActive = nextDiff !== 'OFF';
-  chainEngine.syncPlayerIdentities(
-    arenaEngine.players.map((p) => ({ name: p.name, isBot: p.isBot })),
-    botsActive
-  );
+  const roster = arenaEngine.players.map((p) => ({ name: p.name, isBot: p.isBot }));
+  chainEngine.syncPlayerIdentities(roster, botsActive);
+  puttEngine.syncPlayerIdentities(roster, botsActive);
   arenaEngine.spawnRound();
   chainEngine.loadLevel(chainEngine.levelIndex);
+  puttEngine.loadHole(puttEngine.holeIndex);
   net.broadcastHostSnapshot(true);
   syncOverlaysAndHUD();
 }
@@ -428,6 +472,7 @@ topBotsToggleBtn.addEventListener('click', cycleBotMode);
 // 7. Game Step & Main Loop
 function stepGameFrame(dt: number): void {
   const myArenaPlayer = arenaEngine.players[net.localSlotId] || arenaEngine.players[0];
+  const myPuttPlayer = puttEngine.players[net.localSlotId] || puttEngine.players[0];
   let moveX = 0;
   let moveY = 0;
   if (keys['KeyW'] || keys['ArrowUp']) moveY -= 1;
@@ -435,14 +480,18 @@ function stepGameFrame(dt: number): void {
   if (keys['KeyA'] || keys['ArrowLeft']) moveX -= 1;
   if (keys['KeyD'] || keys['ArrowRight']) moveX += 1;
 
-  const aimAngle = Math.atan2(
-    mouseCourtPos.y - myArenaPlayer.y,
-    mouseCourtPos.x - myArenaPlayer.x
-  );
+  const refX = net.activeGame === 'TURBO_PUTT' ? myPuttPlayer.x : myArenaPlayer.x;
+  const refY = net.activeGame === 'TURBO_PUTT' ? myPuttPlayer.y : myArenaPlayer.y;
+  const aimAngle = Math.atan2(mouseCourtPos.y - refY, mouseCourtPos.x - refX);
+
   const primaryBall = arenaEngine.balls[0];
   const clientBallDist = primaryBall
     ? Math.hypot(primaryBall.x - myArenaPlayer.x, primaryBall.y - myArenaPlayer.y)
     : 999;
+
+  // Quick-click putt support (if clicked and released within 1 frame)
+  const quickClickPutt =
+    net.activeGame === 'TURBO_PUTT' && pendingParry && !chargingParry ? 0.55 : undefined;
 
   const inputPacket: ClientInputPacket = {
     slotId: net.localSlotId,
@@ -452,6 +501,7 @@ function stepGameFrame(dt: number): void {
     aimAngle,
     parryPressed: pendingParry,
     chargingParry,
+    shotReleasedPower: quickClickPutt,
     dashPressed: pendingDash,
     yankPressed: pendingYank,
     anchorHeld,
@@ -466,6 +516,14 @@ function stepGameFrame(dt: number): void {
       if (pendingParry) chainEngine.triggerJump(myChainPlayer);
       if (pendingYank) chainEngine.triggerCableYank(myChainPlayer);
       chainEngine.step(dt, inputPacket);
+    } else if (net.activeGame === 'TURBO_PUTT') {
+      if (pendingEmote > 0) puttEngine.triggerEmote(myPuttPlayer, pendingEmote);
+      if (pendingYank) puttEngine.lobBombOrWeapon(myPuttPlayer);
+      if (pendingDash) puttEngine.triggerShockwaveOrPowerup(myPuttPlayer);
+      if (quickClickPutt) {
+        puttEngine.executePutt(myPuttPlayer, quickClickPutt, aimAngle);
+      }
+      puttEngine.step(dt, inputPacket);
     } else if (net.activeGame === 'BASH_BOT') {
       if (pendingEmote > 0) arenaEngine.triggerEmote(myArenaPlayer, pendingEmote);
       if (pendingParry) arenaEngine.triggerParry(myArenaPlayer);
@@ -513,6 +571,11 @@ function animate(now: number): void {
     rpmBadge.textContent = `SECTOR 0${chainEngine.levelIndex + 1}/0${CHAIN_LEVELS.length}`;
     rpmBadge.style.background = chainEngine.windActive ? '#FF4F00' : '#1B4DFF';
     chainRenderer.render(chainEngine, net.localSlotId);
+  } else if (net.activeGame === 'TURBO_PUTT') {
+    const myPutt = puttEngine.players[net.localSlotId] || puttEngine.players[0];
+    rpmBadge.textContent = `HOYO 0${puttEngine.holeIndex + 1} • ${myPutt.strokes}G (PAR ${puttEngine.par})`;
+    rpmBadge.style.background = puttEngine.hurryActive ? '#FF4F00' : '#15803D';
+    puttRenderer.render(puttEngine, net.localSlotId);
   } else {
     if (primaryBall) {
       const rpm = Math.round((primaryBall.speed / primaryBall.baseSpeed) * 100);

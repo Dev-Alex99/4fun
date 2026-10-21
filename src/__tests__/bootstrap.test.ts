@@ -19,6 +19,7 @@ describe('Full DOM + main.ts Bootstrap Smoke Test (Prevents TDZ / ReferenceError
       lineTo: vi.fn(),
       quadraticCurveTo: vi.fn(),
       arc: vi.fn(),
+      arcTo: vi.fn(),
       ellipse: vi.fn(),
       roundRect: vi.fn(),
       fill: vi.fn(),
@@ -72,6 +73,13 @@ describe('Full DOM + main.ts Bootstrap Smoke Test (Prevents TDZ / ReferenceError
 
     const nextSectorBtn = document.getElementById('nextSectorBtn') as HTMLButtonElement;
     expect(nextSectorBtn.classList.contains('hidden')).toBe(false);
+    nextSectorBtn.click();
+
+    // Switch to "03 // TURBO-PUTT" via top tab -> Hoyo controls must appear
+    const puttTabBtn = document.querySelector<HTMLButtonElement>('[data-game="TURBO_PUTT"]');
+    expect(puttTabBtn).not.toBeNull();
+    puttTabBtn!.click();
+    expect(nextSectorBtn.textContent).toContain('HOYO');
     nextSectorBtn.click();
   });
 });

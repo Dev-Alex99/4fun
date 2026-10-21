@@ -1,6 +1,7 @@
 import Peer, { DataConnection } from 'peerjs';
 import { ArenaEngine } from '../game/arenaEngine';
 import { ChainPanicEngine } from '../game/chainPanicEngine';
+import { PuttWarEngine } from '../game/puttWarEngine';
 import { ActiveGameId, ClientInputPacket, WorldSnapshotPacket } from '../types';
 
 interface NetEnvelope {
@@ -36,6 +37,7 @@ export class MultiplayerRoomManager {
 
   private arenaEngine: ArenaEngine;
   private chainEngine: ChainPanicEngine;
+  private puttEngine?: PuttWarEngine;
   private onStatusUpdate: () => void;
 
   private peer: Peer | null = null;
@@ -49,11 +51,13 @@ export class MultiplayerRoomManager {
   constructor(
     arenaEngine: ArenaEngine,
     chainEngine: ChainPanicEngine,
-    onStatusUpdate: () => void
+    onStatusUpdate: () => void,
+    puttEngine?: PuttWarEngine
   ) {
     this.arenaEngine = arenaEngine;
     this.chainEngine = chainEngine;
     this.onStatusUpdate = onStatusUpdate;
+    this.puttEngine = puttEngine;
     this.localPeerId = 'P-' + Math.random().toString(36).substring(2, 8).toUpperCase();
   }
 
@@ -70,10 +74,10 @@ export class MultiplayerRoomManager {
 
   public switchGame(nextGame: ActiveGameId): void {
     this.activeGame = nextGame;
-    this.chainEngine.syncPlayerIdentities(
-      this.arenaEngine.players.map((p) => ({ name: p.name, isBot: p.isBot })),
-      this.arenaEngine.botDifficulty !== 'OFF'
-    );
+    const roster = this.arenaEngine.players.map((p) => ({ name: p.name, isBot: p.isBot }));
+    const botsActive = this.arenaEngine.botDifficulty !== 'OFF';
+    this.chainEngine.syncPlayerIdentities(roster, botsActive);
+    this.puttEngine?.syncPlayerIdentities(roster, botsActive);
     if (this.isHost) {
       this.broadcastHostSnapshot(true);
     }
@@ -105,10 +109,10 @@ export class MultiplayerRoomManager {
     this.arenaEngine.players[0].peerId = this.localPeerId;
     this.arenaEngine.players[0].isBot = false;
     this.arenaEngine.players[0].name = playerName.toUpperCase();
-    this.chainEngine.syncPlayerIdentities(
-      this.arenaEngine.players.map((p) => ({ name: p.name, isBot: p.isBot })),
-      this.arenaEngine.botDifficulty !== 'OFF'
-    );
+    const roster = this.arenaEngine.players.map((p) => ({ name: p.name, isBot: p.isBot }));
+    const botsActive = this.arenaEngine.botDifficulty !== 'OFF';
+    this.chainEngine.syncPlayerIdentities(roster, botsActive);
+    this.puttEngine?.syncPlayerIdentities(roster, botsActive);
 
     // 1. Setup WebRTC PeerJS (Clean, fast, zero Nostr relay errors)
     const hostPeerId = `${HOST_ID_PREFIX}${cleanCode}`;
@@ -236,6 +240,7 @@ export class MultiplayerRoomManager {
       const inp = env.payload as ClientInputPacket;
       this.arenaEngine.applyRemoteInput(inp);
       this.chainEngine.applyRemoteInput(inp);
+      this.puttEngine?.applyRemoteInput(inp);
     } else if (env.type === 'WORLD_SNAP' && !this.isHost) {
       this.lastHostSnapReceivedAt = performance.now();
       const snap = env.payload as WorldSnapshotPacket;
@@ -244,6 +249,9 @@ export class MultiplayerRoomManager {
       this.arenaEngine.applySnapshot(snap);
       if (snap.chainState) {
         this.chainEngine.applySnapshot(snap.chainState);
+      }
+      if (snap.puttState) {
+        this.puttEngine?.applySnapshot(snap.puttState);
       }
       if (prevGame !== this.activeGame) {
         this.onStatusUpdate();
@@ -260,10 +268,10 @@ export class MultiplayerRoomManager {
       existing.isBot = false;
       existing.name = name.slice(0, 10).toUpperCase();
       existing.alive = true;
-      this.chainEngine.syncPlayerIdentities(
-        this.arenaEngine.players.map((p) => ({ name: p.name, isBot: p.isBot })),
-        this.arenaEngine.botDifficulty !== 'OFF'
-      );
+      const roster = this.arenaEngine.players.map((p) => ({ name: p.name, isBot: p.isBot }));
+      const botsActive = this.arenaEngine.botDifficulty !== 'OFF';
+      this.chainEngine.syncPlayerIdentities(roster, botsActive);
+      this.puttEngine?.syncPlayerIdentities(roster, botsActive);
       return existing.id;
     }
 
@@ -274,10 +282,10 @@ export class MultiplayerRoomManager {
     targetSlot.name = name.slice(0, 10).toUpperCase();
     targetSlot.alive = true;
 
-    this.chainEngine.syncPlayerIdentities(
-      this.arenaEngine.players.map((p) => ({ name: p.name, isBot: p.isBot })),
-      this.arenaEngine.botDifficulty !== 'OFF'
-    );
+    const roster = this.arenaEngine.players.map((p) => ({ name: p.name, isBot: p.isBot }));
+    const botsActive = this.arenaEngine.botDifficulty !== 'OFF';
+    this.chainEngine.syncPlayerIdentities(roster, botsActive);
+    this.puttEngine?.syncPlayerIdentities(roster, botsActive);
     return targetSlot.id;
   }
 
@@ -299,6 +307,7 @@ export class MultiplayerRoomManager {
     const snap = this.arenaEngine.getSnapshot();
     snap.activeGame = this.activeGame;
     snap.chainState = this.chainEngine.getSnapshot();
+    snap.puttState = this.puttEngine?.getSnapshot();
 
     const env: NetEnvelope = {
       sender: this.localPeerId,
