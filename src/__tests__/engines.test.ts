@@ -277,4 +277,71 @@ describe('MultiplayerRoomManager Anti-Freeze Watchdog & Moderation', () => {
     expect(arena.players[1].isBot).toBe(true);
     expect(net.toasts.some((t) => t.text.includes('MATEO SALIÓ'))).toBe(true);
   });
+
+  it('synchronizes GAME_SWITCH and ROOM_ACTION across Host and Friends even if Host tab is hidden', () => {
+    // Setup Host instance
+    const hostArena = new ArenaEngine();
+    const hostChain = new ChainPanicEngine();
+    const hostPutt = new PuttWarEngine();
+    const hostNet = new MultiplayerRoomManager(hostArena, hostChain, () => {}, hostPutt);
+
+    // Setup Friend (Client) instance
+    const clientArena = new ArenaEngine();
+    const clientChain = new ChainPanicEngine();
+    const clientPutt = new PuttWarEngine();
+    const clientNet = new MultiplayerRoomManager(clientArena, clientChain, () => {}, clientPutt);
+
+    // Wire virtual transport between Host and Client
+    const hostBus = {
+      postMessage: (env: unknown) => {
+        clientNet.handleEnvelope(env as Parameters<typeof clientNet.handleEnvelope>[0], (reply) => {
+          hostNet.handleEnvelope(reply, () => {});
+        });
+      }
+    };
+    const clientBus = {
+      postMessage: (env: unknown) => {
+        hostNet.handleEnvelope(env as Parameters<typeof hostNet.handleEnvelope>[0], (reply) => {
+          clientNet.handleEnvelope(reply, () => {});
+        });
+      }
+    };
+
+    (hostNet as unknown as { localBus: typeof hostBus }).localBus = hostBus;
+    (clientNet as unknown as { localBus: typeof clientBus }).localBus = clientBus;
+
+    // 1. Simulate Host tab being hidden in background (e.g. pasting link on Discord) when Friend joins!
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => true });
+    clientBus.postMessage({
+      sender: clientNet.localPeerId,
+      type: 'JOIN_CLAIM',
+      payload: { peerId: clientNet.localPeerId, name: 'SOFIA' }
+    });
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => false });
+
+    // Friend must be connected in Slot 1!
+    expect(clientNet.isHost).toBe(false);
+    expect(clientNet.localSlotId).toBe(1);
+    expect(hostArena.players[1].name).toBe('SOFIA');
+    expect(hostArena.players[1].isBot).toBe(false);
+
+    // 2. Host clicks "JUGAR BASH-BOT" -> Client must immediately enter BASH_BOT!
+    hostNet.switchGame('BASH_BOT');
+    expect(hostNet.activeGame).toBe('BASH_BOT');
+    expect(clientNet.activeGame).toBe('BASH_BOT');
+
+    // 3. Friend (Client) clicks "JUGAR TURBO-PUTT" -> Host AND Client must both enter TURBO_PUTT!
+    clientNet.switchGame('TURBO_PUTT');
+    expect(hostNet.activeGame).toBe('TURBO_PUTT');
+    expect(clientNet.activeGame).toBe('TURBO_PUTT');
+
+    // 4. Host or Client changes Bot Difficulty to OFF and advances to Hole 3 -> Both sync!
+    hostNet.sendOrApplyRoomAction({ kind: 'BOT_DIFF', botDifficulty: 'OFF' });
+    expect(hostArena.botDifficulty).toBe('OFF');
+    expect(clientArena.botDifficulty).toBe('OFF');
+
+    clientNet.sendOrApplyRoomAction({ kind: 'LOAD_STAGE', holeIndex: 3 });
+    expect(hostPutt.holeIndex).toBe(3);
+    expect(clientPutt.holeIndex).toBe(3);
+  });
 });

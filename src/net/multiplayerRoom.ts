@@ -2,7 +2,13 @@ import Peer, { DataConnection } from 'peerjs';
 import { ArenaEngine } from '../game/arenaEngine';
 import { ChainPanicEngine } from '../game/chainPanicEngine';
 import { PuttWarEngine } from '../game/puttWarEngine';
-import { ActiveGameId, ClientInputPacket, WorldSnapshotPacket } from '../types';
+import {
+  ActiveGameId,
+  BotDifficulty,
+  ChainGameMode,
+  ClientInputPacket,
+  WorldSnapshotPacket
+} from '../types';
 
 export type RoomConnectionState = 'HOSTING' | 'CONNECTING' | 'CONNECTED_CLIENT' | 'RECONNECTING';
 
@@ -12,11 +18,13 @@ export interface RoomToastEvent {
   tone: 'join' | 'leave' | 'info' | 'warn';
 }
 
-interface NetEnvelope {
+export interface NetEnvelope {
   sender: string;
   type:
     | 'JOIN_CLAIM'
     | 'SLOT_ASSIGN'
+    | 'GAME_SWITCH'
+    | 'ROOM_ACTION'
     | 'CLIENT_INPUT'
     | 'WORLD_SNAP'
     | 'DRAFT_PICK'
@@ -37,6 +45,23 @@ interface SlotAssignMsg {
   peerId: string;
   slotId: number;
   hostName: string;
+  activeGame: ActiveGameId;
+  botDifficulty: BotDifficulty;
+}
+
+interface GameSwitchMsg {
+  activeGame: ActiveGameId;
+  botDifficulty: BotDifficulty;
+  levelIndex: number;
+  holeIndex: number;
+}
+
+export interface RoomActionMsg {
+  kind: 'BOT_DIFF' | 'LOAD_STAGE' | 'CHAIN_MODE' | 'RESET_MATCH';
+  botDifficulty?: BotDifficulty;
+  levelIndex?: number;
+  holeIndex?: number;
+  chainMode?: ChainGameMode;
 }
 
 interface DraftPickMsg {
@@ -54,7 +79,7 @@ interface RoomEventMsg {
   tone: 'join' | 'leave' | 'info' | 'warn';
 }
 
-const HOST_ID_PREFIX = 'tp04-deck-room-v3-';
+const HOST_ID_PREFIX = 'tp04-deck-room-v4-';
 const DEFAULT_BOT_NAMES = ['UNIT-01', 'LEO-BOT', 'MAX-BOT', 'NICO-BOT'];
 
 const ICE_SERVERS: RTCIceServer[] = [
@@ -101,9 +126,8 @@ export class MultiplayerRoomManager {
   private lastHostSnapReceivedAt = -10000;
   private rtcBroadcastCounter = 0;
   private nextToastId = 1;
-  private handshakeTimer: ReturnType<typeof setTimeout> | null = null;
+  private joinRetryTimer: ReturnType<typeof setInterval> | null = null;
   private heartbeatInterval: ReturnType<typeof setInterval> | null = null;
-  private hostEpoch = 0;
 
   constructor(
     arenaEngine: ArenaEngine,
@@ -116,19 +140,12 @@ export class MultiplayerRoomManager {
     this.onStatusUpdate = onStatusUpdate;
     this.puttEngine = puttEngine;
 
-    // Persist localPeerId in sessionStorage so refreshing the tab keeps your identity & slot!
-    const existingId =
-      typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('tp04_peer_id') : null;
-    if (existingId) {
-      this.localPeerId = existingId;
-    } else {
-      this.localPeerId = 'P-' + Math.random().toString(36).substring(2, 8).toUpperCase();
-      try {
-        sessionStorage.setItem('tp04_peer_id', this.localPeerId);
-      } catch {
-        // Ignore storage errors
-      }
-    }
+    // Always generate a unique peer ID per tab instance so duplicated tabs never collide!
+    this.localPeerId =
+      'P-' +
+      Math.random().toString(36).substring(2, 7).toUpperCase() +
+      '-' +
+      Math.floor(10 + Math.random() * 89);
 
     if (typeof window !== 'undefined') {
       window.addEventListener('beforeunload', () => {
@@ -166,13 +183,141 @@ export class MultiplayerRoomManager {
     return timeSinceLastSnap > 2000;
   }
 
+  private sendToAllClients(env: NetEnvelope): void {
+    this.localBus?.postMessage(env);
+    this.clientConns.forEach((conn) => {
+      if (conn.open) {
+        try {
+          conn.send(env);
+        } catch {
+          // Ignore transient send error
+        }
+      }
+    });
+  }
+
+  private sendToHost(env: NetEnvelope): void {
+    this.localBus?.postMessage(env);
+    if (this.hostConn?.open) {
+      try {
+        this.hostConn.send(env);
+      } catch {
+        // Ignore transient send error
+      }
+    }
+  }
+
+  /**
+   * Switches the active game cartridge for EVERYONE in the room.
+   * Works whether triggered by the Host or by a connected Friend!
+   */
   public switchGame(nextGame: ActiveGameId): void {
     this.activeGame = nextGame;
     this.syncEnginesRoster();
+
     if (this.isHost) {
+      if (nextGame === 'BASH_BOT') {
+        this.arenaEngine.phase = 'PLAYING';
+        this.arenaEngine.spawnRound();
+      } else if (nextGame === 'CHAIN_PANIC') {
+        this.chainEngine.loadLevel(this.chainEngine.levelIndex);
+      } else if (nextGame === 'TURBO_PUTT') {
+        this.puttEngine?.loadHole(this.puttEngine.holeIndex);
+      }
+
+      const switchEnv: NetEnvelope = {
+        sender: this.localPeerId,
+        type: 'GAME_SWITCH',
+        payload: {
+          activeGame: nextGame,
+          botDifficulty: this.arenaEngine.botDifficulty,
+          levelIndex: this.chainEngine.levelIndex,
+          holeIndex: this.puttEngine?.holeIndex ?? 0
+        } satisfies GameSwitchMsg
+      };
+
+      // Send immediately + redundant bursts at 90ms and 220ms so no peer ever misses the transition!
+      this.sendToAllClients(switchEnv);
       this.broadcastHostSnapshot(true);
+      setTimeout(() => {
+        if (this.isHost && this.activeGame === nextGame) {
+          this.sendToAllClients(switchEnv);
+          this.broadcastHostSnapshot(true);
+        }
+      }, 90);
+      setTimeout(() => {
+        if (this.isHost && this.activeGame === nextGame) {
+          this.sendToAllClients(switchEnv);
+          this.broadcastHostSnapshot(true);
+        }
+      }, 220);
+    } else {
+      // Client requested game switch -> forward to Host so Host switches the whole room!
+      this.sendToHost({
+        sender: this.localPeerId,
+        type: 'GAME_SWITCH',
+        payload: {
+          activeGame: nextGame,
+          botDifficulty: this.arenaEngine.botDifficulty,
+          levelIndex: this.chainEngine.levelIndex,
+          holeIndex: this.puttEngine?.holeIndex ?? 0
+        } satisfies GameSwitchMsg
+      });
     }
+
     this.onStatusUpdate();
+  }
+
+  /**
+   * Synchronizes room-wide actions (Bot difficulty, Sector/Hole change, Chain mode, Reset)
+   * whether pressed by the Host or a Client!
+   */
+  public sendOrApplyRoomAction(action: RoomActionMsg): void {
+    if (this.isHost) {
+      this.executeRoomAction(action);
+      const env: NetEnvelope = {
+        sender: this.localPeerId,
+        type: 'ROOM_ACTION',
+        payload: action
+      };
+      this.sendToAllClients(env);
+      this.broadcastHostSnapshot(true);
+      this.onStatusUpdate();
+    } else {
+      this.sendToHost({
+        sender: this.localPeerId,
+        type: 'ROOM_ACTION',
+        payload: action
+      });
+    }
+  }
+
+  private executeRoomAction(action: RoomActionMsg): void {
+    if (action.kind === 'BOT_DIFF' && action.botDifficulty) {
+      this.arenaEngine.botDifficulty = action.botDifficulty;
+      this.syncEnginesRoster();
+      this.arenaEngine.spawnRound();
+      this.chainEngine.loadLevel(this.chainEngine.levelIndex);
+      this.puttEngine?.loadHole(this.puttEngine.holeIndex);
+    } else if (action.kind === 'LOAD_STAGE') {
+      if (typeof action.levelIndex === 'number') {
+        this.chainEngine.loadLevel(action.levelIndex);
+      }
+      if (typeof action.holeIndex === 'number') {
+        this.puttEngine?.loadHole(action.holeIndex);
+      }
+    } else if (action.kind === 'CHAIN_MODE' && action.chainMode) {
+      this.chainEngine.mode = action.chainMode;
+      this.chainEngine.loadLevel(this.chainEngine.levelIndex);
+    } else if (action.kind === 'RESET_MATCH') {
+      if (this.activeGame === 'CHAIN_PANIC') {
+        this.chainEngine.loadLevel(this.chainEngine.levelIndex);
+      } else if (this.activeGame === 'TURBO_PUTT') {
+        this.puttEngine?.loadHole(this.puttEngine.holeIndex);
+      } else {
+        this.arenaEngine.resetChampionship();
+      }
+    }
   }
 
   public syncEnginesRoster(): void {
@@ -203,11 +348,7 @@ export class MultiplayerRoomManager {
       } satisfies KickPeerMsg
     };
 
-    this.localBus?.postMessage(kickEnv);
-    this.clientConns.forEach((conn) => {
-      if (conn.open) conn.send(kickEnv);
-    });
-
+    this.sendToAllClients(kickEnv);
     this.freeSlotForPeer(kickedPeerId, `🚫 ${kickedName} FUE VETADO DE LA SALA`);
     return true;
   }
@@ -253,10 +394,7 @@ export class MultiplayerRoomManager {
       type: 'ROOM_EVENT',
       payload: { text, tone } satisfies RoomEventMsg
     };
-    this.localBus?.postMessage(env);
-    this.clientConns.forEach((conn) => {
-      if (conn.open) conn.send(env);
-    });
+    this.sendToAllClients(env);
   }
 
   private startHeartbeatMonitor(): void {
@@ -264,18 +402,26 @@ export class MultiplayerRoomManager {
     this.heartbeatInterval = setInterval(() => {
       const now = performance.now();
       if (this.isHost) {
-        // Check if any remote human peer timed out (>6.5 seconds without any packet)
+        // Check if any remote human peer timed out (>7.5 seconds without any packet)
         this.peerLastSeen.forEach((lastSeen, peerId) => {
-          if (now - lastSeen > 6500) {
+          if (now - lastSeen > 7500) {
             this.freeSlotForPeer(peerId);
           }
         });
       } else {
-        // Client: if Host stopped sending snapshots for >4.5 seconds, attempt automatic reconnect
+        // Client: send periodic PING_REQ so Host always knows we're alive even while idling in the Hub!
+        const pingEnv: NetEnvelope = {
+          sender: this.localPeerId,
+          type: 'PING_REQ',
+          payload: now
+        };
+        this.sendToHost(pingEnv);
+
+        // If Host stopped sending snapshots for >5.5 seconds, attempt automatic reconnect
         if (
           this.connectionState === 'CONNECTED_CLIENT' &&
           this.lastHostSnapReceivedAt > 0 &&
-          now - this.lastHostSnapReceivedAt > 4500
+          now - this.lastHostSnapReceivedAt > 5500
         ) {
           this.connectionState = 'RECONNECTING';
           this.onStatusUpdate();
@@ -283,7 +429,7 @@ export class MultiplayerRoomManager {
           this.connectToRoom(this.roomCode, myName);
         }
       }
-    }, 1500);
+    }, 1400);
   }
 
   public disconnectCleanly(): void {
@@ -293,10 +439,7 @@ export class MultiplayerRoomManager {
       payload: { peerId: this.localPeerId }
     };
     try {
-      this.localBus?.postMessage(leaveEnv);
-      if (this.hostConn?.open) {
-        this.hostConn.send(leaveEnv);
-      }
+      this.sendToHost(leaveEnv);
       this.clientConns.forEach((c) => c.close());
       this.hostConn?.close();
       this.peer?.destroy();
@@ -305,15 +448,14 @@ export class MultiplayerRoomManager {
     }
   }
 
-  public connectToRoom(rawCode: string, playerName: string, epoch = 0): void {
+  public connectToRoom(rawCode: string, playerName: string): void {
     const cleanCode =
       (rawCode.trim().toUpperCase() || 'TP04').replace(/[^A-Z0-9]/g, '').slice(0, 8) || 'TP04';
     this.roomCode = cleanCode;
-    this.hostEpoch = epoch;
 
-    if (this.handshakeTimer) {
-      clearTimeout(this.handshakeTimer);
-      this.handshakeTimer = null;
+    if (this.joinRetryTimer) {
+      clearInterval(this.joinRetryTimer);
+      this.joinRetryTimer = null;
     }
 
     // Clean up previous connections
@@ -336,7 +478,7 @@ export class MultiplayerRoomManager {
       this.localBus = null;
     }
 
-    // Reset slots 1..3 to bots when initializing a new room
+    // Initialize as Host until either BroadcastChannel or PeerJS tells us someone else already owns the room
     this.isHost = true;
     this.connectionState = 'HOSTING';
     this.localSlotId = 0;
@@ -358,25 +500,25 @@ export class MultiplayerRoomManager {
     this.syncEnginesRoster();
 
     // 1. Setup BroadcastChannel for instant same-browser multi-tab sync
-    this.localBus = new BroadcastChannel(`tp04_bus_v3_${cleanCode}`);
+    this.localBus = new BroadcastChannel(`tp04_bus_v4_${cleanCode}`);
     this.localBus.onmessage = (ev) => {
       const env = ev.data as NetEnvelope;
       if (!env || env.sender === this.localPeerId) return;
+      this.peerLastSeen.set(env.sender, performance.now());
       this.handleEnvelope(env, (reply) => {
         this.localBus?.postMessage(reply);
       });
     };
 
-    // Broadcast JOIN_CLAIM on local BroadcastChannel in case another tab in this browser is already Host
+    // Claim join on local BroadcastChannel in case another tab in this browser is already Host
     this.localBus.postMessage({
       sender: this.localPeerId,
       type: 'JOIN_CLAIM',
       payload: { peerId: this.localPeerId, name: playerName.toUpperCase() }
     } satisfies NetEnvelope);
 
-    // 2. Setup WebRTC PeerJS with explicit Google STUN servers for reliable cross-network P2P
-    const hostPeerId =
-      epoch === 0 ? `${HOST_ID_PREFIX}${cleanCode}` : `${HOST_ID_PREFIX}${cleanCode}-${epoch}`;
+    // 2. Setup WebRTC PeerJS with explicit Google STUN servers
+    const hostPeerId = `${HOST_ID_PREFIX}${cleanCode}`;
     try {
       const peer = new Peer(hostPeerId, {
         config: { iceServers: ICE_SERVERS }
@@ -445,8 +587,11 @@ export class MultiplayerRoomManager {
       this.peer = null;
     }
 
-    this.connectionState = 'CONNECTING';
-    this.onStatusUpdate();
+    // If BroadcastChannel already connected us as a client in the same browser, keep that state
+    if (this.connectionState !== 'CONNECTED_CLIENT') {
+      this.connectionState = 'CONNECTING';
+      this.onStatusUpdate();
+    }
 
     try {
       const clientPeer = new Peer({
@@ -454,25 +599,38 @@ export class MultiplayerRoomManager {
       });
       this.peer = clientPeer;
 
-      // Handshake Watchdog: if the Host ID on PeerJS is a dead "ghost" session (e.g. Host refreshed page)
-      // and doesn't answer within 3.8s, automatically take over as Host on epoch+1 so room never breaks!
-      if (this.handshakeTimer) clearTimeout(this.handshakeTimer);
-      this.handshakeTimer = setTimeout(() => {
-        if (this.connectionState === 'CONNECTING') {
-          this.connectToRoom(this.roomCode, playerName, this.hostEpoch + 1);
-        }
-      }, 3800);
-
       clientPeer.on('open', () => {
         const conn = clientPeer.connect(hostPeerId, { reliable: true });
         this.hostConn = conn;
 
-        conn.on('open', () => {
-          conn.send({
+        const sendJoinClaim = () => {
+          const currentName =
+            this.arenaEngine.players[this.localSlotId]?.name || playerName.toUpperCase();
+          const claimEnv: NetEnvelope = {
             sender: this.localPeerId,
             type: 'JOIN_CLAIM',
-            payload: { peerId: this.localPeerId, name: playerName.toUpperCase() }
-          } satisfies NetEnvelope);
+            payload: { peerId: this.localPeerId, name: currentName } satisfies JoinClaimMsg
+          };
+          this.localBus?.postMessage(claimEnv);
+          if (conn.open) {
+            conn.send(claimEnv);
+          }
+        };
+
+        conn.on('open', () => {
+          sendJoinClaim();
+          // Retry JOIN_CLAIM every 900ms until SLOT_ASSIGN is confirmed so it NEVER gets lost!
+          if (this.joinRetryTimer) clearInterval(this.joinRetryTimer);
+          this.joinRetryTimer = setInterval(() => {
+            if (this.connectionState === 'CONNECTED_CLIENT') {
+              if (this.joinRetryTimer) {
+                clearInterval(this.joinRetryTimer);
+                this.joinRetryTimer = null;
+              }
+              return;
+            }
+            sendJoinClaim();
+          }, 900);
           this.onStatusUpdate();
         });
 
@@ -483,13 +641,27 @@ export class MultiplayerRoomManager {
         });
 
         conn.on('close', () => {
-          // Host closed their tab! Promote this tab or notify
-          this.pushToast('⚠️ EL HOST CERRÓ LA SALA — AHORA ERES EL HOST', 'warn');
-          this.isHost = true;
-          this.connectionState = 'HOSTING';
-          this.connectedPeersCount = 0;
-          this.connectToRoom(this.roomCode, playerName, this.hostEpoch + 1);
+          if (this.joinRetryTimer) {
+            clearInterval(this.joinRetryTimer);
+            this.joinRetryTimer = null;
+          }
+          // Host closed their tab! Try claiming the room as the new Host
+          this.pushToast('⚠️ EL ANFITRIÓN SALIÓ — ASUMIENDO CONTROL DE SALA', 'warn');
+          const myName = this.arenaEngine.players[this.localSlotId]?.name || playerName;
+          setTimeout(() => {
+            this.connectToRoom(this.roomCode, myName);
+          }, 600);
         });
+      });
+
+      clientPeer.on('error', (err: { type?: string }) => {
+        if (err.type === 'peer-unavailable') {
+          // The previous Host PeerID was just released on PeerJS server -> claim Host!
+          const myName = this.arenaEngine.players[this.localSlotId]?.name || playerName;
+          setTimeout(() => {
+            this.connectToRoom(this.roomCode, myName);
+          }, 500);
+        }
       });
     } catch {
       this.isHost = true;
@@ -497,13 +669,15 @@ export class MultiplayerRoomManager {
     }
   }
 
-  private handleEnvelope(
+  public handleEnvelope(
     env: NetEnvelope,
     replyFn: (reply: NetEnvelope) => void
   ): void {
     if (!env || env.sender === this.localPeerId) return;
 
-    if (env.type === 'JOIN_CLAIM' && this.isHost && !document.hidden) {
+    // IMPORTANT: Never check `!document.hidden` here!
+    // The Host tab is often in the background while the Host pastes the invite link in Discord/WhatsApp!
+    if (env.type === 'JOIN_CLAIM' && this.isHost) {
       const claim = env.payload as JoinClaimMsg;
       if (this.bannedPeerIds.has(claim.peerId)) {
         replyFn({
@@ -524,15 +698,20 @@ export class MultiplayerRoomManager {
       this.peerToSlot.set(claim.peerId, assignedSlot);
       this.peerLastSeen.set(claim.peerId, performance.now());
 
-      replyFn({
+      const assignReply: NetEnvelope = {
         sender: this.localPeerId,
         type: 'SLOT_ASSIGN',
         payload: {
           peerId: claim.peerId,
           slotId: assignedSlot,
-          hostName: this.arenaEngine.players[0].name
+          hostName: this.arenaEngine.players[0].name,
+          activeGame: this.activeGame,
+          botDifficulty: this.arenaEngine.botDifficulty
         } satisfies SlotAssignMsg
-      });
+      };
+
+      replyFn(assignReply);
+      this.sendToAllClients(assignReply);
 
       if (isNewJoin) {
         const joinText = `🟢 ¡${claim.name.toUpperCase()} SE UNIÓ A LA SALA! (SLOT ${assignedSlot + 1})`;
@@ -542,6 +721,58 @@ export class MultiplayerRoomManager {
 
       this.broadcastHostSnapshot(true);
       this.onStatusUpdate();
+    } else if (env.type === 'SLOT_ASSIGN') {
+      const assign = env.payload as SlotAssignMsg;
+      if (assign.peerId === this.localPeerId) {
+        if (this.joinRetryTimer) {
+          clearInterval(this.joinRetryTimer);
+          this.joinRetryTimer = null;
+        }
+        const wasConnecting = this.connectionState !== 'CONNECTED_CLIENT';
+        this.isHost = false;
+        this.connectionState = 'CONNECTED_CLIENT';
+        this.localSlotId = assign.slotId;
+        this.activeGame = assign.activeGame;
+        this.arenaEngine.botDifficulty = assign.botDifficulty;
+        this.lastHostSnapReceivedAt = performance.now();
+        if (wasConnecting) {
+          this.pushToast(
+            `🟢 CONECTADO A SALA #${this.roomCode} DE ${assign.hostName} (SLOT ${assign.slotId + 1})`,
+            'join'
+          );
+        }
+        this.onStatusUpdate();
+      }
+    } else if (env.type === 'GAME_SWITCH') {
+      const msg = env.payload as GameSwitchMsg;
+      if (!msg?.activeGame) return;
+
+      if (this.isHost) {
+        // A Client clicked "JUGAR" or switched game tabs -> Host switches the whole room!
+        this.switchGame(msg.activeGame);
+      } else {
+        // Host switched game -> Client immediately transitions into the game!
+        this.activeGame = msg.activeGame;
+        this.arenaEngine.botDifficulty = msg.botDifficulty;
+        this.syncEnginesRoster();
+        if (msg.activeGame === 'CHAIN_PANIC' && typeof msg.levelIndex === 'number') {
+          this.chainEngine.loadLevel(msg.levelIndex);
+        } else if (msg.activeGame === 'TURBO_PUTT' && typeof msg.holeIndex === 'number') {
+          this.puttEngine?.loadHole(msg.holeIndex);
+        }
+        this.lastHostSnapReceivedAt = performance.now();
+        this.onStatusUpdate();
+      }
+    } else if (env.type === 'ROOM_ACTION') {
+      const action = env.payload as RoomActionMsg;
+      if (!action?.kind) return;
+      if (this.isHost) {
+        // Forwarded from a client -> execute on Host and broadcast to all
+        this.sendOrApplyRoomAction(action);
+      } else {
+        this.executeRoomAction(action);
+        this.onStatusUpdate();
+      }
     } else if (env.type === 'PEER_LEAVE' && this.isHost) {
       const data = env.payload as { peerId: string };
       if (data?.peerId) {
@@ -568,29 +799,10 @@ export class MultiplayerRoomManager {
         payload: env.payload
       });
     } else if (env.type === 'PING_ACK' && !this.isHost) {
+      this.lastHostSnapReceivedAt = performance.now();
       const sentAt = Number(env.payload) || 0;
       if (sentAt > 0) {
         this.pingMs = Math.max(1, Math.round(performance.now() - sentAt));
-      }
-    } else if (env.type === 'SLOT_ASSIGN') {
-      const assign = env.payload as SlotAssignMsg;
-      if (assign.peerId === this.localPeerId) {
-        if (this.handshakeTimer) {
-          clearTimeout(this.handshakeTimer);
-          this.handshakeTimer = null;
-        }
-        const wasConnecting = this.connectionState !== 'CONNECTED_CLIENT';
-        this.isHost = false;
-        this.connectionState = 'CONNECTED_CLIENT';
-        this.localSlotId = assign.slotId;
-        this.lastHostSnapReceivedAt = performance.now();
-        if (wasConnecting) {
-          this.pushToast(
-            `🟢 CONECTADO A SALA #${this.roomCode} DE ${assign.hostName} (SLOT ${assign.slotId + 1})`,
-            'join'
-          );
-        }
-        this.onStatusUpdate();
       }
     } else if (env.type === 'CLIENT_INPUT' && this.isHost) {
       if (this.bannedPeerIds.has(env.sender)) return;
@@ -602,34 +814,50 @@ export class MultiplayerRoomManager {
       this.puttEngine?.applyRemoteInput(inp);
       if (prevName && prevName !== inp.name) {
         this.syncEnginesRoster();
+        this.broadcastHostSnapshot(true);
         this.onStatusUpdate();
       }
     } else if (env.type === 'WORLD_SNAP' && !this.isHost) {
-      if (this.handshakeTimer) {
-        clearTimeout(this.handshakeTimer);
-        this.handshakeTimer = null;
+      if (this.joinRetryTimer) {
+        clearInterval(this.joinRetryTimer);
+        this.joinRetryTimer = null;
       }
       this.connectionState = 'CONNECTED_CLIENT';
       this.lastHostSnapReceivedAt = performance.now();
+
       const snap = env.payload as WorldSnapshotPacket;
       const prevGame = this.activeGame;
+      const prevDiff = this.arenaEngine.botDifficulty;
+      const prevPhase = this.arenaEngine.phase;
       const prevHumanCount = this.arenaEngine.players.filter((p) => !p.isBot).length;
+
       this.activeGame = snap.activeGame;
       this.arenaEngine.applySnapshot(snap, this.localSlotId);
+      this.syncEnginesRoster();
+
       if (snap.chainState) {
         this.chainEngine.applySnapshot(snap.chainState);
       }
       if (snap.puttState) {
         this.puttEngine?.applySnapshot(snap.puttState);
       }
+
       const newHumanCount = this.arenaEngine.players.filter((p) => !p.isBot).length;
-      if (prevGame !== this.activeGame || prevHumanCount !== newHumanCount) {
+      if (
+        prevGame !== this.activeGame ||
+        prevDiff !== this.arenaEngine.botDifficulty ||
+        prevPhase !== this.arenaEngine.phase ||
+        prevHumanCount !== newHumanCount ||
+        snap.tick % 15 === 0
+      ) {
         this.onStatusUpdate();
       }
     } else if (env.type === 'DRAFT_PICK' && this.isHost) {
       this.peerLastSeen.set(env.sender, performance.now());
       const pick = env.payload as DraftPickMsg;
       this.arenaEngine.selectDraftMod(pick.slotId, pick.modId);
+      this.broadcastHostSnapshot(true);
+      this.onStatusUpdate();
     }
   }
 
@@ -667,12 +895,9 @@ export class MultiplayerRoomManager {
       type: 'CLIENT_INPUT',
       payload: input
     };
-    this.localBus?.postMessage(env);
-    if (this.hostConn?.open) {
-      this.hostConn.send(env);
-    }
+    this.sendToHost(env);
 
-    // Periodic lightweight ping/heartbeat every ~25 frames
+    // Periodic lightweight ping measurement every ~25 frames
     this.rtcBroadcastCounter++;
     if (this.rtcBroadcastCounter % 25 === 0) {
       const pingEnv: NetEnvelope = {
@@ -680,19 +905,23 @@ export class MultiplayerRoomManager {
         type: 'PING_REQ',
         payload: performance.now()
       };
-      this.localBus?.postMessage(pingEnv);
-      if (this.hostConn?.open) {
-        this.hostConn.send(pingEnv);
-      }
+      this.sendToHost(pingEnv);
     }
   }
 
-  public broadcastHostSnapshot(_forceRtc = false): void {
+  public broadcastHostSnapshot(forceRtc = false): void {
     if (!this.isHost) return;
     const snap = this.arenaEngine.getSnapshot();
     snap.activeGame = this.activeGame;
-    snap.chainState = this.chainEngine.getSnapshot();
-    snap.puttState = this.puttEngine?.getSnapshot();
+    snap.botDifficulty = this.arenaEngine.botDifficulty;
+
+    // Only serialize the active game's payload to keep WebRTC packets compact & congestion-free!
+    if (forceRtc || this.activeGame === 'CHAIN_PANIC') {
+      snap.chainState = this.chainEngine.getSnapshot();
+    }
+    if (forceRtc || this.activeGame === 'TURBO_PUTT') {
+      snap.puttState = this.puttEngine?.getSnapshot();
+    }
 
     const env: NetEnvelope = {
       sender: this.localPeerId,
@@ -702,9 +931,18 @@ export class MultiplayerRoomManager {
 
     this.localBus?.postMessage(env);
 
-    // Send at full 60Hz over WebRTC DataChannel for minimum latency!
     this.clientConns.forEach((conn) => {
-      if (conn.open) conn.send(env);
+      if (!conn.open) return;
+      // Backpressure guard: avoid overflowing WebRTC SCTP buffer on slow Wi-Fi
+      const dc = (conn as unknown as { dataChannel?: RTCDataChannel }).dataChannel;
+      if (!forceRtc && dc && dc.bufferedAmount > 65536) {
+        return;
+      }
+      try {
+        conn.send(env);
+      } catch {
+        // Ignore transient send error
+      }
     });
   }
 
@@ -718,10 +956,7 @@ export class MultiplayerRoomManager {
         type: 'DRAFT_PICK',
         payload: { slotId: this.localSlotId, modId } satisfies DraftPickMsg
       };
-      this.localBus?.postMessage(env);
-      if (this.hostConn?.open) {
-        this.hostConn.send(env);
-      }
+      this.sendToHost(env);
     }
   }
 }

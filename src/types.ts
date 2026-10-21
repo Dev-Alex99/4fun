@@ -355,6 +355,7 @@ export interface ClientInputPacket {
 
 export interface WorldSnapshotPacket {
   activeGame: ActiveGameId;
+  botDifficulty?: BotDifficulty;
   tick: number;
   phase: RoundPhase;
   courtLayout: CourtLayout;

@@ -718,6 +718,7 @@ export class ArenaEngine {
   public getSnapshot(): WorldSnapshotPacket {
     return {
       activeGame: 'BASH_BOT',
+      botDifficulty: this.botDifficulty,
       tick: this.tick,
       phase: this.phase,
       courtLayout: this.courtLayout,
@@ -784,6 +785,10 @@ export class ArenaEngine {
 
   public applySnapshot(snap: WorldSnapshotPacket, localSlotId?: number): void {
     const prevPhase = this.phase;
+    const prevDiff = this.botDifficulty;
+    if (snap.botDifficulty) {
+      this.botDifficulty = snap.botDifficulty;
+    }
     this.tick = snap.tick;
     this.phase = snap.phase;
     this.courtLayout = snap.courtLayout;
@@ -842,7 +847,7 @@ export class ArenaEngine {
     });
 
     this.bumpers = snap.bumpers;
-    if (prevPhase !== this.phase) {
+    if (prevPhase !== this.phase || prevDiff !== this.botDifficulty) {
       this.onPhaseChange?.();
     }
   }

@@ -604,57 +604,52 @@ soundToggleBtn.addEventListener('click', () => {
 });
 
 resetMatchBtn.addEventListener('click', () => {
-  if (!net.shouldStepLocally()) return;
-  if (net.activeGame === 'CHAIN_PANIC') {
-    chainEngine.loadLevel(chainEngine.levelIndex);
-  } else if (net.activeGame === 'TURBO_PUTT') {
-    puttEngine.loadHole(puttEngine.holeIndex);
-  } else {
-    arenaEngine.resetChampionship();
-  }
-  net.broadcastHostSnapshot(true);
-  syncOverlaysAndHUD();
+  sfx.playCartridgeClick();
+  net.sendOrApplyRoomAction({ kind: 'RESET_MATCH' });
 });
 
 prevSectorBtn.addEventListener('click', () => {
-  if (!net.shouldStepLocally()) return;
   sfx.playCartridgeClick();
   if (net.activeGame === 'TURBO_PUTT') {
-    puttEngine.loadHole(puttEngine.holeIndex - 1);
+    net.sendOrApplyRoomAction({
+      kind: 'LOAD_STAGE',
+      holeIndex: puttEngine.holeIndex - 1
+    });
   } else {
-    chainEngine.loadLevel(chainEngine.levelIndex - 1);
+    net.sendOrApplyRoomAction({
+      kind: 'LOAD_STAGE',
+      levelIndex: chainEngine.levelIndex - 1
+    });
   }
-  net.broadcastHostSnapshot(true);
-  syncOverlaysAndHUD();
 });
 
 nextSectorBtn.addEventListener('click', () => {
-  if (!net.shouldStepLocally()) return;
   sfx.playCartridgeClick();
   if (net.activeGame === 'TURBO_PUTT') {
-    puttEngine.loadHole(puttEngine.holeIndex + 1);
+    net.sendOrApplyRoomAction({
+      kind: 'LOAD_STAGE',
+      holeIndex: puttEngine.holeIndex + 1
+    });
   } else {
-    chainEngine.loadLevel(chainEngine.levelIndex + 1);
+    net.sendOrApplyRoomAction({
+      kind: 'LOAD_STAGE',
+      levelIndex: chainEngine.levelIndex + 1
+    });
   }
-  net.broadcastHostSnapshot(true);
-  syncOverlaysAndHUD();
 });
 
 chainModeBtn.addEventListener('click', () => {
-  if (!net.shouldStepLocally()) return;
   sfx.playCartridgeClick();
-  chainEngine.toggleMode();
-  chainModeBtn.textContent =
-    chainEngine.mode === 'SABOTAGE' ? 'MODO: TRAIDOR (3v1)' : 'MODO: CO-OP';
-  net.broadcastHostSnapshot(true);
-  syncOverlaysAndHUD();
+  const nextMode = chainEngine.mode === 'COOP' ? 'SABOTAGE' : 'COOP';
+  net.sendOrApplyRoomAction({
+    kind: 'CHAIN_MODE',
+    chainMode: nextMode
+  });
 });
 
 newChampionshipBtn.addEventListener('click', () => {
-  if (net.shouldStepLocally()) {
-    arenaEngine.resetChampionship();
-    net.broadcastHostSnapshot(true);
-  }
+  sfx.playCartridgeClick();
+  net.sendOrApplyRoomAction({ kind: 'RESET_MATCH' });
 });
 
 function applyPilotNameChange(rawValue: string): void {
@@ -714,21 +709,13 @@ document.addEventListener('click', (e) => {
 });
 
 function cycleBotMode(): void {
-  if (!net.shouldStepLocally()) return;
   sfx.playCartridgeClick();
   const idx = DIFFICULTY_CYCLE.indexOf(arenaEngine.botDifficulty);
   const nextDiff = DIFFICULTY_CYCLE[(idx + 1) % DIFFICULTY_CYCLE.length];
-  arenaEngine.botDifficulty = nextDiff;
-
-  const botsActive = nextDiff !== 'OFF';
-  const roster = arenaEngine.players.map((p) => ({ name: p.name, isBot: p.isBot }));
-  chainEngine.syncPlayerIdentities(roster, botsActive);
-  puttEngine.syncPlayerIdentities(roster, botsActive);
-  arenaEngine.spawnRound();
-  chainEngine.loadLevel(chainEngine.levelIndex);
-  puttEngine.loadHole(puttEngine.holeIndex);
-  net.broadcastHostSnapshot(true);
-  syncOverlaysAndHUD();
+  net.sendOrApplyRoomAction({
+    kind: 'BOT_DIFF',
+    botDifficulty: nextDiff
+  });
 }
 
 toggleBotsBtn.addEventListener('click', cycleBotMode);
