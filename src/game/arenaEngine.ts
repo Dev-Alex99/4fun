@@ -207,14 +207,55 @@ export class ArenaEngine {
     const slot = this.players[packet.slotId];
     if (!slot) return;
     if (packet.name) slot.name = packet.name.slice(0, 10).toUpperCase();
+    if (packet.feintPrimed) slot.feintPrimed = true;
     this.remoteInputs.set(packet.slotId, packet);
+
+    // Sync client-predicted coordinates (clamped to court bounds) so Host hit-detection matches Client screen
+    if (
+      slot.alive &&
+      typeof packet.clientX === 'number' &&
+      typeof packet.clientY === 'number'
+    ) {
+      const dx = packet.clientX - slot.x;
+      const dy = packet.clientY - slot.y;
+      if (Math.hypot(dx, dy) < 180) {
+        slot.x += dx * 0.65;
+        slot.y += dy * 0.65;
+      }
+    }
 
     if (packet.emotePressed > 0) {
       this.triggerEmote(slot, packet.emotePressed);
     }
 
+    // FAVOR-THE-DEFENDER ROLLBACK RESCUE:
+    // If the client pressed parry on time on their screen, but due to network RTT (up to 280ms)
+    // the Host just marked them K.O. moments ago, rollback the K.O. and deflect the ball!
+    if (
+      !slot.alive &&
+      this.phase === 'PLAYING' &&
+      packet.parryPressed &&
+      slot.lastKOAt &&
+      performance.now() - slot.lastKOAt <= 280 &&
+      this.balls.length > 0
+    ) {
+      const batReach = (slot.radius + 32) * slot.parryRadiusMult;
+      if (packet.clientBallDist <= batReach + 36) {
+        slot.alive = true;
+        slot.lastKOAt = undefined;
+        slot.aimAngle = packet.aimAngle;
+        const ball = this.balls[0];
+        ball.x = slot.x + Math.cos(slot.aimAngle) * 24;
+        ball.y = slot.y + Math.sin(slot.aimAngle) * 24;
+        this.executeDeflection(slot, ball, true);
+        this.addCallout(slot.x, slot.y - 42, '⚡ ¡PARRY COMPENSADO!', '#15803D');
+        return;
+      }
+    }
+
     if (this.phase === 'PLAYING' && slot.alive) {
       if (packet.parryPressed) {
+        slot.aimAngle = packet.aimAngle;
         this.triggerParry(slot, packet.clientBallDist);
       }
       if (packet.dashPressed) {
@@ -239,7 +280,7 @@ export class ArenaEngine {
         return d < Math.hypot(best.x - p.x, best.y - p.y) ? b : best;
       }, this.balls[0]);
 
-      if (clientBallDist <= batReach + closestBall.radius + 18 && closestBall.ownerId !== p.id) {
+      if (clientBallDist <= batReach + closestBall.radius + 28 && closestBall.ownerId !== p.id) {
         this.executeDeflection(p, closestBall, true);
       }
     }
@@ -629,6 +670,7 @@ export class ArenaEngine {
           this.executeDeflection(p, ball, isPerfect);
         } else if (d <= p.radius + ball.radius - 2) {
           p.alive = false;
+          p.lastKOAt = performance.now();
           this.hitStopTimer = 0.095;
           this.screenShake = 14;
           sfx.playKODisassembly();
@@ -690,7 +732,57 @@ export class ArenaEngine {
     };
   }
 
-  public applySnapshot(snap: WorldSnapshotPacket): void {
+  /**
+   * Client-side prediction step: runs on non-Host tabs at 60fps so local movement,
+   * dash, bat swing, and ball trajectory feel 100% instant (0ms input lag).
+   */
+  public stepClientPrediction(dt: number, localSlotId: number, input: ClientInputPacket): void {
+    if (this.phase !== 'PLAYING') return;
+    const p = this.players[localSlotId];
+    if (p && p.alive) {
+      if (p.parryTimer > 0) p.parryTimer = Math.max(0, p.parryTimer - dt);
+      if (p.parryCooldown > 0) p.parryCooldown = Math.max(0, p.parryCooldown - dt);
+      if (p.dashTimer > 0) p.dashTimer = Math.max(0, p.dashTimer - dt);
+      if (p.dashCooldown > 0) p.dashCooldown = Math.max(0, p.dashCooldown - dt);
+
+      const moveSpeed = 235 * p.speedMult;
+      if (input.moveX !== 0 || input.moveY !== 0) {
+        const len = Math.hypot(input.moveX, input.moveY);
+        p.vx += (input.moveX / len) * moveSpeed * 9.5 * dt;
+        p.vy += (input.moveY / len) * moveSpeed * 9.5 * dt;
+      }
+      p.aimAngle = input.aimAngle;
+
+      const damping = p.dashTimer > 0 ? 0.94 : 0.83;
+      p.vx *= Math.pow(damping, dt * 60);
+      p.vy *= Math.pow(damping, dt * 60);
+      p.x += p.vx * dt;
+      p.y += p.vy * dt;
+
+      const spd = Math.hypot(p.vx, p.vy);
+      p.walkCycle = spd > 15 ? p.walkCycle + spd * dt * 0.11 : 0;
+      p.tiltX = Math.max(-0.22, Math.min(0.22, p.vx * 0.0008));
+
+      const ex = (p.x - COURT_CENTER_X) / (COURT_RX - p.radius);
+      const ey = (p.y - COURT_CENTER_Y) / (COURT_RY - p.radius);
+      const eLen = Math.hypot(ex, ey);
+      if (eLen > 1) {
+        p.x = COURT_CENTER_X + (ex / eLen) * (COURT_RX - p.radius);
+        p.y = COURT_CENTER_Y + (ey / eLen) * (COURT_RY - p.radius);
+      }
+    }
+
+    // Dead-reckon balls between snapshots for smooth 60/120fps visuals
+    this.balls.forEach((ball) => {
+      ball.x += ball.vx * dt;
+      ball.y += ball.vy * dt;
+      ball.rotation += ball.speed * dt * 0.04;
+      ball.trail.push({ x: ball.x, y: ball.y, z: ball.z });
+      if (ball.trail.length > 11) ball.trail.shift();
+    });
+  }
+
+  public applySnapshot(snap: WorldSnapshotPacket, localSlotId?: number): void {
     const prevPhase = this.phase;
     this.tick = snap.tick;
     this.phase = snap.phase;
@@ -700,8 +792,55 @@ export class ArenaEngine {
     this.comboCount = snap.comboCount;
     this.lastRoundWinnerId = snap.lastRoundWinnerId;
     this.draftOptions = snap.draftOptions;
-    this.players = snap.players;
-    this.balls = snap.balls;
+
+    // Preserve local player's predicted movement/swing to eliminate rubber-banding & input lag
+    this.players = snap.players.map((sp) => {
+      const prev = this.players[sp.id];
+      if (!prev) return { ...sp };
+
+      if (localSlotId !== undefined && sp.id === localSlotId && sp.alive && prev.alive) {
+        const dist = Math.hypot(sp.x - prev.x, sp.y - prev.y);
+        if (dist < 160) {
+          return {
+            ...sp,
+            x: prev.x + (sp.x - prev.x) * 0.12,
+            y: prev.y + (sp.y - prev.y) * 0.12,
+            vx: prev.vx,
+            vy: prev.vy,
+            aimAngle: prev.aimAngle,
+            walkCycle: prev.walkCycle,
+            tiltX: prev.tiltX,
+            parryTimer: Math.max(prev.parryTimer, sp.parryTimer),
+            dashTimer: Math.max(prev.dashTimer, sp.dashTimer)
+          };
+        }
+      }
+
+      // Smoothly interpolate remote players
+      const rDist = Math.hypot(sp.x - prev.x, sp.y - prev.y);
+      if (sp.alive && prev.alive && rDist < 120) {
+        return {
+          ...sp,
+          x: prev.x + (sp.x - prev.x) * 0.65,
+          y: prev.y + (sp.y - prev.y) * 0.65
+        };
+      }
+      return { ...sp };
+    });
+
+    this.balls = snap.balls.map((sb) => {
+      const prevB = this.balls.find((b) => b.id === sb.id);
+      if (prevB && Math.hypot(sb.x - prevB.x, sb.y - prevB.y) < 140) {
+        return {
+          ...sb,
+          x: prevB.x + (sb.x - prevB.x) * 0.72,
+          y: prevB.y + (sb.y - prevB.y) * 0.72,
+          trail: prevB.trail
+        };
+      }
+      return { ...sb };
+    });
+
     this.bumpers = snap.bumpers;
     if (prevPhase !== this.phase) {
       this.onPhaseChange?.();

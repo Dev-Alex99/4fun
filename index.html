@@ -132,6 +132,39 @@
                 <div class="hazard-badge"></div>
               </div>
 
+              <!-- Kick / Ban Notification Banner -->
+              <div id="kickNoticeBanner" class="kick-banner hidden"></div>
+
+              <!-- In-Hub Pilot Name & Room Roster / Moderation Bar -->
+              <div class="hub-lobby-strip">
+                <div class="hub-pilot-box">
+                  <label class="hub-strip-label" for="hubPilotNameInput">PILOTO (TU NOMBRE):</label>
+                  <div class="hub-pilot-input-row">
+                    <input
+                      id="hubPilotNameInput"
+                      class="hub-pilot-input"
+                      type="text"
+                      maxlength="10"
+                      placeholder="TU NOMBRE"
+                      value="ALEX"
+                    />
+                    <span class="net-compensation-tag" title="Predicción local 0ms + Compensación de Latencia activa">
+                      ⚡ ROLLBACK NETCODE
+                    </span>
+                  </div>
+                </div>
+
+                <div class="hub-roster-box">
+                  <div class="hub-roster-header">
+                    <span class="hub-strip-label">TRIPULACIÓN EN SALA (HOST PUEDE VETAR ✕):</span>
+                    <button id="unbanAllBtn" class="keycap-btn keycap-sm hidden">
+                      DESBLOQUEAR VETADOS
+                    </button>
+                  </div>
+                  <div id="hubRosterList" class="hub-roster-list"></div>
+                </div>
+              </div>
+
               <div class="hub-grid">
                 <!-- Cartridge 01: BASH-BOT -->
                 <div class="game-cartridge">
@@ -226,6 +259,35 @@
               <button id="newChampionshipBtn" class="keycap-btn keycap-orange keycap-lg">
                 JUGAR REVANCHA →
               </button>
+            </div>
+          </div>
+
+          <!-- First-Time Pilot Callsign Onboarding Modal -->
+          <div id="pilotOnboardingModal" class="draft-overlay hidden">
+            <div class="draft-card-box onboarding-box">
+              <div class="draft-header">
+                <div>
+                  <div class="draft-eyebrow">IDENTIFICACIÓN DE UNIDAD // TP-SYSTEM</div>
+                  <h2 class="draft-title">INGRESA TU NOMBRE DE PILOTO</h2>
+                </div>
+                <div class="hazard-badge"></div>
+              </div>
+              <p class="onboarding-desc">
+                Elige cómo te verán tus amigos en la sala multijugador (puedes cambiarlo cuando quieras desde el Hub o la barra superior).
+              </p>
+              <div class="onboarding-form">
+                <input
+                  id="onboardingNameInput"
+                  class="onboarding-input"
+                  type="text"
+                  maxlength="10"
+                  placeholder="EJ: ALEX"
+                  autocomplete="off"
+                />
+                <button id="confirmOnboardingBtn" class="keycap-btn keycap-orange keycap-lg">
+                  GUARDAR Y ENTRAR A LA CONSOLA →
+                </button>
+              </div>
             </div>
           </div>
         </section>

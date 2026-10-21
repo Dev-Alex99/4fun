@@ -346,6 +346,20 @@ export class ChainPanicEngine {
     this.remoteInputs.set(packet.slotId, packet);
     const p = this.players[packet.slotId];
     if (!p) return;
+    if (packet.name) p.name = packet.name.slice(0, 10).toUpperCase();
+
+    // Lag-compensation: honor client's jump height & position so lasers never hit a player who jumped on their screen
+    if (typeof packet.clientZ === 'number' && packet.clientZ > p.z) {
+      p.z = packet.clientZ;
+      p.onGround = false;
+    }
+    if (typeof packet.clientX === 'number' && typeof packet.clientY === 'number') {
+      const dist = Math.hypot(packet.clientX - p.x, packet.clientY - p.y);
+      if (dist < 140) {
+        p.x += (packet.clientX - p.x) * 0.45;
+        p.y += (packet.clientY - p.y) * 0.45;
+      }
+    }
 
     if (packet.emotePressed > 0) {
       this.triggerEmote(p, packet.emotePressed);

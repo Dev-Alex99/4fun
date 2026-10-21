@@ -6,7 +6,15 @@ import { ActiveGameId, ClientInputPacket, WorldSnapshotPacket } from '../types';
 
 interface NetEnvelope {
   sender: string;
-  type: 'JOIN_CLAIM' | 'SLOT_ASSIGN' | 'CLIENT_INPUT' | 'WORLD_SNAP' | 'DRAFT_PICK';
+  type:
+    | 'JOIN_CLAIM'
+    | 'SLOT_ASSIGN'
+    | 'CLIENT_INPUT'
+    | 'WORLD_SNAP'
+    | 'DRAFT_PICK'
+    | 'KICK_PEER'
+    | 'PING_REQ'
+    | 'PING_ACK';
   payload: unknown;
 }
 
@@ -25,7 +33,13 @@ interface DraftPickMsg {
   modId: string;
 }
 
+interface KickPeerMsg {
+  targetPeerId: string;
+  reason: string;
+}
+
 const HOST_ID_PREFIX = 'tp04-party-deck-v2-';
+const DEFAULT_BOT_NAMES = ['UNIT-01', 'LEO-BOT', 'MAX-BOT', 'NICO-BOT'];
 
 export class MultiplayerRoomManager {
   public roomCode = 'TP04';
@@ -34,6 +48,9 @@ export class MultiplayerRoomManager {
   public isHost = true;
   public activeGame: ActiveGameId = 'HUB';
   public connectedPeersCount = 0;
+  public pingMs = 0;
+  public bannedPeerIds = new Set<string>();
+  public kickedNotice: string | null = null;
 
   private arenaEngine: ArenaEngine;
   private chainEngine: ChainPanicEngine;
@@ -74,13 +91,59 @@ export class MultiplayerRoomManager {
 
   public switchGame(nextGame: ActiveGameId): void {
     this.activeGame = nextGame;
+    this.syncEnginesRoster();
+    if (this.isHost) {
+      this.broadcastHostSnapshot(true);
+    }
+    this.onStatusUpdate();
+  }
+
+  public syncEnginesRoster(): void {
     const roster = this.arenaEngine.players.map((p) => ({ name: p.name, isBot: p.isBot }));
     const botsActive = this.arenaEngine.botDifficulty !== 'OFF';
     this.chainEngine.syncPlayerIdentities(roster, botsActive);
     this.puttEngine?.syncPlayerIdentities(roster, botsActive);
-    if (this.isHost) {
-      this.broadcastHostSnapshot(true);
-    }
+  }
+
+  /**
+   * Host action: Kick & ban a connected player in slotId (1..3) from the room.
+   */
+  public kickPlayerSlot(slotId: number): boolean {
+    if (!this.isHost || slotId <= 0) return false;
+    const target = this.arenaEngine.players[slotId];
+    if (!target || target.isBot || !target.peerId) return false;
+
+    const kickedPeerId = target.peerId;
+    this.bannedPeerIds.add(kickedPeerId);
+
+    const kickEnv: NetEnvelope = {
+      sender: this.localPeerId,
+      type: 'KICK_PEER',
+      payload: {
+        targetPeerId: kickedPeerId,
+        reason: `Fuiste vetado de la sala #${this.roomCode} por el Host.`
+      } satisfies KickPeerMsg
+    };
+
+    this.localBus?.postMessage(kickEnv);
+    this.clientConns.forEach((conn) => {
+      if (conn.open) conn.send(kickEnv);
+    });
+
+    // Reset slot back to Bot
+    target.peerId = null;
+    target.isBot = true;
+    target.name = DEFAULT_BOT_NAMES[slotId] || `BOT-0${slotId + 1}`;
+    target.alive = this.arenaEngine.botDifficulty !== 'OFF';
+
+    this.syncEnginesRoster();
+    this.broadcastHostSnapshot(true);
+    this.onStatusUpdate();
+    return true;
+  }
+
+  public clearBanList(): void {
+    this.bannedPeerIds.clear();
     this.onStatusUpdate();
   }
 
@@ -220,6 +283,17 @@ export class MultiplayerRoomManager {
 
     if (env.type === 'JOIN_CLAIM' && this.isHost && !document.hidden) {
       const claim = env.payload as JoinClaimMsg;
+      if (this.bannedPeerIds.has(claim.peerId)) {
+        replyFn({
+          sender: this.localPeerId,
+          type: 'KICK_PEER',
+          payload: {
+            targetPeerId: claim.peerId,
+            reason: `Estás vetado de la sala #${this.roomCode}.`
+          } satisfies KickPeerMsg
+        });
+        return;
+      }
       const assignedSlot = this.assignSlotForPeer(claim.peerId, claim.name);
       replyFn({
         sender: this.localPeerId,
@@ -228,6 +302,25 @@ export class MultiplayerRoomManager {
       });
       this.broadcastHostSnapshot(true);
       this.onStatusUpdate();
+    } else if (env.type === 'KICK_PEER') {
+      const kick = env.payload as KickPeerMsg;
+      if (kick.targetPeerId === this.localPeerId) {
+        this.kickedNotice = kick.reason;
+        const soloCode = 'SOLO' + Math.floor(10 + Math.random() * 89);
+        this.connectToRoom(soloCode, this.arenaEngine.players[this.localSlotId]?.name || 'PILOTO');
+        this.onStatusUpdate();
+      }
+    } else if (env.type === 'PING_REQ' && this.isHost) {
+      replyFn({
+        sender: this.localPeerId,
+        type: 'PING_ACK',
+        payload: env.payload
+      });
+    } else if (env.type === 'PING_ACK' && !this.isHost) {
+      const sentAt = Number(env.payload) || 0;
+      if (sentAt > 0) {
+        this.pingMs = Math.max(1, Math.round(performance.now() - sentAt));
+      }
     } else if (env.type === 'SLOT_ASSIGN') {
       const assign = env.payload as SlotAssignMsg;
       if (assign.peerId === this.localPeerId) {
@@ -237,16 +330,22 @@ export class MultiplayerRoomManager {
         this.onStatusUpdate();
       }
     } else if (env.type === 'CLIENT_INPUT' && this.isHost) {
+      if (this.bannedPeerIds.has(env.sender)) return;
       const inp = env.payload as ClientInputPacket;
+      const prevName = this.arenaEngine.players[inp.slotId]?.name;
       this.arenaEngine.applyRemoteInput(inp);
       this.chainEngine.applyRemoteInput(inp);
       this.puttEngine?.applyRemoteInput(inp);
+      if (prevName && prevName !== inp.name) {
+        this.syncEnginesRoster();
+        this.onStatusUpdate();
+      }
     } else if (env.type === 'WORLD_SNAP' && !this.isHost) {
       this.lastHostSnapReceivedAt = performance.now();
       const snap = env.payload as WorldSnapshotPacket;
       const prevGame = this.activeGame;
       this.activeGame = snap.activeGame;
-      this.arenaEngine.applySnapshot(snap);
+      this.arenaEngine.applySnapshot(snap, this.localSlotId);
       if (snap.chainState) {
         this.chainEngine.applySnapshot(snap.chainState);
       }
@@ -300,9 +399,23 @@ export class MultiplayerRoomManager {
     if (this.hostConn?.open) {
       this.hostConn.send(env);
     }
+
+    // Periodic lightweight ping measurement every ~30 frames
+    this.rtcBroadcastCounter++;
+    if (this.rtcBroadcastCounter % 30 === 0) {
+      const pingEnv: NetEnvelope = {
+        sender: this.localPeerId,
+        type: 'PING_REQ',
+        payload: performance.now()
+      };
+      this.localBus?.postMessage(pingEnv);
+      if (this.hostConn?.open) {
+        this.hostConn.send(pingEnv);
+      }
+    }
   }
 
-  public broadcastHostSnapshot(forceRtc = false): void {
+  public broadcastHostSnapshot(_forceRtc = false): void {
     if (!this.isHost) return;
     const snap = this.arenaEngine.getSnapshot();
     snap.activeGame = this.activeGame;
@@ -317,12 +430,10 @@ export class MultiplayerRoomManager {
 
     this.localBus?.postMessage(env);
 
-    this.rtcBroadcastCounter++;
-    if (forceRtc || this.rtcBroadcastCounter % 2 === 0) {
-      this.clientConns.forEach((conn) => {
-        if (conn.open) conn.send(env);
-      });
-    }
+    // Send at full 60Hz over WebRTC DataChannel (reliable: false) for minimum latency!
+    this.clientConns.forEach((conn) => {
+      if (conn.open) conn.send(env);
+    });
   }
 
   public submitDraftSelection(modId: string): void {

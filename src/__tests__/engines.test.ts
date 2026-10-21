@@ -82,6 +82,25 @@ describe('ArenaEngine (01 // BASH-BOT)', () => {
     expect(ball.speed).toBeLessThan(500);
     expect(Math.abs(ball.curveSpin)).toBeGreaterThan(2.0);
   });
+
+  it('rolls back a lethal K.O. when a remote player parry packet arrives within the 280ms lag-compensation window', () => {
+    const engine = new ArenaEngine();
+    const remotePlayer = engine.players[1];
+    remotePlayer.isBot = false;
+    remotePlayer.alive = false;
+    remotePlayer.lastKOAt = performance.now() - 60; // Knocked out 60ms ago on Host
+
+    engine.applyRemoteInput({
+      ...dummyInput,
+      slotId: 1,
+      name: 'CARLOS',
+      parryPressed: true,
+      clientBallDist: 38 // Ball was within parry reach on Carlos's screen!
+    });
+
+    expect(remotePlayer.alive).toBe(true);
+    expect(engine.balls[0].ownerId).toBe(1);
+  });
 });
 
 describe('ChainPanicEngine (02 // CHAIN-PANIC)', () => {
@@ -197,7 +216,7 @@ describe('PuttWarEngine (03 // TURBO-PUTT)', () => {
   });
 });
 
-describe('MultiplayerRoomManager Anti-Freeze Watchdog', () => {
+describe('MultiplayerRoomManager Anti-Freeze Watchdog & Moderation', () => {
   it('always steps locally if Host snapshots time out (>2000ms)', () => {
     const arena = new ArenaEngine();
     const chain = new ChainPanicEngine();
@@ -208,5 +227,21 @@ describe('MultiplayerRoomManager Anti-Freeze Watchdog', () => {
     // Even if marked as client, if no snapshot arrived recently, shouldStepLocally returns true
     net.isHost = false;
     expect(net.shouldStepLocally()).toBe(true);
+  });
+
+  it('allows Host to kick & ban a remote player slot and reset it to a bot', () => {
+    const arena = new ArenaEngine();
+    const chain = new ChainPanicEngine();
+    const net = new MultiplayerRoomManager(arena, chain, () => {});
+
+    // Simulate a remote player in slot 1
+    arena.players[1].isBot = false;
+    arena.players[1].peerId = 'P-GRIEFER';
+    arena.players[1].name = 'TROLL';
+
+    const kicked = net.kickPlayerSlot(1);
+    expect(kicked).toBe(true);
+    expect(net.bannedPeerIds.has('P-GRIEFER')).toBe(true);
+    expect(arena.players[1].isBot).toBe(true);
   });
 });

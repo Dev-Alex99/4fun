@@ -41,6 +41,15 @@ const installedModsStrip = document.getElementById('installedModsStrip') as HTML
 
 const hubOverlay = document.getElementById('hubOverlay') as HTMLDivElement;
 const hubRoomCodeText = document.getElementById('hubRoomCodeText') as HTMLSpanElement;
+const hubPilotNameInput = document.getElementById('hubPilotNameInput') as HTMLInputElement;
+const hubRosterList = document.getElementById('hubRosterList') as HTMLDivElement;
+const unbanAllBtn = document.getElementById('unbanAllBtn') as HTMLButtonElement;
+const kickNoticeBanner = document.getElementById('kickNoticeBanner') as HTMLDivElement;
+
+const pilotOnboardingModal = document.getElementById('pilotOnboardingModal') as HTMLDivElement;
+const onboardingNameInput = document.getElementById('onboardingNameInput') as HTMLInputElement;
+const confirmOnboardingBtn = document.getElementById('confirmOnboardingBtn') as HTMLButtonElement;
+
 const tabButtons = document.querySelectorAll<HTMLButtonElement>('#cartridgeTabs .tab-btn');
 const launchGameButtons = document.querySelectorAll<HTMLButtonElement>('.launch-game-btn');
 
@@ -67,8 +76,17 @@ const initialRoom = (urlParams.get('room') || 'TP04').toUpperCase().slice(0, 8);
 roomCodeInput.value = initialRoom;
 hubRoomCodeText.textContent = initialRoom;
 
-const savedName = localStorage.getItem('tp04_pilot_name') || 'ALEX';
+const storedPilotName = localStorage.getItem('tp04_pilot_name');
+const savedName = storedPilotName || 'ALEX';
 playerNameInput.value = savedName;
+if (hubPilotNameInput) hubPilotNameInput.value = savedName;
+if (onboardingNameInput) onboardingNameInput.value = '';
+
+// Show first-time pilot onboarding modal if user hasn't registered a name yet
+if (!storedPilotName && pilotOnboardingModal) {
+  pilotOnboardingModal.classList.remove('hidden');
+  setTimeout(() => onboardingNameInput?.focus(), 60);
+}
 
 // 4. Engines & Renderers
 const arenaEngine = new ArenaEngine(syncOverlaysAndHUD);
@@ -83,9 +101,34 @@ const net = new MultiplayerRoomManager(arenaEngine, chainEngine, syncOverlaysAnd
 function syncOverlaysAndHUD(): void {
   const humanCount = arenaEngine.players.filter((p) => !p.isBot).length;
   netLed.className = humanCount > 1 ? 'status-led online' : 'status-led';
+  const pingSuffix = !net.isHost && net.pingMs > 0 ? ` • ${net.pingMs}ms` : '';
   netRoleLabel.textContent = net.isHost
     ? `SALA #${net.roomCode} • HOST (${humanCount}/4 HUMANOS)`
-    : `SALA #${net.roomCode} • CONECTADO (SLOT ${net.localSlotId + 1})`;
+    : `SALA #${net.roomCode} • SLOT ${net.localSlotId + 1}${pingSuffix}`;
+  if (hubRoomCodeText) hubRoomCodeText.textContent = net.roomCode;
+  if (roomCodeInput && document.activeElement !== roomCodeInput) {
+    roomCodeInput.value = net.roomCode;
+  }
+
+  // Kick Notice Banner
+  if (kickNoticeBanner) {
+    if (net.kickedNotice) {
+      kickNoticeBanner.textContent = `⚠️ ${net.kickedNotice}`;
+      kickNoticeBanner.classList.remove('hidden');
+    } else {
+      kickNoticeBanner.classList.add('hidden');
+    }
+  }
+
+  // Unban Button visibility for Host
+  if (unbanAllBtn) {
+    if (net.isHost && net.bannedPeerIds.size > 0) {
+      unbanAllBtn.textContent = `DESBLOQUEAR VETADOS (${net.bannedPeerIds.size})`;
+      unbanAllBtn.classList.remove('hidden');
+    } else {
+      unbanAllBtn.classList.add('hidden');
+    }
+  }
 
   const botLabel = DIFFICULTY_LABELS[arenaEngine.botDifficulty] || '🤖 BOTS: NORMAL';
   if (toggleBotsBtn) toggleBotsBtn.textContent = botLabel;
@@ -189,15 +232,41 @@ function syncOverlaysAndHUD(): void {
           : net.activeGame === 'TURBO_PUTT'
             ? `${puttP ? puttP.totalPoints : 0}P`
             : `${p.score}`;
+      const canKick = net.isHost && p.id > 0 && !p.isBot;
       return `
       <div class="player-slot" style="background:${p.bodyColor}">
         <span class="slot-dot"></span>
         <span>${p.name}${p.isBot ? ' [BOT]' : ''}</span>
         <span class="slot-score">${scoreBadge}</span>
+        ${
+          canKick
+            ? `<button class="kick-btn" data-kick-slot="${p.id}" title="Vetar a ${p.name} de la sala">✕</button>`
+            : ''
+        }
       </div>
     `;
     })
     .join('');
+
+  // Render Live Room Roster inside Hub with [✕ VETAR] controls
+  if (hubRosterList) {
+    hubRosterList.innerHTML = visibleRoster
+      .map((p) => {
+        const canKick = net.isHost && p.id > 0 && !p.isBot;
+        const roleTag = p.id === 0 ? 'HOST' : p.isBot ? 'BOT' : 'HUMANO';
+        return `
+        <div class="roster-chip" style="background:${p.bodyColor}">
+          <span>S${p.id + 1}: ${p.name} [${roleTag}]</span>
+          ${
+            canKick
+              ? `<button class="kick-btn" data-kick-slot="${p.id}" title="Vetar jugador de la sala">✕ VETAR</button>`
+              : ''
+          }
+        </div>
+      `;
+      })
+      .join('');
+  }
 
   if (net.activeGame === 'BASH_BOT' && arenaEngine.phase === 'CARD_DRAFT') {
     draftOverlay.classList.remove('hidden');
@@ -278,8 +347,71 @@ launchGameButtons.forEach((btn) => {
   });
 });
 
+function isTypingInInput(): boolean {
+  const el = document.activeElement;
+  return (
+    el === roomCodeInput ||
+    el === playerNameInput ||
+    el === hubPilotNameInput ||
+    el === onboardingNameInput
+  );
+}
+
+function flushImmediateClientAction(): void {
+  if (net.isHost) return;
+  const myArenaPlayer = arenaEngine.players[net.localSlotId] || arenaEngine.players[0];
+  const myChainPlayer = chainEngine.players[net.localSlotId] || chainEngine.players[0];
+  const myPuttPlayer = puttEngine.players[net.localSlotId] || puttEngine.players[0];
+
+  // Trigger immediate local visual feedback (0ms input lag!)
+  if (net.activeGame === 'BASH_BOT') {
+    if (pendingParry) arenaEngine.triggerParry(myArenaPlayer);
+    if (pendingDash) {
+      arenaEngine.triggerDash(
+        myArenaPlayer,
+        Math.cos(myArenaPlayer.aimAngle),
+        Math.sin(myArenaPlayer.aimAngle)
+      );
+    }
+  } else if (net.activeGame === 'CHAIN_PANIC') {
+    if (pendingParry) chainEngine.triggerJump(myChainPlayer);
+  }
+
+  const refX = net.activeGame === 'TURBO_PUTT' ? myPuttPlayer.x : myArenaPlayer.x;
+  const refY = net.activeGame === 'TURBO_PUTT' ? myPuttPlayer.y : myArenaPlayer.y;
+  const aimAngle = Math.atan2(mouseCourtPos.y - refY, mouseCourtPos.x - refX);
+  const primaryBall = arenaEngine.balls[0];
+  const clientBallDist = primaryBall
+    ? Math.hypot(primaryBall.x - myArenaPlayer.x, primaryBall.y - myArenaPlayer.y)
+    : 999;
+
+  net.sendClientInput({
+    slotId: net.localSlotId,
+    name: playerNameInput.value.toUpperCase() || 'ALEX',
+    moveX: 0,
+    moveY: 0,
+    aimAngle,
+    parryPressed: pendingParry,
+    chargingParry,
+    feintPrimed: myArenaPlayer.feintPrimed,
+    dashPressed: pendingDash,
+    yankPressed: pendingYank,
+    anchorHeld,
+    emotePressed: pendingEmote,
+    clientBallDist,
+    clientX: net.activeGame === 'CHAIN_PANIC' ? myChainPlayer.x : myArenaPlayer.x,
+    clientY: net.activeGame === 'CHAIN_PANIC' ? myChainPlayer.y : myArenaPlayer.y,
+    clientZ: myChainPlayer.z,
+    sentAtMs: performance.now()
+  });
+}
+
 window.addEventListener('keydown', (e) => {
-  if (document.activeElement === roomCodeInput || document.activeElement === playerNameInput) {
+  if (e.code === 'Enter' && document.activeElement === onboardingNameInput) {
+    confirmOnboardingBtn?.click();
+    return;
+  }
+  if (isTypingInInput()) {
     return;
   }
   keys[e.code] = true;
@@ -294,6 +426,7 @@ window.addEventListener('keydown', (e) => {
     sfx.unlock();
     pendingParry = true;
     chargingParry = true;
+    flushImmediateClientAction();
   }
 
   if ((e.code === 'KeyE' || e.code === 'KeyQ') && !e.repeat) {
@@ -306,13 +439,17 @@ window.addEventListener('keydown', (e) => {
       myPlayer.feintPrimed = true;
       pendingParry = true;
     }
+    flushImmediateClientAction();
   }
 
   if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') {
     e.preventDefault();
     sfx.unlock();
     anchorHeld = true;
-    if (!e.repeat) pendingDash = true;
+    if (!e.repeat) {
+      pendingDash = true;
+      flushImmediateClientAction();
+    }
   }
 });
 
@@ -341,6 +478,7 @@ canvas.addEventListener('pointerdown', (e) => {
     pendingParry = true;
     chargingParry = true;
   }
+  flushImmediateClientAction();
 });
 
 window.addEventListener('pointerup', (e) => {
@@ -434,17 +572,59 @@ newChampionshipBtn.addEventListener('click', () => {
   }
 });
 
-playerNameInput.addEventListener('input', () => {
-  const clean = playerNameInput.value.toUpperCase().slice(0, 10) || 'UNIT';
+function applyPilotNameChange(rawValue: string): void {
+  const clean = rawValue.toUpperCase().replace(/[^A-Z0-9_-]/g, '').slice(0, 10) || 'PILOTO';
   localStorage.setItem('tp04_pilot_name', clean);
-  const myPlayer = arenaEngine.players[net.localSlotId];
+  if (playerNameInput && document.activeElement !== playerNameInput) {
+    playerNameInput.value = clean;
+  }
+  if (hubPilotNameInput && document.activeElement !== hubPilotNameInput) {
+    hubPilotNameInput.value = clean;
+  }
+  const myPlayer = arenaEngine.players[net.localSlotId] || arenaEngine.players[0];
   if (myPlayer) {
     myPlayer.name = clean;
-    const roster = arenaEngine.players.map((p) => ({ name: p.name, isBot: p.isBot }));
-    const botsActive = arenaEngine.botDifficulty !== 'OFF';
-    chainEngine.syncPlayerIdentities(roster, botsActive);
-    puttEngine.syncPlayerIdentities(roster, botsActive);
+    net.syncEnginesRoster();
+    if (net.isHost) {
+      net.broadcastHostSnapshot(true);
+    } else {
+      flushImmediateClientAction();
+    }
     syncOverlaysAndHUD();
+  }
+}
+
+playerNameInput.addEventListener('input', () => {
+  applyPilotNameChange(playerNameInput.value);
+});
+
+hubPilotNameInput?.addEventListener('input', () => {
+  applyPilotNameChange(hubPilotNameInput.value);
+});
+
+confirmOnboardingBtn?.addEventListener('click', () => {
+  sfx.unlock();
+  sfx.playCartridgeClick();
+  const chosen = onboardingNameInput?.value.trim() || 'ALEX';
+  playerNameInput.value = chosen.toUpperCase().slice(0, 10);
+  if (hubPilotNameInput) hubPilotNameInput.value = playerNameInput.value;
+  applyPilotNameChange(chosen);
+  pilotOnboardingModal?.classList.add('hidden');
+});
+
+unbanAllBtn?.addEventListener('click', () => {
+  sfx.playCartridgeClick();
+  net.clearBanList();
+});
+
+// Event delegation for [✕ VETAR] buttons in both Top Bar & Hub Roster
+document.addEventListener('click', (e) => {
+  const target = (e.target as HTMLElement)?.closest<HTMLButtonElement>('[data-kick-slot]');
+  if (!target) return;
+  const slotId = Number(target.dataset.kickSlot);
+  if (!Number.isNaN(slotId) && slotId > 0) {
+    sfx.playKODisassembly();
+    net.kickPlayerSlot(slotId);
   }
 });
 
@@ -493,6 +673,8 @@ function stepGameFrame(dt: number): void {
   const quickClickPutt =
     net.activeGame === 'TURBO_PUTT' && pendingParry && !chargingParry ? 0.55 : undefined;
 
+  const myChainPlayer = chainEngine.players[net.localSlotId] || chainEngine.players[0];
+
   const inputPacket: ClientInputPacket = {
     slotId: net.localSlotId,
     name: playerNameInput.value.toUpperCase() || 'ALEX',
@@ -501,17 +683,21 @@ function stepGameFrame(dt: number): void {
     aimAngle,
     parryPressed: pendingParry,
     chargingParry,
+    feintPrimed: myArenaPlayer.feintPrimed,
     shotReleasedPower: quickClickPutt,
     dashPressed: pendingDash,
     yankPressed: pendingYank,
     anchorHeld,
     emotePressed: pendingEmote,
-    clientBallDist
+    clientBallDist,
+    clientX: net.activeGame === 'CHAIN_PANIC' ? myChainPlayer.x : myArenaPlayer.x,
+    clientY: net.activeGame === 'CHAIN_PANIC' ? myChainPlayer.y : myArenaPlayer.y,
+    clientZ: myChainPlayer.z,
+    sentAtMs: performance.now()
   };
 
   if (net.shouldStepLocally()) {
     if (net.activeGame === 'CHAIN_PANIC') {
-      const myChainPlayer = chainEngine.players[net.localSlotId] || chainEngine.players[0];
       if (pendingEmote > 0) chainEngine.triggerEmote(myChainPlayer, pendingEmote);
       if (pendingParry) chainEngine.triggerJump(myChainPlayer);
       if (pendingYank) chainEngine.triggerCableYank(myChainPlayer);
@@ -538,6 +724,10 @@ function stepGameFrame(dt: number): void {
     }
     net.broadcastHostSnapshot();
   } else {
+    // Client-side prediction: step local player and ball extrapolation at 60fps for 0ms input lag!
+    if (net.activeGame === 'BASH_BOT') {
+      arenaEngine.stepClientPrediction(dt, net.localSlotId, inputPacket);
+    }
     net.sendClientInput(inputPacket);
   }
 

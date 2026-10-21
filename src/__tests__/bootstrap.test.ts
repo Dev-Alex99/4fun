@@ -81,5 +81,17 @@ describe('Full DOM + main.ts Bootstrap Smoke Test (Prevents TDZ / ReferenceError
     puttTabBtn!.click();
     expect(nextSectorBtn.textContent).toContain('HOYO');
     nextSectorBtn.click();
+
+    // Verify first-time Pilot Onboarding Modal & Hub Pilot Name input sync
+    const pilotModal = document.getElementById('pilotOnboardingModal') as HTMLDivElement;
+    const onboardingInput = document.getElementById('onboardingNameInput') as HTMLInputElement;
+    const confirmBtn = document.getElementById('confirmOnboardingBtn') as HTMLButtonElement;
+    const hubPilotInput = document.getElementById('hubPilotNameInput') as HTMLInputElement;
+
+    expect(pilotModal.classList.contains('hidden')).toBe(false);
+    onboardingInput.value = 'MAVERICK';
+    confirmBtn.click();
+    expect(pilotModal.classList.contains('hidden')).toBe(true);
+    expect(hubPilotInput.value).toBe('MAVERICK');
   });
 });

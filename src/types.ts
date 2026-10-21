@@ -58,6 +58,7 @@ export interface PlayerState {
   dashShockwave: boolean;
   magnetPull: boolean;
   installedModCodes: string[];
+  lastKOAt?: number;
 }
 
 export interface GyroBallState {
@@ -339,12 +340,17 @@ export interface ClientInputPacket {
   aimAngle: number;
   parryPressed: boolean; // Jump in Chain-Panic / Start charge in Turbo-Putt
   chargingParry: boolean; // Charging putt in Turbo-Putt
+  feintPrimed?: boolean; // [E] Curve Feint primed on client
   shotReleasedPower?: number; // Released putt power (0..1) in Turbo-Putt
   dashPressed: boolean; // Shockwave/Powerup in Turbo-Putt
   yankPressed?: boolean; // [E] Cable Yank in Chain-Panic / Drop Bomb in Turbo-Putt
   anchorHeld?: boolean; // [Shift / Right-Click] Anchor in Chain-Panic
   emotePressed: number;
   clientBallDist: number;
+  clientX?: number; // Client-side predicted X
+  clientY?: number; // Client-side predicted Y
+  clientZ?: number; // Client-side predicted Z (Jump height in Chain-Panic)
+  sentAtMs?: number;
 }
 
 export interface WorldSnapshotPacket {
@@ -362,4 +368,5 @@ export interface WorldSnapshotPacket {
   bumpers: PinballBumper[];
   chainState?: ChainPanicSnapshot;
   puttState?: PuttWarSnapshot;
+  hostSentAtMs?: number;
 }
