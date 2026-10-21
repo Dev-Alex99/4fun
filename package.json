@@ -1,0 +1,19 @@
+{
+  "name": "tp04-bash-bot",
+  "private": true,
+  "version": "1.0.0",
+  "description": "TP-04 // BASH-BOT — 4-Player Tactical Tabletop Parry Arena (WebRTC P2P + Fixed-Tick Netcode)",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "peerjs": "^1.5.5"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3",
+    "vite": "^5.4.10"
+  }
+}

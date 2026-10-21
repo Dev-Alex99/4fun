@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>TP-SYSTEM // 4-Player Tactical Party Deck</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;700;800&family=Space+Grotesk:wght@600;700;800&display=swap"
+      rel="stylesheet"
+    />
+  </head>
+  <body>
+    <div id="app">
+      <!-- Industrial Hardware Casing -->
+      <main class="hardware-chassis">
+        <!-- Top Tactile Control Deck -->
+        <header class="control-deck">
+          <div class="brand-module">
+            <div class="status-led" id="netLed" title="Estado de red P2P"></div>
+            <div>
+              <div class="brand-title">TP-SYSTEM // 4P DECK</div>
+              <div class="brand-sub" id="netRoleLabel">MODO LOCAL + P2P LISTO</div>
+            </div>
+          </div>
+
+          <!-- Instant Cartridge Switcher Tabs -->
+          <nav class="cartridge-tabs" id="cartridgeTabs">
+            <button data-game="HUB" class="keycap-btn tab-btn active-tab">
+              ⊞ HUB (CONSOLA)
+            </button>
+            <button data-game="BASH_BOT" class="keycap-btn tab-btn">
+              01 // BASH-BOT
+            </button>
+            <button data-game="CHAIN_PANIC" class="keycap-btn tab-btn">
+              02 // CHAIN-PANIC
+            </button>
+          </nav>
+
+          <!-- 4 Player Mechanical Flip-Score Slots -->
+          <div class="slots-bar" id="playerSlotsBar"></div>
+
+          <!-- Room Invite & Hardware Switches -->
+          <div class="deck-actions">
+            <div class="room-pill">
+              <span class="room-label">SALA:</span>
+              <input
+                id="roomCodeInput"
+                class="room-input"
+                type="text"
+                maxlength="8"
+                value="TP04"
+                title="Código de sala (compártelo con tus 3 amigos)"
+              />
+              <button id="joinRoomBtn" class="keycap-btn keycap-sm">IR</button>
+            </div>
+            <button id="copyInviteBtn" class="keycap-btn keycap-orange" title="Copiar link directo para Discord">
+              COPIAR LINK (4P)
+            </button>
+            <button id="topBotsToggleBtn" class="keycap-btn" title="Cambiar dificultad o quitar todos los bots">
+              🤖 BOTS: NORMAL
+            </button>
+            <button id="soundToggleBtn" class="keycap-btn" title="Activar/Desactivar sintetizador mecánico">
+              SFX: ON
+            </button>
+            <button id="resetMatchBtn" class="keycap-btn" title="Reiniciar partida o sector">
+              RESET
+            </button>
+          </div>
+        </header>
+
+        <!-- Recessed 3/4 Perspective Tabletop Arena -->
+        <section class="arena-well">
+          <canvas id="courtCanvas" tabindex="0"></canvas>
+
+          <!-- Floating Top-Left Player Identity & Bot Toggle Bar -->
+          <div class="hud-top-bar">
+            <div class="pilot-tag">
+              <span>PILOTO:</span>
+              <input id="playerNameInput" type="text" maxlength="10" value="ALEX" />
+            </div>
+            <button id="toggleBotsBtn" class="keycap-btn keycap-sm">
+              BOTS: NORMAL
+            </button>
+            <button id="prevSectorBtn" class="keycap-btn keycap-sm hidden">
+              ◀ SECTOR
+            </button>
+            <button id="nextSectorBtn" class="keycap-btn keycap-sm hidden">
+              SECTOR ▶
+            </button>
+            <button id="chainModeBtn" class="keycap-btn keycap-sm hidden">
+              MODO: CO-OP
+            </button>
+            <div class="rpm-meter" id="rpmBadge">RPM 100</div>
+          </div>
+
+          <!-- Bottom Printed Technical Manual Strip -->
+          <footer class="hud-bottom-bar">
+            <div class="manual-strip" id="controlsLegendStrip">
+              <span><strong>[WASD]</strong> MOVER</span>
+              <span class="sep">•</span>
+              <span><strong>[CLIC IZQ / ESPACIO]</strong> BATEAR</span>
+              <span class="sep">•</span>
+              <span><strong>[E]</strong> AMAGO CURVO</span>
+              <span class="sep">•</span>
+              <span><strong>[CLIC DER / SHIFT]</strong> TURBO</span>
+              <span class="sep">•</span>
+              <span><strong>[1-4]</strong> BOCINA</span>
+            </div>
+            <div id="installedModsStrip" class="mods-strip">
+              SIN CARTUCHOS INSTALADOS
+            </div>
+          </footer>
+
+          <!-- ======================================================== -->
+          <!-- LANDING / CONSOLE HUB OVERLAY (SELECT GAME CARTRIDGE)    -->
+          <!-- ======================================================== -->
+          <div id="hubOverlay" class="hub-overlay">
+            <div class="hub-container">
+              <div class="hub-banner">
+                <div>
+                  <div class="hub-eyebrow">ESTACIÓN MULTIJUGADOR P2P // 1 LINK PARA LOS 4 AMIGOS</div>
+                  <h1 class="hub-title">SELECCIONA UN CARTUCHO DE JUEGO</h1>
+                  <p class="hub-desc">
+                    Tus amigos conectados a la sala <strong>#<span id="hubRoomCodeText">TP04</span></strong> cambiarán de juego automáticamente cuando elijas un cartucho aquí o en la barra superior.
+                  </p>
+                </div>
+                <div class="hazard-badge"></div>
+              </div>
+
+              <div class="hub-grid">
+                <!-- Cartridge 01: BASH-BOT -->
+                <div class="game-cartridge">
+                  <div>
+                    <div class="cart-header">
+                      <span class="cart-badge" style="background: #ff4f00">CARTUCHO 01 // PVP</span>
+                      <span class="cart-players">1 A 4 JUGADORES</span>
+                    </div>
+                    <h2 class="cart-title">TP-04 // BASH-BOT</h2>
+                    <p class="cart-summary">
+                      Arena de *Parry* de alta velocidad en mesa 3/4 con bumpers de Pinball, **Amagos con Curva (`[E]`)**, alerta **Multibola** y **Cartuchos de Mejora** acumulativos entre rondas.
+                    </p>
+                    <div class="cart-specs">
+                      <span>⚡ REFLEJOS & FINTAS</span>
+                      <span>🎯 CAMPEONATO A 5 PTOS</span>
+                    </div>
+                  </div>
+                  <button data-launch="BASH_BOT" class="keycap-btn keycap-orange keycap-lg launch-game-btn">
+                    JUGAR BASH-BOT (01) →
+                  </button>
+                </div>
+
+                <!-- Cartridge 02: CHAIN-PANIC -->
+                <div class="game-cartridge">
+                  <div>
+                    <div class="cart-header">
+                      <span class="cart-badge" style="background: #1b4dff">CARTUCHO 02 // CO-OP CAOS</span>
+                      <span class="cart-players">4 ENCADENADOS</span>
+                    </div>
+                    <h2 class="cart-title">TP-05 // CHAIN-PANIC</h2>
+                    <p class="cart-summary">
+                      Los 4 robots están **atados por un cable de acero elástico**. Cruza pasarelas sobre el vacío, salta haces láser, pisa botones sincronizados y **usa el Ancla (`Shift`)** cuando un amigo quede colgando del abismo.
+                    </p>
+                    <div class="cart-specs">
+                      <span>⛓️ FÍSICA DE CUERDA</span>
+                      <span>🚨 3 SECTORES INDUSTRIALES</span>
+                    </div>
+                  </div>
+                  <button data-launch="CHAIN_PANIC" class="keycap-btn keycap-cobalt keycap-lg launch-game-btn">
+                    JUGAR CHAIN-PANIC (02) →
+                  </button>
+                </div>
+
+                <!-- Cartridge 03: Ready Expansion Slot -->
+                <div class="game-cartridge cart-slot-empty">
+                  <div>
+                    <div class="cart-header">
+                      <span class="cart-badge" style="background: #52525b">RANURA 03 // EXPANSIÓN</span>
+                      <span class="cart-players">MODULAR</span>
+                    </div>
+                    <h2 class="cart-title">PRÓXIMO CARTUCHO</h2>
+                    <p class="cart-summary">
+                      Arquitectura lista para insertar el tercer minijuego en la misma sesión P2P: **HEX-SUMO (Isla que se derrumba)** o **TURBO-PUTT (Minigolf de Combate)**.
+                    </p>
+                  </div>
+                  <div class="slot-placeholder-bar">RANURA DE EXPANSIÓN ABIERTA</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Between-Round Hardware Cartridge Draft Modal (BASH-BOT) -->
+          <div id="draftOverlay" class="draft-overlay hidden">
+            <div class="draft-card-box">
+              <div class="draft-header">
+                <div>
+                  <div class="draft-eyebrow" id="draftWinnerText">FIN DE LA RONDA</div>
+                  <h2 class="draft-title" id="draftPromptTitle">
+                    INSTALA UN CARTUCHO DE EXPANSIÓN (RONDA SIGUIENTE)
+                  </h2>
+                </div>
+                <div class="hazard-badge"></div>
+              </div>
+              <div id="draftCardsGrid" class="draft-grid"></div>
+            </div>
+          </div>
+
+          <!-- Match Champion Trophy Overlay -->
+          <div id="championOverlay" class="draft-overlay hidden">
+            <div class="draft-card-box champion-box">
+              <div class="draft-eyebrow">CAMPEONATO TP-04 COMPLETADO (5 PUNTOS)</div>
+              <h2 class="champion-title" id="championNameTitle">¡ALEX DOMINA LA MESA!</h2>
+              <p class="champion-sub">
+                Todos los cartuchos se reiniciarán para la siguiente partida.
+              </p>
+              <button id="newChampionshipBtn" class="keycap-btn keycap-orange keycap-lg">
+                JUGAR REVANCHA →
+              </button>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
