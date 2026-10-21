@@ -117,6 +117,7 @@ export class MultiplayerRoomManager {
 
   private peer: Peer | null = null;
   private hostConn: DataConnection | null = null;
+  private authoritativeHostPeerId: string | null = null;
   private clientConns = new Map<string, DataConnection>();
   private connToLogicalPeer = new Map<string, string>();
   private peerToSlot = new Map<string, number>();
@@ -233,10 +234,10 @@ export class MultiplayerRoomManager {
    * Works whether triggered by the Host or by a connected Friend!
    */
   public switchGame(nextGame: ActiveGameId): void {
-    this.activeGame = nextGame;
-    this.syncEnginesRoster();
-
     if (this.isHost) {
+      this.activeGame = nextGame;
+      this.syncEnginesRoster();
+
       if (nextGame === 'BASH_BOT') {
         this.arenaEngine.phase = 'PLAYING';
         this.arenaEngine.spawnRound();
@@ -273,7 +274,13 @@ export class MultiplayerRoomManager {
         }
       }, 220);
     } else {
-      // Client requested game switch -> forward to Host so Host switches the whole room!
+      // Clients cannot pull the room back to HUB during a match; if a Client clicks a game cartridge,
+      // switch locally to that game and ask Host to launch it for the room!
+      if (nextGame === 'HUB') {
+        return;
+      }
+      this.activeGame = nextGame;
+      this.syncEnginesRoster();
       this.sendToHost({
         sender: this.localPeerId,
         type: 'GAME_SWITCH',
@@ -517,11 +524,12 @@ export class MultiplayerRoomManager {
       this.localBus = null;
     }
 
-    // Initialize as Host until either BroadcastChannel or PeerJS tells us someone else already owns the room
+    // Initialize as Host until PeerJS tells us someone else already owns the room
     this.isHost = true;
     this.connectionState = 'HOSTING';
     this.localSlotId = 0;
     this.connectedPeersCount = 0;
+    this.authoritativeHostPeerId = null;
 
     this.arenaEngine.players.forEach((p, idx) => {
       if (idx === 0) {
@@ -538,25 +546,7 @@ export class MultiplayerRoomManager {
     });
     this.syncEnginesRoster();
 
-    // 1. Setup BroadcastChannel for instant same-browser multi-tab sync
-    this.localBus = new BroadcastChannel(`tp04_bus_v4_${cleanCode}`);
-    this.localBus.onmessage = (ev) => {
-      const env = this.parseEnvelope(ev.data);
-      if (!env || env.sender === this.localPeerId) return;
-      this.peerLastSeen.set(env.sender, performance.now());
-      this.handleEnvelope(env, (reply) => {
-        this.localBus?.postMessage(reply);
-      });
-    };
-
-    // Claim join on local BroadcastChannel in case another tab in this browser is already Host
-    this.localBus.postMessage({
-      sender: this.localPeerId,
-      type: 'JOIN_CLAIM',
-      payload: { peerId: this.localPeerId, name: playerName.toUpperCase() }
-    } satisfies NetEnvelope);
-
-    // 2. Setup WebRTC PeerJS with explicit Google STUN servers
+    // Setup WebRTC PeerJS with explicit Google STUN servers (single source of truth; no BroadcastChannel split-brain!)
     const hostPeerId = `${HOST_ID_PREFIX}${cleanCode}`;
     try {
       const peer = new Peer(hostPeerId, {
@@ -568,6 +558,17 @@ export class MultiplayerRoomManager {
         if (!this.isHost) return;
         this.connectionState = 'HOSTING';
         this.onStatusUpdate();
+      });
+
+      peer.on('disconnected', () => {
+        // Keep signaling socket alive on 0.peerjs.com so the room ID is never released while Host is playing
+        if (this.isHost && this.peer === peer && !peer.destroyed) {
+          try {
+            peer.reconnect();
+          } catch {
+            // Ignore reconnect error
+          }
+        }
       });
 
       peer.on('connection', (conn) => {
@@ -688,11 +689,12 @@ export class MultiplayerRoomManager {
         };
 
         conn.on('open', () => {
+          if (this.hostConn !== conn) return;
           sendJoinClaim();
           // Retry JOIN_CLAIM every 850ms until SLOT_ASSIGN or WORLD_SNAP confirms connection
           if (this.joinRetryTimer) clearInterval(this.joinRetryTimer);
           this.joinRetryTimer = setInterval(() => {
-            if (this.connectionState === 'CONNECTED_CLIENT') {
+            if (this.connectionState === 'CONNECTED_CLIENT' || this.hostConn !== conn) {
               if (this.joinRetryTimer) {
                 clearInterval(this.joinRetryTimer);
                 this.joinRetryTimer = null;
@@ -705,6 +707,7 @@ export class MultiplayerRoomManager {
         });
 
         conn.on('data', (raw) => {
+          if (this.hostConn !== conn) return;
           const env = this.parseEnvelope(raw);
           if (!env) return;
           this.handleEnvelope(env, (reply) => {
@@ -713,6 +716,7 @@ export class MultiplayerRoomManager {
         });
 
         conn.on('close', () => {
+          if (this.hostConn !== conn) return;
           if (this.joinRetryTimer) {
             clearInterval(this.joinRetryTimer);
             this.joinRetryTimer = null;
@@ -722,6 +726,7 @@ export class MultiplayerRoomManager {
         });
 
         conn.on('error', () => {
+          if (this.hostConn !== conn) return;
           this.scheduleClientReconnect(hostPeerId, playerName);
         });
       });
@@ -804,6 +809,10 @@ export class MultiplayerRoomManager {
     } else if (env.type === 'SLOT_ASSIGN') {
       const assign = env.payload as SlotAssignMsg;
       if (assign.peerId === this.localPeerId) {
+        if (this.authoritativeHostPeerId && this.authoritativeHostPeerId !== env.sender) {
+          return;
+        }
+        this.authoritativeHostPeerId = env.sender;
         if (this.joinRetryTimer) {
           clearInterval(this.joinRetryTimer);
           this.joinRetryTimer = null;
@@ -816,7 +825,10 @@ export class MultiplayerRoomManager {
         this.isHost = false;
         this.connectionState = 'CONNECTED_CLIENT';
         this.localSlotId = assign.slotId;
-        this.activeGame = assign.activeGame;
+        // Never allow a late SLOT_ASSIGN to kick a player out of an active game back to HUB!
+        if (assign.activeGame && (assign.activeGame !== 'HUB' || this.activeGame === 'HUB')) {
+          this.activeGame = assign.activeGame;
+        }
         this.arenaEngine.botDifficulty = assign.botDifficulty;
         this.syncEnginesRoster();
         this.lastHostSnapReceivedAt = performance.now();
@@ -833,9 +845,13 @@ export class MultiplayerRoomManager {
       if (!msg?.activeGame) return;
 
       if (this.isHost) {
-        // A Client clicked "JUGAR" or switched game tabs -> Host switches the whole room!
+        // Ignore HUB switch requests from clients so a client never pulls the room out of a running game
+        if (msg.activeGame === 'HUB') return;
         this.switchGame(msg.activeGame);
       } else {
+        if (this.authoritativeHostPeerId && this.authoritativeHostPeerId !== env.sender) {
+          return;
+        }
         // Host switched game -> Client transitions into the game (deduplicated against 90ms/220ms bursts!)
         const gameChanged = this.activeGame !== msg.activeGame;
         this.activeGame = msg.activeGame;
@@ -906,6 +922,11 @@ export class MultiplayerRoomManager {
         this.onStatusUpdate();
       }
     } else if (env.type === 'WORLD_SNAP' && !this.isHost) {
+      if (this.authoritativeHostPeerId && this.authoritativeHostPeerId !== env.sender) {
+        return;
+      }
+      this.authoritativeHostPeerId = env.sender;
+
       if (this.joinRetryTimer) {
         clearInterval(this.joinRetryTimer);
         this.joinRetryTimer = null;
@@ -923,7 +944,11 @@ export class MultiplayerRoomManager {
       const prevPhase = this.arenaEngine.phase;
       const prevHumanCount = this.arenaEngine.players.filter((p) => !p.isBot).length;
 
-      this.activeGame = snap.activeGame;
+      // CRITICAL: WORLD_SNAP can bring a player from HUB into an active game,
+      // but can NEVER pull a player out of an active game back to HUB!
+      if (snap.activeGame && snap.activeGame !== 'HUB') {
+        this.activeGame = snap.activeGame;
+      }
       this.arenaEngine.applySnapshot(snap, this.localSlotId);
       this.syncEnginesRoster();
 

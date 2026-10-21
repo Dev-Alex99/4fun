@@ -377,10 +377,11 @@ function syncOverlaysAndHUD(): void {
 function requestGameSwitch(gameId: ActiveGameId): void {
   sfx.unlock();
   sfx.playCartridgeClick();
-  net.switchGame(gameId);
-  if (gameId !== 'HUB') {
-    setTimeout(() => canvas.focus(), 40);
+  if (document.activeElement instanceof HTMLElement) {
+    document.activeElement.blur();
   }
+  net.switchGame(gameId);
+  setTimeout(() => canvas.focus(), 20);
 }
 
 tabButtons.forEach((btn) => {
@@ -464,6 +465,12 @@ window.addEventListener('keydown', (e) => {
   if (isTypingInInput()) {
     return;
   }
+  if (e.code === 'Space' || e.code === 'Enter') {
+    e.preventDefault();
+    if (document.activeElement instanceof HTMLButtonElement) {
+      document.activeElement.blur();
+    }
+  }
   keys[e.code] = true;
 
   if (e.code === 'Digit1') pendingEmote = 1;
@@ -472,7 +479,6 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'Digit4') pendingEmote = 4;
 
   if (e.code === 'Space' && !e.repeat) {
-    e.preventDefault();
     sfx.unlock();
     pendingParry = true;
     chargingParry = true;
@@ -506,6 +512,9 @@ window.addEventListener('keydown', (e) => {
 window.addEventListener('keyup', (e) => {
   keys[e.code] = false;
   if (e.code === 'Space') {
+    if (!isTypingInInput()) {
+      e.preventDefault();
+    }
     chargingParry = false;
     if (net.activeGame === 'TURBO_PUTT') {
       flushImmediateClientAction();

@@ -349,5 +349,27 @@ describe('MultiplayerRoomManager Anti-Freeze Watchdog & Moderation', () => {
     clientNet.sendOrApplyRoomAction({ kind: 'LOAD_STAGE', holeIndex: 3 });
     expect(hostPutt.holeIndex).toBe(3);
     expect(clientPutt.holeIndex).toBe(3);
+
+    // 5. Verify a stray WORLD_SNAP or background tab with activeGame: 'HUB' NEVER kicks Client back to HUB!
+    clientNet.handleEnvelope(
+      {
+        sender: hostNet.localPeerId,
+        type: 'WORLD_SNAP',
+        payload: { ...hostArena.getSnapshot(), activeGame: 'HUB' }
+      },
+      () => {}
+    );
+    expect(clientNet.activeGame).toBe('TURBO_PUTT');
+
+    // Also verify packets from a rogue/duplicate tab sender are strictly ignored
+    clientNet.handleEnvelope(
+      {
+        sender: 'P-ROGUE-TAB-99',
+        type: 'GAME_SWITCH',
+        payload: { activeGame: 'HUB', botDifficulty: 'NORMAL', levelIndex: 0, holeIndex: 0 }
+      },
+      () => {}
+    );
+    expect(clientNet.activeGame).toBe('TURBO_PUTT');
   });
 });
