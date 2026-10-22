@@ -1,4 +1,4 @@
-export type ActiveGameId = 'HUB' | 'BASH_BOT' | 'CHAIN_PANIC' | 'TURBO_PUTT';
+export type ActiveGameId = 'HUB' | 'BASH_BOT' | 'CHAIN_PANIC' | 'TURBO_PUTT' | 'HOT_CORE';
 export type RoundPhase = 'PLAYING' | 'CARD_DRAFT' | 'MATCH_OVER';
 export type BotDifficulty = 'CHILL' | 'NORMAL' | 'PRO' | 'OFF';
 export type CourtLayout = 'CLASSIC' | 'PINBALL' | 'CORE';
@@ -332,6 +332,81 @@ export interface PuttWarSnapshot {
   explosions: PuttExplosion[];
 }
 
+// ==========================================
+// GAME 04: HOT-CORE (NUCLEAR HOT POTATO PVP)
+// ==========================================
+
+export interface HotCorePlayer {
+  id: number;
+  name: string;
+  bodyColor: string;
+  shadeColor: string;
+  isBot: boolean;
+  alive: boolean;
+  score: number;
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  radius: number;
+  aimAngle: number;
+  walkCycle: number;
+  shieldTimer: number; // Active reflector parry shield (>0)
+  shieldCooldown: number;
+  dashTimer: number;
+  dashCooldown: number;
+  empCooldown: number;
+  passImmunityTimer: number;
+  emoteText: string | null;
+  emoteTimer: number;
+  lastTaggedAt?: number;
+  lastKOAt?: number;
+}
+
+export interface HotCoreDevice {
+  holderId: number | null; // Player currently carrying the unstable core (null if flying/loose)
+  lastThrowerId: number | null;
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  radius: number;
+  fuseTimer: number; // Countdown to detonation (e.g. 10.0 -> 0.0)
+  maxFuse: number;
+  passCount: number;
+  flightTime: number;
+}
+
+export interface HotCorePillar {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+export interface HotCoreBoostPad {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  vx: number;
+  vy: number;
+}
+
+export interface HotCoreSnapshot {
+  arenaIndex: number;
+  arenaTitle: string;
+  status: 'PLAYING' | 'ROUND_OVER' | 'MATCH_OVER';
+  statusTimer: number;
+  lastWinnerId: number | null;
+  players: HotCorePlayer[];
+  core: HotCoreDevice;
+  bumpers: PinballBumper[];
+  pillars: HotCorePillar[];
+  boostPads: HotCoreBoostPad[];
+  explosions: PuttExplosion[];
+}
+
 export interface ClientInputPacket {
   slotId: number;
   name: string;
@@ -372,5 +447,6 @@ export interface WorldSnapshotPacket {
   bumpers: PinballBumper[];
   chainState?: ChainPanicSnapshot;
   puttState?: PuttWarSnapshot;
+  hotCoreState?: HotCoreSnapshot;
   hostSentAtMs?: number;
 }

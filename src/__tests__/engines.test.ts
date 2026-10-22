@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { ArenaEngine, COURT_CENTER_X, COURT_RX } from '../game/arenaEngine';
 import { CHAIN_LEVELS, ChainPanicEngine } from '../game/chainPanicEngine';
+import { HOT_CORE_ARENAS, HotCoreEngine } from '../game/hotCoreEngine';
 import { PUTT_HOLES, PuttWarEngine } from '../game/puttWarEngine';
 import { MultiplayerRoomManager } from '../net/multiplayerRoom';
 import { ClientInputPacket } from '../types';
@@ -373,3 +374,65 @@ describe('MultiplayerRoomManager Anti-Freeze Watchdog & Moderation', () => {
     expect(clientNet.activeGame).toBe('TURBO_PUTT');
   });
 });
+
+describe('HotCoreEngine (04 // HOT-CORE)', () => {
+  it('throws the unstable nuclear core as a projectile and reflects it when target has Reflector Parry Shield active', () => {
+    const engine = new HotCoreEngine();
+    expect(HOT_CORE_ARENAS.length).toBeGreaterThanOrEqual(4);
+
+    const p0 = engine.players[0];
+    const p1 = engine.players[1];
+
+    // Give core to P0 aimed directly at P1
+    engine.core.holderId = 0;
+    p0.x = 150;
+    p0.y = 250;
+    p1.x = 245;
+    p1.y = 250;
+    p1.passImmunityTimer = 0;
+    p0.aimAngle = 0;
+
+    // P0 throws core
+    engine.triggerThrowOrShield(p0, 0);
+    expect(engine.core.holderId).toBeNull();
+    expect(engine.core.vx).toBeGreaterThan(500);
+
+    // P1 activates Reflector Parry Shield right as core approaches
+    const fuseBeforeParry = engine.core.fuseTimer;
+    engine.triggerThrowOrShield(p1);
+    expect(p1.shieldTimer).toBeGreaterThan(0);
+
+    // Core is immediately reflected back toward P0 (vx < 0) and fuse overclocked (-1.15s)
+    expect(engine.core.holderId).toBeNull();
+    expect(engine.core.vx).toBeLessThan(0);
+    expect(engine.core.fuseTimer).toBeLessThan(fuseBeforeParry - 0.5);
+
+    // Stepping forward carries the reflected core right back into P0!
+    engine.step(0.04, dummyInput);
+    expect(engine.core.holderId).toBe(0);
+  });
+
+  it('passes the nuclear core on physical tackle collision and detonates when fuseTimer reaches 0', () => {
+    const engine = new HotCoreEngine();
+    const p0 = engine.players[0];
+    const p1 = engine.players[1];
+
+    engine.core.holderId = 0;
+    p0.passImmunityTimer = 0;
+    p1.passImmunityTimer = 0;
+    p0.x = 400;
+    p0.y = 250;
+    p1.x = 420;
+    p1.y = 250;
+    p0.vx = 250;
+
+    engine.step(0.03, dummyInput);
+    expect(engine.core.holderId).toBe(1);
+
+    // Force fuse expiration on P1
+    engine.core.fuseTimer = 0.01;
+    engine.step(0.05, dummyInput);
+    expect(p1.alive).toBe(false);
+  });
+});
+

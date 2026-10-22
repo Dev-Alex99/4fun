@@ -1,6 +1,7 @@
 import Peer, { DataConnection } from 'peerjs';
 import { ArenaEngine } from '../game/arenaEngine';
 import { ChainPanicEngine } from '../game/chainPanicEngine';
+import { HotCoreEngine } from '../game/hotCoreEngine';
 import { PuttWarEngine } from '../game/puttWarEngine';
 import {
   ActiveGameId,
@@ -57,6 +58,7 @@ interface GameSwitchMsg {
   botDifficulty: BotDifficulty;
   levelIndex: number;
   holeIndex: number;
+  arenaIndex?: number;
 }
 
 export interface RoomActionMsg {
@@ -64,6 +66,7 @@ export interface RoomActionMsg {
   botDifficulty?: BotDifficulty;
   levelIndex?: number;
   holeIndex?: number;
+  arenaIndex?: number;
   chainMode?: ChainGameMode;
 }
 
@@ -128,6 +131,7 @@ export class MultiplayerRoomManager {
   private arenaEngine: ArenaEngine;
   private chainEngine: ChainPanicEngine;
   private puttEngine?: PuttWarEngine;
+  private hotCoreEngine?: HotCoreEngine;
   private onStatusUpdate: () => void;
 
   private peer: Peer | null = null;
@@ -164,12 +168,14 @@ export class MultiplayerRoomManager {
     arenaEngine: ArenaEngine,
     chainEngine: ChainPanicEngine,
     onStatusUpdate: () => void,
-    puttEngine?: PuttWarEngine
+    puttEngine?: PuttWarEngine,
+    hotCoreEngine?: HotCoreEngine
   ) {
     this.arenaEngine = arenaEngine;
     this.chainEngine = chainEngine;
     this.onStatusUpdate = onStatusUpdate;
     this.puttEngine = puttEngine;
+    this.hotCoreEngine = hotCoreEngine;
 
     // Always generate a unique peer ID per tab instance so duplicated tabs never collide!
     this.localPeerId =
@@ -274,6 +280,8 @@ export class MultiplayerRoomManager {
         this.chainEngine.loadLevel(this.chainEngine.levelIndex);
       } else if (nextGame === 'TURBO_PUTT') {
         this.puttEngine?.loadHole(this.puttEngine.holeIndex);
+      } else if (nextGame === 'HOT_CORE') {
+        this.hotCoreEngine?.loadArena(this.hotCoreEngine.arenaIndex);
       }
 
       const switchEnv: NetEnvelope = {
@@ -284,7 +292,8 @@ export class MultiplayerRoomManager {
           activeGame: nextGame,
           botDifficulty: this.arenaEngine.botDifficulty,
           levelIndex: this.chainEngine.levelIndex,
-          holeIndex: this.puttEngine?.holeIndex ?? 0
+          holeIndex: this.puttEngine?.holeIndex ?? 0,
+          arenaIndex: this.hotCoreEngine?.arenaIndex ?? 0
         } satisfies GameSwitchMsg
       };
 
@@ -321,7 +330,8 @@ export class MultiplayerRoomManager {
           activeGame: nextGame,
           botDifficulty: this.arenaEngine.botDifficulty,
           levelIndex: this.chainEngine.levelIndex,
-          holeIndex: this.puttEngine?.holeIndex ?? 0
+          holeIndex: this.puttEngine?.holeIndex ?? 0,
+          arenaIndex: this.hotCoreEngine?.arenaIndex ?? 0
         } satisfies GameSwitchMsg
       });
     }
@@ -359,6 +369,7 @@ export class MultiplayerRoomManager {
         this.arenaEngine.spawnRound();
         this.chainEngine.loadLevel(this.chainEngine.levelIndex);
         this.puttEngine?.loadHole(this.puttEngine.holeIndex);
+        this.hotCoreEngine?.loadArena(this.hotCoreEngine.arenaIndex);
       }
     } else if (action.kind === 'LOAD_STAGE') {
       if (typeof action.levelIndex === 'number' && this.chainEngine.levelIndex !== action.levelIndex) {
@@ -371,6 +382,13 @@ export class MultiplayerRoomManager {
       ) {
         this.puttEngine.loadHole(action.holeIndex);
       }
+      if (
+        typeof action.arenaIndex === 'number' &&
+        this.hotCoreEngine &&
+        this.hotCoreEngine.arenaIndex !== action.arenaIndex
+      ) {
+        this.hotCoreEngine.loadArena(action.arenaIndex);
+      }
     } else if (action.kind === 'CHAIN_MODE' && action.chainMode) {
       this.chainEngine.mode = action.chainMode;
       if (this.isHost) {
@@ -381,6 +399,8 @@ export class MultiplayerRoomManager {
         this.chainEngine.loadLevel(this.chainEngine.levelIndex);
       } else if (this.activeGame === 'TURBO_PUTT') {
         this.puttEngine?.loadHole(this.puttEngine.holeIndex);
+      } else if (this.activeGame === 'HOT_CORE') {
+        this.hotCoreEngine?.resetChampionship();
       } else {
         this.arenaEngine.resetChampionship();
       }
@@ -397,6 +417,7 @@ export class MultiplayerRoomManager {
     const roster = this.arenaEngine.players.map((p) => ({ name: p.name, isBot: p.isBot }));
     this.chainEngine.syncPlayerIdentities(roster, botsActive);
     this.puttEngine?.syncPlayerIdentities(roster, botsActive);
+    this.hotCoreEngine?.syncPlayerIdentities(roster, botsActive);
   }
 
   /**
@@ -968,6 +989,8 @@ export class MultiplayerRoomManager {
             this.chainEngine.loadLevel(msg.levelIndex);
           } else if (msg.activeGame === 'TURBO_PUTT' && typeof msg.holeIndex === 'number') {
             this.puttEngine?.loadHole(msg.holeIndex);
+          } else if (msg.activeGame === 'HOT_CORE' && typeof msg.arenaIndex === 'number') {
+            this.hotCoreEngine?.loadArena(msg.arenaIndex);
           }
         }
         this.lastHostSnapReceivedAt = performance.now();
@@ -1024,6 +1047,7 @@ export class MultiplayerRoomManager {
       this.arenaEngine.applyRemoteInput(inp);
       this.chainEngine.applyRemoteInput(inp);
       this.puttEngine?.applyRemoteInput(inp);
+      this.hotCoreEngine?.applyRemoteInput(inp);
       if (prevName && prevName !== inp.name) {
         this.syncEnginesRoster();
         this.broadcastHostSnapshot(true);
@@ -1075,6 +1099,9 @@ export class MultiplayerRoomManager {
       }
       if (snap.puttState) {
         this.puttEngine?.applySnapshot(snap.puttState, this.localSlotId);
+      }
+      if (snap.hotCoreState) {
+        this.hotCoreEngine?.applySnapshot(snap.hotCoreState, this.localSlotId);
       }
       this.syncEnginesRoster();
 
@@ -1220,6 +1247,8 @@ export class MultiplayerRoomManager {
       snap.chainState = this.chainEngine.getSnapshot();
     } else if (this.activeGame === 'TURBO_PUTT') {
       snap.puttState = this.puttEngine?.getSnapshot();
+    } else if (this.activeGame === 'HOT_CORE') {
+      snap.hotCoreState = this.hotCoreEngine?.getSnapshot();
     }
 
     const env: NetEnvelope = {
