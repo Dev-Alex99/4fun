@@ -3,6 +3,7 @@ import { ArenaEngine, COURT_CENTER_X, COURT_RX } from '../game/arenaEngine';
 import { CHAIN_LEVELS, ChainPanicEngine } from '../game/chainPanicEngine';
 import { HOT_CORE_ARENAS, HotCoreEngine } from '../game/hotCoreEngine';
 import { VOLT_CROWN_ARENAS, VoltCrownEngine } from '../game/voltCrownEngine';
+import { HEX_CRUSH_ARENAS, HexCrushEngine } from '../game/hexCrushEngine';
 import { PUTT_HOLES, PuttWarEngine } from '../game/puttWarEngine';
 import { MultiplayerRoomManager } from '../net/multiplayerRoom';
 import { ClientInputPacket } from '../types';
@@ -561,6 +562,121 @@ describe('VoltCrownEngine (05 // VOLT-CROWN)', () => {
       engine.step(0.02, dummyInput);
     }
     expect(engine.looseParts.length).toBe(0);
+  });
+});
+
+describe('HexCrushEngine (06 // HEX-CRUSH)', () => {
+  it('initializes 4 players and generates hex tiles across all 3 sectors', () => {
+    const engine = new HexCrushEngine();
+    expect(engine.players.length).toBe(4);
+    expect(engine.tiles.length).toBeGreaterThan(40);
+
+    // Test loading each sector
+    for (let i = 0; i < HEX_CRUSH_ARENAS.length; i++) {
+      engine.loadArena(i);
+      expect(engine.arenaTitle).toBe(HEX_CRUSH_ARENAS[i].title);
+      expect(engine.tiles.length).toBeGreaterThan(30);
+    }
+  });
+
+  it('triggers Seismic Hammer Slam, spawns directional shockwave, and cracks tiles', () => {
+    const engine = new HexCrushEngine();
+    const p0 = engine.players[0];
+    p0.x = 400;
+    p0.y = 250;
+    p0.z = 0;
+    p0.aimAngle = 0; // aimed right
+
+    engine.triggerHammerSlam(p0, 0);
+
+    expect(engine.shockwaves.length).toBe(1);
+    expect(engine.shockwaves[0].vx).toBeGreaterThan(0);
+    expect(p0.hammerCooldown).toBeGreaterThan(0);
+
+    // Step engine to let shockwave propagate and damage tiles
+    for (let i = 0; i < 5; i++) {
+      engine.step(0.03, dummyInput);
+    }
+
+    // Some tiles in trajectory should be damaged
+    const damagedTiles = engine.tiles.filter((t) => t.health < t.maxHealth);
+    expect(damagedTiles.length).toBeGreaterThan(0);
+  });
+
+  it('performs Rocket Jump on ground and Ground Pound while in the air with radial shockwave', () => {
+    const engine = new HexCrushEngine();
+    const p0 = engine.players[0];
+    p0.z = 0;
+    p0.jumpCooldown = 0;
+
+    // First press on ground triggers Rocket Jump!
+    engine.triggerJumpOrPound(p0);
+    expect(p0.vz).toBeGreaterThan(300);
+    expect(p0.z).toBeGreaterThan(0);
+
+    // Advance physics to reach mid-air
+    engine.step(0.08, dummyInput);
+    expect(p0.z).toBeGreaterThan(10);
+
+    // Second press while airborne triggers Ground Pound!
+    engine.triggerJumpOrPound(p0);
+    expect(p0.isGroundPounding).toBe(true);
+    expect(p0.vz).toBeLessThan(-600);
+
+    // Step until landing
+    while (p0.z > 0) {
+      engine.step(0.02, dummyInput);
+    }
+
+    expect(p0.z).toBe(0);
+    expect(p0.isGroundPounding).toBe(false);
+  });
+
+  it('deploys emergency cyan nanotile bridge under player when triggered', () => {
+    const engine = new HexCrushEngine();
+    const p0 = engine.players[0];
+    p0.x = 450;
+    p0.y = 250;
+    p0.bridgeCooldown = 0;
+
+    engine.triggerEmergencyNanobridge(p0);
+    expect(p0.bridgeCooldown).toBeGreaterThan(5);
+
+    const bridgeTiles = engine.tiles.filter((t) => t.type === 'BRIDGE');
+    expect(bridgeTiles.length).toBeGreaterThan(0);
+    expect(bridgeTiles[0].health).toBe(2);
+  });
+
+  it('eliminates player who steps into empty void abyss and awards round win to survivor', () => {
+    const engine = new HexCrushEngine();
+    // Disable bots to test pure survivor elimination
+    engine.players.forEach((p) => (p.isBot = false));
+
+    // Place player 1 out in the deep empty void far from any tiles
+    const p1 = engine.players[1];
+    p1.x = 105;
+    p1.y = 80;
+    p1.z = 0;
+
+    // Step engine to detect footing
+    engine.step(0.016, dummyInput);
+    expect(p1.fallTimer).toBeGreaterThan(0);
+
+    // Advance past fallTimer duration
+    for (let s = 0; s < 50; s++) {
+      engine.step(0.02, dummyInput);
+    }
+    expect(p1.alive).toBe(false);
+
+    // Now eliminate players 2 and 3 so only player 0 remains
+    engine.players[2].alive = false;
+    engine.players[3].alive = false;
+
+    // Step to trigger round end
+    engine.step(0.016, dummyInput);
+    expect(engine.status).toBe('ROUND_OVER');
+    expect(engine.roundWinnerId).toBe(0);
+    expect(engine.players[0].score).toBe(1);
   });
 });
 

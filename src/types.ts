@@ -4,7 +4,8 @@ export type ActiveGameId =
   | 'CHAIN_PANIC'
   | 'TURBO_PUTT'
   | 'HOT_CORE'
-  | 'VOLT_CROWN';
+  | 'VOLT_CROWN'
+  | 'HEX_CRUSH';
 export type RoundPhase = 'PLAYING' | 'CARD_DRAFT' | 'MATCH_OVER';
 export type BotDifficulty = 'CHILL' | 'NORMAL' | 'PRO' | 'OFF';
 export type CourtLayout = 'CLASSIC' | 'PINBALL' | 'CORE';
@@ -507,6 +508,85 @@ export interface VoltCrownSnapshot {
   explosions: PuttExplosion[];
 }
 
+// ==========================================
+// GAME 06: HEX-CRUSH EXPANDED TYPES
+// ==========================================
+
+export type HexTileType = 'NORMAL' | 'BUMPER' | 'GLASS' | 'STEEL' | 'BRIDGE';
+
+export interface HexTile {
+  id: number;
+  q: number;
+  r: number;
+  x: number;
+  y: number;
+  radius: number;
+  type: HexTileType;
+  health: number; // 2 = intact, 1 = cracked, 0 = crumbling/falling
+  maxHealth: number;
+  fallOffset: number; // visual drop offset when crumbling
+  fadeAlpha: number; // 1 -> 0 while falling
+  crumbleTimer: number; // countdown after contact before falling
+  shakeTimer: number; // vibration anim when cracked
+  tempTimer?: number; // for temporary nanobridge tiles
+}
+
+export interface HexCrushPlayer {
+  id: number;
+  name: string;
+  bodyColor: string;
+  shadeColor: string;
+  isBot: boolean;
+  alive: boolean;
+  score: number; // rounds won (first to 3)
+  x: number;
+  y: number;
+  z: number; // vertical elevation for jump/slam (0 = ground, >0 = air)
+  vx: number;
+  vy: number;
+  vz: number;
+  radius: number;
+  aimAngle: number;
+  walkCycle: number;
+  isGroundPounding: boolean;
+  hammerCooldown: number;
+  jumpCooldown: number;
+  bridgeCooldown: number;
+  stunTimer: number;
+  fallTimer: number; // >0 while falling into abyss before KO
+  fallScale: number; // shrinking as robot drops
+  fallRotation: number;
+  emoteText: string | null;
+  emoteTimer: number;
+}
+
+export interface SeismicShockwave {
+  id: number;
+  ownerId: number;
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  radius: number;
+  life: number;
+  maxLife: number;
+  color: string;
+}
+
+export interface HexCrushSnapshot {
+  arenaIndex: number;
+  arenaTitle: string;
+  status: 'PLAYING' | 'ROUND_OVER' | 'MATCH_OVER';
+  statusTimer: number;
+  roundWinnerId: number | null;
+  matchWinnerId: number | null;
+  players: HexCrushPlayer[];
+  tiles: HexTile[];
+  shockwaves: SeismicShockwave[];
+  bumpers: PinballBumper[];
+  explosions: PuttExplosion[];
+}
+
 export interface ClientInputPacket {
   slotId: number;
   name: string;
@@ -549,5 +629,6 @@ export interface WorldSnapshotPacket {
   puttState?: PuttWarSnapshot;
   hotCoreState?: HotCoreSnapshot;
   voltCrownState?: VoltCrownSnapshot;
+  hexCrushState?: HexCrushSnapshot;
   hostSentAtMs?: number;
 }

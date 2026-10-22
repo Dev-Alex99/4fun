@@ -273,6 +273,14 @@ body {
   background: #facc15;
 }
 
+.keycap-blue {
+  background: #0284c7;
+  color: #ffffff;
+}
+.keycap-blue:hover {
+  background: #0ea5e9;
+}
+
 /* Cartridge Switcher Tabs in Top Header */
 .cartridge-tabs {
   display: flex;
