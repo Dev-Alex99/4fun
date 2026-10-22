@@ -298,6 +298,12 @@ export class HexCrushEngine {
         if (r.cosmetics) this.players[idx].cosmetics = r.cosmetics;
       }
     });
+    const activeIds = new Set(this.getActiveParticipants().map((p) => p.id));
+    this.players.forEach((p) => {
+      if (!activeIds.has(p.id)) {
+        p.alive = false;
+      }
+    });
   }
 
   public applyRemoteInput(packet: ClientInputPacket): void {
@@ -346,16 +352,32 @@ export class HexCrushEngine {
     this.looseParts = [];
     this.particles = [];
 
-    // Reset player positions to valid intact spawn points
+    // Find safe intact starting tiles centered in the 4 arena quadrants
+    const safeTiles = this.tiles.filter((t) => t.type !== 'GLASS' && t.health >= 2);
+    const pool = safeTiles.length >= 4 ? safeTiles : this.tiles.filter((t) => t.health > 0);
+
+    const nw = pool.filter((t) => t.x < CHAMBER_CENTER_X - 40 && t.y < CHAMBER_CENTER_Y - 20)
+      .sort((a, b) => Math.hypot(a.x - 340, a.y - 190) - Math.hypot(b.x - 340, b.y - 190))[0];
+    const ne = pool.filter((t) => t.x > CHAMBER_CENTER_X + 40 && t.y < CHAMBER_CENTER_Y - 20)
+      .sort((a, b) => Math.hypot(a.x - 660, a.y - 190) - Math.hypot(b.x - 660, b.y - 190))[0];
+    const sw = pool.filter((t) => t.x < CHAMBER_CENTER_X - 40 && t.y > CHAMBER_CENTER_Y + 20)
+      .sort((a, b) => Math.hypot(a.x - 340, a.y - 330) - Math.hypot(b.x - 340, b.y - 330))[0];
+    const se = pool.filter((t) => t.x > CHAMBER_CENTER_X + 40 && t.y > CHAMBER_CENTER_Y + 20)
+      .sort((a, b) => Math.hypot(a.x - 660, a.y - 330) - Math.hypot(b.x - 660, b.y - 330))[0];
+
     const spawnPoints = [
-      { x: 310, y: 170 },
-      { x: 690, y: 170 },
-      { x: 310, y: 345 },
-      { x: 690, y: 345 }
+      nw ? { x: nw.x, y: nw.y } : { x: 340, y: 190 },
+      ne ? { x: ne.x, y: ne.y } : { x: 660, y: 190 },
+      sw ? { x: sw.x, y: sw.y } : { x: 340, y: 330 },
+      se ? { x: se.x, y: se.y } : { x: 660, y: 330 }
     ];
 
-    const activeParticipants = this.getActiveParticipants();
-    activeParticipants.forEach((p, idx) => {
+    const activeIds = new Set(this.getActiveParticipants().map((p) => p.id));
+    this.players.forEach((p, idx) => {
+      if (!activeIds.has(p.id)) {
+        p.alive = false;
+        return;
+      }
       const sp = spawnPoints[idx % spawnPoints.length];
       p.alive = true;
       p.x = sp.x;
@@ -365,7 +387,7 @@ export class HexCrushEngine {
       p.vy = 0;
       p.vz = 0;
       p.isGroundPounding = false;
-      p.hammerCooldown = 0;
+      p.hammerCooldown = p.isBot ? 1.0 : 0;
       p.jumpCooldown = 0;
       p.bridgeCooldown = 0;
       p.stunTimer = 0;
@@ -380,7 +402,15 @@ export class HexCrushEngine {
   }
 
   public getActiveParticipants(): HexCrushPlayer[] {
-    return this.players;
+    const humans = this.players.filter((p) => !p.isBot);
+    if (this.botsEnabled) {
+      return this.players;
+    }
+    // Solo practice fallback: if 1 human and bots OFF, retain 1 practice bot
+    if (humans.length <= 1) {
+      return this.players.slice(0, 2);
+    }
+    return humans;
   }
 
   public triggerHammerSlam(player: HexCrushPlayer, aimAngle?: number): void {
@@ -789,6 +819,16 @@ export class HexCrushEngine {
     });
   }
 
+  private hasTileAt(x: number, y: number, margin = 26): boolean {
+    for (const t of this.tiles) {
+      if (t.health <= 0) continue;
+      if (Math.hypot(t.x - x, t.y - y) <= t.radius + margin) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   private checkPlayerFooting(player: HexCrushPlayer, dt: number): void {
     let supported = false;
     let closestTile: HexTile | null = null;
@@ -801,30 +841,41 @@ export class HexCrushEngine {
         minDist = d;
         closestTile = tile;
       }
-      if (d <= tile.radius + player.radius * 0.45) {
+      if (d <= tile.radius + player.radius * 0.85) {
         supported = true;
       }
     }
 
     if (supported && closestTile) {
+      // Regain footing if player jumped back or deployed Nanobridge
+      if (player.fallTimer > 0) {
+        player.fallTimer = 0;
+        player.fallScale = 1.0;
+        player.fallRotation = 0;
+      }
+
       // Step on tile causes decay if GLASS or NORMAL
       if (closestTile.type === 'GLASS') {
         closestTile.health = 0;
-        closestTile.crumbleTimer = 0.15;
+        closestTile.crumbleTimer = 0.25;
+        closestTile.shakeTimer = 0.25;
       } else if (closestTile.type === 'NORMAL') {
-        // Crumble countdown after standing on tile for 0.7s
+        // Crumble countdown after standing on tile for 1.8s
         closestTile.crumbleTimer += dt;
-        if (closestTile.crumbleTimer >= 0.7) {
+        if (closestTile.crumbleTimer >= 1.8) {
           closestTile.health = Math.max(0, closestTile.health - 1);
           closestTile.crumbleTimer = 0;
-          closestTile.shakeTimer = 0.2;
+          closestTile.shakeTimer = 0.25;
+          sfx.playHexCrumble();
         }
       }
     } else {
-      // Void abyss beneath feet! Start falling!
-      player.fallTimer = 0.75;
-      player.fallScale = 1.0;
-      player.fallRotation = 0;
+      // Void abyss beneath feet! Start falling if not already falling
+      if (player.fallTimer <= 0) {
+        player.fallTimer = 0.75;
+        player.fallScale = 1.0;
+        player.fallRotation = 0;
+      }
     }
   }
 
@@ -868,7 +919,7 @@ export class HexCrushEngine {
   private stepBotAI(bot: HexCrushPlayer, dt: number, moveSpeed: number, nowMs: number): void {
     if (bot.stunTimer > 0 || bot.fallTimer > 0) return;
 
-    // Find nearest intact tile
+    // 1. Find nearest intact tile
     let targetTile: HexTile | null = null;
     let minTileDist = 9999;
     for (const t of this.tiles) {
@@ -880,11 +931,20 @@ export class HexCrushEngine {
       }
     }
 
-    // Find nearest opponent
+    // 2. Emergency actions if bot is losing footing or in the void
+    if (minTileDist > 30 && bot.bridgeCooldown <= 0) {
+      this.triggerEmergencyNanobridge(bot);
+    } else if (minTileDist > 38 && bot.z <= 2 && bot.jumpCooldown <= 0) {
+      // Rocket Jump towards center of arena
+      bot.aimAngle = Math.atan2(CHAMBER_CENTER_Y - bot.y, CHAMBER_CENTER_X - bot.x);
+      this.triggerJumpOrPound(bot);
+    }
+
+    // 3. Find nearest alive opponent
     let targetEnemy: HexCrushPlayer | null = null;
     let minEnemyDist = 9999;
     for (const other of this.players) {
-      if (other.id === bot.id || !other.alive) continue;
+      if (other.id === bot.id || !other.alive || other.fallTimer > 0) continue;
       const d = Math.hypot(other.x - bot.x, other.y - bot.y);
       if (d < minEnemyDist) {
         minEnemyDist = d;
@@ -892,50 +952,86 @@ export class HexCrushEngine {
       }
     }
 
-    // If bot has no tile or is standing on a single crumbling tile, use Nanobridge or Jump!
-    if (minTileDist > 40 && bot.bridgeCooldown <= 0) {
-      this.triggerEmergencyNanobridge(bot);
-    } else if (minTileDist > 55 && bot.z <= 2 && bot.jumpCooldown <= 0) {
-      this.triggerJumpOrPound(bot);
-    }
+    // 4. Movement decision: stay on solid tiles, seek center if safe
+    let targetX = bot.x;
+    let targetY = bot.y;
 
-    // Move toward safe tile or enemy
-    let destX = bot.x;
-    let destY = bot.y;
-    if (minTileDist > 25 && targetTile) {
-      destX = targetTile.x;
-      destY = targetTile.y;
+    if (minTileDist > 20 && targetTile) {
+      targetX = targetTile.x;
+      targetY = targetTile.y;
     } else if (targetEnemy) {
-      destX = targetEnemy.x;
-      destY = targetEnemy.y;
+      targetX = targetEnemy.x;
+      targetY = targetEnemy.y;
     }
 
-    const ddx = destX - bot.x;
-    const ddy = destY - bot.y;
+    const ddx = targetX - bot.x;
+    const ddy = targetY - bot.y;
     const dist = Math.hypot(ddx, ddy);
+
     if (dist > 8) {
-      bot.vx += (ddx / dist) * moveSpeed * 7.5 * dt;
-      bot.vy += (ddy / dist) * moveSpeed * 7.5 * dt;
+      const dirX = ddx / dist;
+      const dirY = ddy / dist;
+
+      // Probe ahead 28px: is there solid ground ahead?
+      const probeX = bot.x + dirX * 28;
+      const probeY = bot.y + dirY * 28;
+
+      if (this.hasTileAt(probeX, probeY, 8)) {
+        bot.vx += dirX * moveSpeed * 7.5 * dt;
+        bot.vy += dirY * moveSpeed * 7.5 * dt;
+      } else {
+        // Void abyss ahead! Do NOT step into the void. Stay centered on safe tile.
+        if (targetTile) {
+          const toSafeX = targetTile.x - bot.x;
+          const toSafeY = targetTile.y - bot.y;
+          const safeDist = Math.hypot(toSafeX, toSafeY);
+          if (safeDist > 4) {
+            bot.vx += (toSafeX / safeDist) * moveSpeed * 5.0 * dt;
+            bot.vy += (toSafeY / safeDist) * moveSpeed * 5.0 * dt;
+          }
+        }
+      }
     }
 
+    // 5. Attacks
     if (targetEnemy) {
       bot.aimAngle = Math.atan2(targetEnemy.y - bot.y, targetEnemy.x - bot.x);
 
-      // Attack with hammer if close
-      if (minEnemyDist < 160 && bot.hammerCooldown <= 0 && bot.z <= 4) {
-        this.triggerHammerSlam(bot, bot.aimAngle);
+      // Only slam hammer if close AND recoil won't blow bot off the edge
+      if (minEnemyDist < 110 && bot.hammerCooldown <= 0 && bot.z <= 4) {
+        const recoilX = bot.x - Math.cos(bot.aimAngle) * 32;
+        const recoilY = bot.y - Math.sin(bot.aimAngle) * 32;
+        if (this.hasTileAt(recoilX, recoilY, 6)) {
+          this.triggerHammerSlam(bot, bot.aimAngle);
+        }
       }
 
       // Ground pound if directly above enemy
-      if (bot.z > 25 && minEnemyDist < 60 && !bot.isGroundPounding) {
+      if (bot.z > 22 && minEnemyDist < 55 && !bot.isGroundPounding) {
         this.triggerJumpOrPound(bot);
       }
     }
   }
 
   private checkRoundEnd(): void {
-    const alive = this.players.filter((p) => p.alive && p.fallTimer <= 0);
-    if (alive.length <= 1 && this.status === 'PLAYING') {
+    if (this.status !== 'PLAYING') return;
+
+    const participants = this.getActiveParticipants();
+
+    // In solo practice / single participant mode: round only ends if the player dies (abyss)
+    if (participants.length <= 1) {
+      const sole = participants[0];
+      if (sole && !sole.alive) {
+        this.status = 'ROUND_OVER';
+        this.statusTimer = 2.5;
+        this.roundWinnerId = null;
+      }
+      return;
+    }
+
+    // Multiplayer / Bot match (>= 2 participants): wait until players actually finish falling
+    const alive = participants.filter((p) => p.alive);
+    if (alive.length <= 1) {
       const winner = alive[0] || null;
       this.status = 'ROUND_OVER';
       this.statusTimer = 3.2;
