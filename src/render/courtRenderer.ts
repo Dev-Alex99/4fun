@@ -1,3 +1,4 @@
+import { CanvasViewportRenderer } from './canvasViewport';
 import {
   ArenaEngine,
   COURT_CENTER_X,
@@ -10,49 +11,20 @@ import {
 import { GyroBallState, PinballBumper, PlayerState } from '../types';
 import { robotWorkshop } from '../game/robotWorkshop';
 
-export class CourtRenderer {
-  private canvas: HTMLCanvasElement;
-  private ctx: CanvasRenderingContext2D;
-  private scale = 1;
-  private offsetX = 0;
-  private offsetY = 0;
-
+export class CourtRenderer extends CanvasViewportRenderer {
   constructor(canvas: HTMLCanvasElement) {
-    this.canvas = canvas;
-    const context = canvas.getContext('2d');
-    if (!context) throw new Error('2D Canvas not supported');
-    this.ctx = context;
-  }
-
-  public screenToCourt(clientX: number, clientY: number): { x: number; y: number } {
-    const rect = this.canvas.getBoundingClientRect();
-    const sx = clientX - rect.left;
-    const sy = clientY - rect.top;
-    return {
-      x: (sx - this.offsetX) / this.scale,
-      y: (sy - this.offsetY) / this.scale
-    };
+    super(canvas, COURT_WIDTH, COURT_HEIGHT);
   }
 
   public render(engine: ArenaEngine, localSlotId: number): void {
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    const w = this.canvas.clientWidth;
-    const h = this.canvas.clientHeight;
-    if (this.canvas.width !== w * dpr || this.canvas.height !== h * dpr) {
-      this.canvas.width = w * dpr;
-      this.canvas.height = h * dpr;
-    }
-
+    this.syncViewport();
     const ctx = this.ctx;
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const w = this.viewportWidth;
+    const h = this.viewportHeight;
 
     // Outer worktable mat
     ctx.fillStyle = '#D6CFC2';
     ctx.fillRect(0, 0, w, h);
-
-    this.scale = Math.min(w / COURT_WIDTH, h / COURT_HEIGHT);
-    this.offsetX = (w - COURT_WIDTH * this.scale) / 2;
-    this.offsetY = (h - COURT_HEIGHT * this.scale) / 2;
 
     ctx.save();
     ctx.translate(this.offsetX, this.offsetY);
@@ -351,6 +323,7 @@ export class CourtRenderer {
     const footRightY = -Math.sin(p.walkCycle) * 4.5;
 
     ctx.save();
+    this.applyGhostPulse();
     ctx.translate(p.x, p.y);
 
     // 1. Target Lock Floor Ring
@@ -415,7 +388,7 @@ export class CourtRenderer {
     ctx.translate(0, -bobY);
     ctx.rotate(p.tiltX);
 
-    const cosmetics = p.cosmetics || (isLocal ? robotWorkshop.cosmetics : undefined);
+    const cosmetics = robotWorkshop.resolveCosmetics(p.cosmetics, isLocal);
     const skinColors = robotWorkshop.getSkinColors(cosmetics?.skin, p.bodyColor, p.shadeColor);
 
     // Lower shade bevel

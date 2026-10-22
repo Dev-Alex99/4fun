@@ -1,40 +1,23 @@
+import { robotWorkshop } from '../game/robotWorkshop';
+import { CanvasViewportRenderer } from './canvasViewport';
 import { COURT_HEIGHT, COURT_WIDTH } from '../game/arenaEngine';
 import { ChainPanicEngine } from '../game/chainPanicEngine';
 import { ChainPlayerState, PlatformRect } from '../types';
 
-export class ChainPanicRenderer {
-  private canvas: HTMLCanvasElement;
-  private ctx: CanvasRenderingContext2D;
-  private scale = 1;
-  private offsetX = 0;
-  private offsetY = 0;
-
+export class ChainPanicRenderer extends CanvasViewportRenderer {
   constructor(canvas: HTMLCanvasElement) {
-    this.canvas = canvas;
-    const context = canvas.getContext('2d');
-    if (!context) throw new Error('2D Canvas not supported');
-    this.ctx = context;
+    super(canvas, COURT_WIDTH, COURT_HEIGHT);
   }
 
   public render(engine: ChainPanicEngine, localSlotId: number): void {
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    const w = this.canvas.clientWidth;
-    const h = this.canvas.clientHeight;
-    if (this.canvas.width !== w * dpr || this.canvas.height !== h * dpr) {
-      this.canvas.width = w * dpr;
-      this.canvas.height = h * dpr;
-    }
-
+    this.syncViewport();
     const ctx = this.ctx;
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const w = this.viewportWidth;
+    const h = this.viewportHeight;
 
     // Abyss Pit Background
     ctx.fillStyle = '#27272A';
     ctx.fillRect(0, 0, w, h);
-
-    this.scale = Math.min(w / COURT_WIDTH, h / COURT_HEIGHT);
-    this.offsetX = (w - COURT_WIDTH * this.scale) / 2;
-    this.offsetY = (h - COURT_HEIGHT * this.scale) / 2;
 
     ctx.save();
     ctx.translate(this.offsetX, this.offsetY);
@@ -433,6 +416,9 @@ export class ChainPanicRenderer {
     const drawY = p.y - p.z * 0.75 + (p.isDangling ? Math.sin(performance.now() * 0.03) * 3 : 0);
 
     ctx.save();
+    this.applyGhostPulse();
+    const cosmetics = robotWorkshop.resolveCosmetics(p.cosmetics, isLocal);
+    const skinColors = robotWorkshop.getSkinColors(cosmetics.skin, p.bodyColor, p.shadeColor);
     ctx.translate(p.x, drawY);
 
     if (!p.isDangling) {
@@ -478,7 +464,7 @@ export class ChainPanicRenderer {
     ctx.save();
     ctx.translate(0, -bobY);
 
-    ctx.fillStyle = p.shadeColor;
+    ctx.fillStyle = skinColors.shade;
     ctx.strokeStyle = '#18181B';
     ctx.lineWidth = 2.5;
     ctx.beginPath();
@@ -486,11 +472,13 @@ export class ChainPanicRenderer {
     ctx.fill();
     ctx.stroke();
 
-    ctx.fillStyle = p.bodyColor;
+    ctx.fillStyle = skinColors.body;
     ctx.beginPath();
     ctx.roundRect(-15, -20, 30, 22, 8);
     ctx.fill();
     ctx.stroke();
+
+    robotWorkshop.drawSkinStripes(ctx, cosmetics.skin, -15, -20, 30, 22, 8);
 
     ctx.fillStyle = '#D4D4D8';
     ctx.beginPath();
@@ -522,12 +510,14 @@ export class ChainPanicRenderer {
       ctx.lineTo(6, -6);
       ctx.stroke();
     } else {
-      ctx.fillStyle = '#F4F0E8';
+      ctx.fillStyle = robotWorkshop.getVisorColor(cosmetics.visor);
       ctx.beginPath();
       ctx.arc(-4.5, -8.5, 2.2, 0, Math.PI * 2);
       ctx.arc(4.5, -8.5, 2.2, 0, Math.PI * 2);
       ctx.fill();
     }
+
+    robotWorkshop.drawHat(ctx, cosmetics.hat, 0, -20, performance.now() * 0.001);
 
     ctx.restore();
 

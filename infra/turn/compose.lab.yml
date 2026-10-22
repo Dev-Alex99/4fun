@@ -1,0 +1,39 @@
+# Only scripts/turn-lab.mjs supplies these values. Never publish these ports on 0.0.0.0.
+services:
+  turn:
+    image: coturn/coturn:4.18.0-r0
+    container_name: ${TURN_LAB_CONTAINER_NAME:?Use scripts/turn-lab.mjs}
+    entrypoint: ["/usr/bin/turnserver"]
+    command: ["-c", "/etc/coturn/turnserver.conf"]
+    user: "${TURN_LAB_UID:-65534}:${TURN_LAB_GID:-65534}"
+    restart: "no"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 128
+    mem_limit: 192m
+    cpus: 1
+    healthcheck:
+      test: ["CMD", "/bin/bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/3478; exec 3>&-; exec 3<&-"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+      start_period: 2s
+    labels:
+      io.tp04.turn-lab.owner: ${TURN_LAB_OWNER:?Use scripts/turn-lab.mjs}
+    volumes:
+      - type: bind
+        source: ${TURN_LAB_RUNTIME_DIR:?Use scripts/turn-lab.mjs}/turnserver.conf
+        target: /etc/coturn/turnserver.conf
+        read_only: true
+    tmpfs:
+      - /tmp:mode=1777,size=16m
+      - /var/lib/coturn:mode=1777,size=8m
+    ports:
+      - "127.0.0.1:3478:3478/udp"
+      - "127.0.0.1:3478:3478/tcp"
+      - "127.0.0.1:49160-49179:49160-49179/udp"
+networks:
+  default:
+    labels:
+      io.tp04.turn-lab.owner: ${TURN_LAB_OWNER:?Use scripts/turn-lab.mjs}

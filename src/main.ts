@@ -21,6 +21,8 @@ import { bgm } from './audio/chiptuneBgm';
 import { touchGamepad } from './input/touchGamepad';
 import { robotWorkshop, ROBOT_HATS, ROBOT_VISORS, ROBOT_SKINS } from './game/robotWorkshop';
 import { ActiveGameId, BotDifficulty, CHAOS_MUTATORS, ClientInputPacket } from './types';
+import { FixedStepClock } from './runtime/fixedStepClock';
+import { escapeHtml, normalizePilotName, readPilotName, writePilotName, readStorage, removeStorage, writeStorage } from './utils/browser';
 
 // 1. Constants & Lookup Tables (Must be at top before any function calls!)
 const DIFFICULTY_CYCLE: BotDifficulty[] = ['NORMAL', 'CHILL', 'OFF', 'PRO'];
@@ -75,6 +77,13 @@ const confirmOnboardingBtn = document.getElementById('confirmOnboardingBtn') as 
 
 const tabButtons = document.querySelectorAll<HTMLButtonElement>('#cartridgeTabs .tab-btn');
 const launchGameButtons = document.querySelectorAll<HTMLButtonElement>('.launch-game-btn');
+const hubSearchInput = document.getElementById('hubSearchInput') as HTMLInputElement | null;
+const hubClearSearchBtn = document.getElementById('hubClearSearchBtn') as HTMLButtonElement | null;
+const hubRandomGameBtn = document.getElementById('hubRandomGameBtn') as HTMLButtonElement | null;
+const hubResetFiltersBtn = document.getElementById('hubResetFiltersBtn') as HTMLButtonElement | null;
+const hubNoResultsMsg = document.getElementById('hubNoResultsMsg') as HTMLDivElement | null;
+const filterPillButtons = document.querySelectorAll<HTMLButtonElement>('.filter-pill');
+const gameCartridgeCards = document.querySelectorAll<HTMLDivElement>('.game-cartridge');
 
 const draftOverlay = document.getElementById('draftOverlay') as HTMLDivElement;
 const draftWinnerText = document.getElementById('draftWinnerText') as HTMLDivElement;
@@ -127,11 +136,9 @@ const urlParams = new URLSearchParams(window.location.search);
 const urlJoinParam = urlParams.get('join');
 const urlRoom =
   urlJoinParam && urlJoinParam !== '1' ? urlJoinParam : urlParams.get('room');
-const sessionRoom =
-  typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('tp04_my_room') : null;
-const hostedRoomInTab =
-  typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('tp04_hosted_room') : null;
-const initialRoom = (urlRoom || sessionRoom || generateRoomCode()).toUpperCase().slice(0, 8);
+const sessionRoom = readStorage('session', 'tp04_my_room');
+const hostedRoomInTab = readStorage('session', 'tp04_hosted_room');
+const initialRoom = (urlRoom || sessionRoom || generateRoomCode()).toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8) || generateRoomCode();
 
 // Explicit Host vs Client determination:
 // If URL has ?join=1 or ?room=XXXX that wasn't created as Host in this tab, join strictly as CLIENT!
@@ -139,9 +146,9 @@ const startAsClient =
   urlJoinParam !== null || Boolean(urlRoom && hostedRoomInTab !== initialRoom);
 
 try {
-  sessionStorage.setItem('tp04_my_room', initialRoom);
+  writeStorage('session', 'tp04_my_room', initialRoom);
   if (!startAsClient) {
-    sessionStorage.setItem('tp04_hosted_room', initialRoom);
+    writeStorage('session', 'tp04_hosted_room', initialRoom);
   }
   if (!urlRoom) {
     const nextUrl = new URL(window.location.href);
@@ -154,8 +161,9 @@ try {
 roomCodeInput.value = initialRoom;
 hubRoomCodeText.textContent = initialRoom;
 
-const storedPilotName = localStorage.getItem('tp04_pilot_name');
-const savedName = storedPilotName || 'ALEX';
+const storedPilotName = readPilotName();
+const savedName = normalizePilotName(storedPilotName || 'ALEX');
+writeStorage('session', 'tp04_pilot_name', savedName);
 playerNameInput.value = savedName;
 if (hubPilotNameInput) hubPilotNameInput.value = savedName;
 if (onboardingNameInput) onboardingNameInput.value = '';
@@ -182,6 +190,32 @@ const hotCoreRenderer = new HotCoreRenderer(canvas);
 const voltCrownRenderer = new VoltCrownRenderer(canvas);
 const hexCrushRenderer = new HexCrushRenderer(canvas);
 const ricochetRenderer = new RicochetRenderer(canvas);
+const engines = [arenaEngine, chainEngine, puttEngine, hotCoreEngine, voltCrownEngine, hexCrushEngine, ricochetEngine];
+const renderers = [courtRenderer, chainRenderer, puttRenderer, hotCoreRenderer, voltCrownRenderer, hexCrushRenderer, ricochetRenderer];
+
+function getActiveRenderer() {
+  switch (net.activeGame) {
+    case 'CHAIN_PANIC': return chainRenderer;
+    case 'TURBO_PUTT': return puttRenderer;
+    case 'HOT_CORE': return hotCoreRenderer;
+    case 'VOLT_CROWN': return voltCrownRenderer;
+    case 'HEX_CRUSH': return hexCrushRenderer;
+    case 'RICOCHET_1': return ricochetRenderer;
+    default: return courtRenderer;
+  }
+}
+
+function getActiveEngine() {
+  switch (net.activeGame) {
+    case 'CHAIN_PANIC': return chainEngine;
+    case 'TURBO_PUTT': return puttEngine;
+    case 'HOT_CORE': return hotCoreEngine;
+    case 'VOLT_CROWN': return voltCrownEngine;
+    case 'HEX_CRUSH': return hexCrushEngine;
+    case 'RICOCHET_1': return ricochetEngine;
+    default: return arenaEngine;
+  }
+}
 const net = new MultiplayerRoomManager(
   arenaEngine,
   chainEngine,
@@ -203,7 +237,11 @@ function syncOverlaysAndHUD(): void {
       : 'status-led';
 
   const pingSuffix = !net.isHost && net.pingMs > 0 ? ` • ${net.pingMs}ms` : '';
-  if (net.connectionState === 'CONNECTING') {
+  if (net.networkConfigurationError) {
+    netLed.className = 'status-led';
+    netRoleLabel.textContent = `⚠️ ${net.networkConfigurationError}`;
+    if (hubConnectionBadge) hubConnectionBadge.textContent = net.networkConfigurationError;
+  } else if (net.connectionState === 'CONNECTING') {
     netRoleLabel.textContent = `🟡 CLIENTE -> UNIENDOSE A SALA #${net.roomCode}...`;
     if (hubConnectionBadge) {
       hubConnectionBadge.textContent = `🟡 MODO CLIENTE // CONECTANDO CON EL HOST DE SALA #${net.roomCode}...`;
@@ -213,6 +251,9 @@ function syncOverlaysAndHUD(): void {
     if (hubConnectionBadge) {
       hubConnectionBadge.textContent = `🔄 MODO CLIENTE // RECONECTANDO CON LA SALA #${net.roomCode}...`;
     }
+  } else if (!net.isHost && !net.isSynchronized) {
+    netRoleLabel.textContent = `🔄 RECUPERANDO SINCRONIZACIÓN DE #${net.roomCode}...`;
+    if (hubConnectionBadge) hubConnectionBadge.textContent = '🔄 ESPERANDO ESTADO ACTUAL DEL ANFITRIÓN...';
   } else if (net.isHost) {
     netRoleLabel.textContent = `👑 HOST DE SALA #${net.roomCode} (${humanCount}/4 EN LÍNEA)`;
     if (hubConnectionBadge) {
@@ -242,7 +283,7 @@ function syncOverlaysAndHUD(): void {
   if (roomToastContainer) {
     roomToastContainer.innerHTML = net.toasts
       .map(
-        (t) => `<div class="room-toast tone-${t.tone}">${t.text}</div>`
+        (t) => `<div class="room-toast tone-${escapeHtml(t.tone)}">${escapeHtml(t.text)}</div>`
       )
       .join('');
   }
@@ -271,6 +312,16 @@ function syncOverlaysAndHUD(): void {
   if (toggleBotsBtn) toggleBotsBtn.textContent = botLabel;
   if (topBotsToggleBtn) topBotsToggleBtn.textContent = botLabel;
   if (hubBotsToggleBtn) hubBotsToggleBtn.textContent = botLabel;
+  const hostControls = [
+    ...tabButtons, ...launchGameButtons, tabTournamentBtn, topBotsToggleBtn,
+    toggleBotsBtn, hubBotsToggleBtn, resetMatchBtn, prevSectorBtn, nextSectorBtn,
+    chainModeBtn, newChampionshipBtn, hubStartTournamentBtn, tourneyRestartBtn, tourneyExitHubBtn
+  ];
+  hostControls.forEach((button) => {
+    if (!button) return;
+    button.disabled = !net.isHost;
+    if (!net.isHost) button.title = 'El anfitrión controla el juego y la configuración de la sala';
+  });
 
   tabButtons.forEach((btn) => {
     if (btn.dataset.game === net.activeGame) {
@@ -479,13 +530,13 @@ function syncOverlaysAndHUD(): void {
                     : `${p.score}`;
       const canKick = net.isHost && p.id > 0 && !p.isBot;
       return `
-      <div class="player-slot" style="background:${p.bodyColor}">
+      <div class="player-slot" style="background:${escapeHtml(p.bodyColor)}">
         <span class="slot-dot"></span>
-        <span>${p.name}${p.isBot ? ' [BOT]' : ''}</span>
+        <span>${escapeHtml(p.name)}${p.isBot ? ' [BOT]' : ''}</span>
         <span class="slot-score">${scoreBadge}</span>
         ${
           canKick
-            ? `<button class="kick-btn" data-kick-slot="${p.id}" title="Vetar a ${p.name} de la sala">✕</button>`
+            ? `<button class="kick-btn" data-kick-slot="${p.id}" title="Vetar a ${escapeHtml(p.name)} de la sala">✕</button>`
             : ''
         }
       </div>
@@ -510,8 +561,8 @@ function syncOverlaysAndHUD(): void {
         const displayName = isEmptyBotSlot ? 'ESPERANDO AMIGO...' : p.name;
         const chipBg = isEmptyBotSlot ? '#52525B' : p.bodyColor;
         return `
-        <div class="roster-chip" style="background:${chipBg}">
-          <span>S${p.id + 1}: ${displayName} [${roleTag}]</span>
+        <div class="roster-chip" style="background:${escapeHtml(chipBg)}">
+          <span>S${p.id + 1}: ${escapeHtml(displayName)} [${roleTag}]</span>
           ${
             canKick
               ? `<button class="kick-btn" data-kick-slot="${p.id}" title="Vetar jugador de la sala">✕ VETAR</button>`
@@ -600,18 +651,18 @@ function syncOverlaysAndHUD(): void {
       tourneyStandingsView.classList.add('hidden');
       tourneyPodiumView.classList.remove('hidden');
 
-      const champ = arenaEngine.players[tournament.state.champId ?? 0];
+      const champ = tournament.state.champId === null ? null : arenaEngine.players[tournament.state.champId];
       tourneyModalEyebrow.textContent = 'TORNEO FINALIZADO // 5 RONDAS';
       tourneyModalTitle.textContent = '🏆 GRAN CAMPEÓN DEL CAOS';
       tourneyChampName.textContent = champ
         ? `¡${champ.name} ES EL GRAN CAMPEÓN!`
-        : '¡VICTORIA!';
+        : 'TORNEO EMPATADO — SIN CAMPEÓN';
     } else if (
-      (tournament as any).pendingNextRound ||
+      tournament.isIntermission ||
       tournament.state.scores.some((sc) => sc > 0)
     ) {
       // Show standings if pending next round
-      if ((tournament as any).pendingNextRound) {
+      if (tournament.isIntermission) {
         tournamentOverlay.classList.remove('hidden');
         tourneyRouletteView.classList.add('hidden');
         tourneyStandingsView.classList.remove('hidden');
@@ -630,8 +681,8 @@ function syncOverlaysAndHUD(): void {
         tourneyLeaderboard.innerHTML = sorted
           .map(
             (p, idx) => `
-          <div class="leaderboard-row" style="background: ${p.bodyColor}">
-            <span>${medals[idx]} ${p.name}</span>
+          <div class="leaderboard-row" style="background: ${escapeHtml(p.bodyColor)}">
+            <span>${medals[idx]} ${escapeHtml(p.name)}</span>
             <span>${tournament.state.scores[p.id] || 0} PUNTOS</span>
           </div>
         `
@@ -657,7 +708,11 @@ function requestGameSwitch(gameId: ActiveGameId): void {
     document.activeElement.blur();
   }
   net.switchGame(gameId);
-  setTimeout(() => canvas.focus(), 20);
+  if (gameId === 'HUB') {
+    hubOverlay.focus();
+  } else {
+    setTimeout(() => canvas.focus(), 20);
+  }
 }
 
 tabButtons.forEach((btn) => {
@@ -677,8 +732,103 @@ launchGameButtons.forEach((btn) => {
 tabTournamentBtn?.addEventListener('click', () => {
   sfx.playCartridgeClick();
   requestGameSwitch('HUB');
-  const hero = document.querySelector('.tournament-hero-card');
-  hero?.scrollIntoView({ behavior: 'smooth' });
+  setTimeout(() => {
+    const hero = document.querySelector('.tournament-hero-card');
+    hero?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }, 50);
+});
+
+// Hub Filtering, Search and Random Game Launcher
+let hubFilterCategory = 'ALL';
+let hubSearchTerm = '';
+
+function updateHubCartridgeVisibility(): void {
+  const q = hubSearchTerm.toLowerCase().trim();
+  let matches = 0;
+
+  gameCartridgeCards.forEach((card) => {
+    const cats = (card.dataset.category || '').split(' ');
+    const title = (card.dataset.gameTitle || card.textContent || '').toLowerCase();
+
+    const matchesCategory = hubFilterCategory === 'ALL' || cats.includes(hubFilterCategory);
+    const matchesSearch = !q || title.includes(q);
+
+    if (matchesCategory && matchesSearch) {
+      card.style.display = '';
+      matches++;
+    } else {
+      card.style.display = 'none';
+    }
+  });
+
+  if (hubNoResultsMsg) {
+    if (matches === 0) {
+      hubNoResultsMsg.classList.remove('hidden');
+    } else {
+      hubNoResultsMsg.classList.add('hidden');
+    }
+  }
+
+  if (hubClearSearchBtn) {
+    if (hubSearchTerm.length > 0) {
+      hubClearSearchBtn.classList.remove('hidden');
+    } else {
+      hubClearSearchBtn.classList.add('hidden');
+    }
+  }
+}
+
+filterPillButtons.forEach((pill) => {
+  pill.addEventListener('click', () => {
+    sfx.playCartridgeClick();
+    filterPillButtons.forEach((p) => p.classList.remove('active'));
+    pill.classList.add('active');
+    hubFilterCategory = pill.dataset.filter || 'ALL';
+    updateHubCartridgeVisibility();
+  });
+});
+
+hubSearchInput?.addEventListener('input', () => {
+  hubSearchTerm = hubSearchInput.value;
+  updateHubCartridgeVisibility();
+});
+
+hubClearSearchBtn?.addEventListener('click', () => {
+  sfx.playCartridgeClick();
+  if (hubSearchInput) hubSearchInput.value = '';
+  hubSearchTerm = '';
+  updateHubCartridgeVisibility();
+  hubSearchInput?.focus();
+});
+
+hubResetFiltersBtn?.addEventListener('click', () => {
+  sfx.playCartridgeClick();
+  if (hubSearchInput) hubSearchInput.value = '';
+  hubSearchTerm = '';
+  hubFilterCategory = 'ALL';
+  filterPillButtons.forEach((p) => {
+    if (p.dataset.filter === 'ALL') {
+      p.classList.add('active');
+    } else {
+      p.classList.remove('active');
+    }
+  });
+  updateHubCartridgeVisibility();
+});
+
+hubRandomGameBtn?.addEventListener('click', () => {
+  sfx.playCartridgeClick();
+  const visibleButtons = Array.from(gameCartridgeCards)
+    .filter((card) => card.style.display !== 'none')
+    .map((card) => card.querySelector<HTMLButtonElement>('.launch-game-btn'))
+    .filter((btn): btn is HTMLButtonElement => btn !== null);
+
+  const pool = visibleButtons.length > 0 ? visibleButtons : Array.from(launchGameButtons);
+  if (pool.length > 0) {
+    const chosen = pool[Math.floor(Math.random() * pool.length)];
+    chosen.classList.add('keycap-press-flash');
+    chosen.click();
+  }
 });
 
 hubStartTournamentBtn?.addEventListener('click', () => {
@@ -699,132 +849,96 @@ tourneyExitHubBtn?.addEventListener('click', () => {
 function isTypingInInput(): boolean {
   const el = document.activeElement;
   return (
+    el instanceof HTMLInputElement ||
+    el instanceof HTMLTextAreaElement ||
     el === roomCodeInput ||
     el === playerNameInput ||
     el === hubPilotNameInput ||
     el === hubJoinCodeInput ||
-    el === onboardingNameInput
+    el === onboardingNameInput ||
+    el === hubSearchInput
   );
+}
+
+function clearPendingActions(): void {
+  pendingParry = pendingDash = pendingYank = false;
+  pendingEmote = 0;
+}
+
+function isGameplayPaused(): boolean {
+  return net.activeGame === 'HUB' ||
+    (!net.isHost && !net.isSynchronized) ||
+    (tournament.state.active && (tournament.state.rouletteSpinning || tournament.isIntermission || tournament.state.isFinished));
+}
+
+function buildInputPacket(): ClientInputPacket {
+  const engine = getActiveEngine();
+  const player = engine.players[net.localSlotId] || engine.players[0];
+  const myArenaPlayer = arenaEngine.players[net.localSlotId] || arenaEngine.players[0];
+  let moveX = 0, moveY = 0;
+  if (!isTypingInInput()) {
+    if (keys['KeyW'] || keys['ArrowUp']) moveY--;
+    if (keys['KeyS'] || keys['ArrowDown']) moveY++;
+    if (keys['KeyA'] || keys['ArrowLeft']) moveX--;
+    if (keys['KeyD'] || keys['ArrowRight']) moveX++;
+    if (touchGamepad.enabled && Math.hypot(touchGamepad.moveX, touchGamepad.moveY) > 0.05) {
+      moveX = touchGamepad.moveX; moveY = touchGamepad.moveY;
+    }
+  }
+  const aimAngle = touchGamepad.enabled && Math.hypot(touchGamepad.moveX, touchGamepad.moveY) > 0.1
+    ? Math.atan2(touchGamepad.moveY, touchGamepad.moveX)
+    : Math.atan2(mouseCourtPos.y - player.y, mouseCourtPos.x - player.x);
+  const primaryBall = arenaEngine.balls[0];
+  return {
+    slotId: net.localSlotId, activeGame: net.activeGame, roundEpoch: engine.roundEpoch,
+    name: normalizePilotName(playerNameInput.value), cosmetics: robotWorkshop.cosmetics,
+    moveX, moveY, aimAngle,
+    parryPressed: pendingParry,
+    chargingParry: chargingParry || (touchGamepad.enabled && touchGamepad.isHoldingA),
+    feintPrimed: myArenaPlayer.feintPrimed,
+    shotReleasedPower: net.activeGame === 'TURBO_PUTT' && pendingParry && !chargingParry ? 0.32 : undefined,
+    dashPressed: pendingDash, yankPressed: pendingYank,
+    anchorHeld: anchorHeld || (touchGamepad.enabled && touchGamepad.isHoldingB),
+    emotePressed: pendingEmote,
+    clientBallDist: primaryBall ? Math.hypot(primaryBall.x - myArenaPlayer.x, primaryBall.y - myArenaPlayer.y) : 999,
+    clientX: player.x, clientY: player.y, clientZ: 'z' in player ? player.z : 0,
+    sentAtMs: performance.now()
+  };
 }
 
 function flushImmediateClientAction(): void {
   if (net.isHost) return;
-  const myArenaPlayer = arenaEngine.players[net.localSlotId] || arenaEngine.players[0];
-  const myChainPlayer = chainEngine.players[net.localSlotId] || chainEngine.players[0];
-  const myPuttPlayer = puttEngine.players[net.localSlotId] || puttEngine.players[0];
-  const myHotPlayer = hotCoreEngine.players[net.localSlotId] || hotCoreEngine.players[0];
-  const myVoltPlayer = voltCrownEngine.players[net.localSlotId] || voltCrownEngine.players[0];
-  const myHexPlayer = hexCrushEngine.players[net.localSlotId] || hexCrushEngine.players[0];
-  const myRicoPlayer = ricochetEngine.players[net.localSlotId] || ricochetEngine.players[0];
-
-  // Trigger immediate local visual feedback (0ms input lag!)
-  if (net.activeGame === 'BASH_BOT') {
-    if (pendingParry) arenaEngine.triggerParry(myArenaPlayer);
-    if (pendingDash) {
-      arenaEngine.triggerDash(
-        myArenaPlayer,
-        Math.cos(myArenaPlayer.aimAngle),
-        Math.sin(myArenaPlayer.aimAngle)
-      );
+  const packet = buildInputPacket();
+  if (isGameplayPaused()) {
+    packet.moveX = packet.moveY = 0;
+    packet.parryPressed = packet.dashPressed = packet.yankPressed = false;
+    packet.chargingParry = packet.anchorHeld = false;
+    packet.emotePressed = 0; packet.shotReleasedPower = undefined;
+  } else if (getActiveEngine().players[net.localSlotId]) {
+    if (net.activeGame === 'BASH_BOT') {
+      if (packet.parryPressed) arenaEngine.triggerParry(arenaEngine.players[net.localSlotId]);
+      if (packet.dashPressed) arenaEngine.triggerDash(arenaEngine.players[net.localSlotId], packet.moveX || Math.cos(packet.aimAngle), packet.moveY || Math.sin(packet.aimAngle));
+    } else if (net.activeGame === 'CHAIN_PANIC') {
+      if (packet.parryPressed) chainEngine.triggerJump(chainEngine.players[net.localSlotId]);
+    } else if (net.activeGame === 'TURBO_PUTT') {
+      packet.shotReleasedPower = puttEngine.stepClientPrediction(0, net.localSlotId, packet) ?? packet.shotReleasedPower;
+    } else if (net.activeGame === 'HOT_CORE') {
+      if (packet.parryPressed) hotCoreEngine.triggerThrowOrShield(hotCoreEngine.players[net.localSlotId], packet.aimAngle);
+      if (packet.dashPressed) hotCoreEngine.triggerDash(hotCoreEngine.players[net.localSlotId], packet.moveX || Math.cos(packet.aimAngle), packet.moveY || Math.sin(packet.aimAngle));
+    } else if (net.activeGame === 'VOLT_CROWN') {
+      if (packet.parryPressed) voltCrownEngine.triggerTaserOrDefend(voltCrownEngine.players[net.localSlotId], packet.aimAngle);
+      if (packet.dashPressed) voltCrownEngine.triggerDash(voltCrownEngine.players[net.localSlotId], packet.moveX || Math.cos(packet.aimAngle), packet.moveY || Math.sin(packet.aimAngle));
+    } else if (net.activeGame === 'HEX_CRUSH') {
+      if (packet.parryPressed) hexCrushEngine.triggerHammerSlam(hexCrushEngine.players[net.localSlotId], packet.aimAngle);
+      if (packet.dashPressed) hexCrushEngine.triggerJumpOrPound(hexCrushEngine.players[net.localSlotId]);
+      if (packet.yankPressed) hexCrushEngine.triggerEmergencyNanobridge(hexCrushEngine.players[net.localSlotId]);
+    } else if (net.activeGame === 'RICOCHET_1') {
+      ricochetEngine.stepClientPrediction(0, net.localSlotId, packet);
     }
-  } else if (net.activeGame === 'CHAIN_PANIC') {
-    if (pendingParry) chainEngine.triggerJump(myChainPlayer);
-  } else if (net.activeGame === 'HOT_CORE') {
-    if (pendingParry) hotCoreEngine.triggerThrowOrShield(myHotPlayer);
-    if (pendingDash) {
-      hotCoreEngine.triggerDash(
-        myHotPlayer,
-        Math.cos(myHotPlayer.aimAngle),
-        Math.sin(myHotPlayer.aimAngle)
-      );
-    }
-  } else if (net.activeGame === 'VOLT_CROWN') {
-    if (pendingParry) voltCrownEngine.triggerTaserOrDefend(myVoltPlayer);
-    if (pendingDash) {
-      voltCrownEngine.triggerDash(
-        myVoltPlayer,
-        Math.cos(myVoltPlayer.aimAngle),
-        Math.sin(myVoltPlayer.aimAngle)
-      );
-    }
-  } else if (net.activeGame === 'HEX_CRUSH') {
-    if (pendingParry) hexCrushEngine.triggerHammerSlam(myHexPlayer);
-    if (pendingDash) hexCrushEngine.triggerJumpOrPound(myHexPlayer);
-    if (pendingYank) hexCrushEngine.triggerEmergencyNanobridge(myHexPlayer);
   }
-
-  const refX =
-    net.activeGame === 'TURBO_PUTT'
-      ? myPuttPlayer.x
-      : net.activeGame === 'HOT_CORE'
-        ? myHotPlayer.x
-        : net.activeGame === 'VOLT_CROWN'
-          ? myVoltPlayer.x
-          : net.activeGame === 'HEX_CRUSH'
-            ? myHexPlayer.x
-            : net.activeGame === 'RICOCHET_1'
-              ? myRicoPlayer.x
-              : myArenaPlayer.x;
-  const refY =
-    net.activeGame === 'TURBO_PUTT'
-      ? myPuttPlayer.y
-      : net.activeGame === 'HOT_CORE'
-        ? myHotPlayer.y
-        : net.activeGame === 'VOLT_CROWN'
-          ? myVoltPlayer.y
-          : net.activeGame === 'HEX_CRUSH'
-            ? myHexPlayer.y
-            : net.activeGame === 'RICOCHET_1'
-              ? myRicoPlayer.y
-              : myArenaPlayer.y;
-  const aimAngle = Math.atan2(mouseCourtPos.y - refY, mouseCourtPos.x - refX);
-  const primaryBall = arenaEngine.balls[0];
-  const clientBallDist = primaryBall
-    ? Math.hypot(primaryBall.x - myArenaPlayer.x, primaryBall.y - myArenaPlayer.y)
-    : 999;
-
-  net.sendClientInput({
-    slotId: net.localSlotId,
-    name: playerNameInput.value.toUpperCase() || 'ALEX',
-    cosmetics: robotWorkshop.cosmetics,
-    moveX: 0,
-    moveY: 0,
-    aimAngle,
-    parryPressed: pendingParry || touchGamepad.isHoldingA,
-    chargingParry: chargingParry || touchGamepad.isHoldingA,
-    feintPrimed: myArenaPlayer.feintPrimed,
-    dashPressed: pendingDash || touchGamepad.isHoldingB,
-    yankPressed: pendingYank || touchGamepad.isHoldingE,
-    anchorHeld: anchorHeld || touchGamepad.isHoldingB,
-    emotePressed: pendingEmote,
-    clientBallDist,
-    clientX:
-      net.activeGame === 'CHAIN_PANIC'
-        ? myChainPlayer.x
-        : net.activeGame === 'HOT_CORE'
-          ? myHotPlayer.x
-          : net.activeGame === 'VOLT_CROWN'
-            ? myVoltPlayer.x
-            : net.activeGame === 'HEX_CRUSH'
-              ? myHexPlayer.x
-              : net.activeGame === 'RICOCHET_1'
-                ? myRicoPlayer.x
-                : myArenaPlayer.x,
-    clientY:
-      net.activeGame === 'CHAIN_PANIC'
-        ? myChainPlayer.y
-        : net.activeGame === 'HOT_CORE'
-          ? myHotPlayer.y
-          : net.activeGame === 'VOLT_CROWN'
-            ? myVoltPlayer.y
-            : net.activeGame === 'HEX_CRUSH'
-              ? myHexPlayer.y
-              : net.activeGame === 'RICOCHET_1'
-                ? myRicoPlayer.y
-                : myArenaPlayer.y,
-    clientZ: net.activeGame === 'HEX_CRUSH' ? myHexPlayer.z : myChainPlayer.z,
-    sentAtMs: performance.now()
-  });
+  net.sendClientInput(packet);
+  // This press was already sent; do not issue a second action ID on the next tick.
+  clearPendingActions();
 }
 
 window.addEventListener('keydown', (e) => {
@@ -903,13 +1017,13 @@ window.addEventListener('keyup', (e) => {
 });
 
 canvas.addEventListener('pointermove', (e) => {
-  mouseCourtPos = courtRenderer.screenToCourt(e.clientX, e.clientY);
+  mouseCourtPos = getActiveRenderer().screenToCourt(e.clientX, e.clientY);
 });
 
 canvas.addEventListener('pointerdown', (e) => {
   canvas.focus();
   sfx.unlock();
-  mouseCourtPos = courtRenderer.screenToCourt(e.clientX, e.clientY);
+  mouseCourtPos = getActiveRenderer().screenToCourt(e.clientX, e.clientY);
   if (e.button === 2) {
     pendingDash = true;
     anchorHeld = true;
@@ -944,8 +1058,8 @@ function joinExistingRoomAsClient(rawCode: string): void {
   if (hubJoinCodeInput) hubJoinCodeInput.value = code;
   if (hubRoomCodeText) hubRoomCodeText.textContent = code;
   try {
-    sessionStorage.setItem('tp04_my_room', code);
-    sessionStorage.removeItem('tp04_hosted_room');
+    writeStorage('session', 'tp04_my_room', code);
+    removeStorage('session', 'tp04_hosted_room');
     const nextUrl = new URL(window.location.href);
     nextUrl.searchParams.set('room', code);
     nextUrl.searchParams.set('join', '1');
@@ -987,8 +1101,8 @@ function createFreshRoom(): void {
   if (hubJoinCodeInput) hubJoinCodeInput.value = '';
   if (hubRoomCodeText) hubRoomCodeText.textContent = freshCode;
   try {
-    sessionStorage.setItem('tp04_my_room', freshCode);
-    sessionStorage.setItem('tp04_hosted_room', freshCode);
+    writeStorage('session', 'tp04_my_room', freshCode);
+    writeStorage('session', 'tp04_hosted_room', freshCode);
     const nextUrl = new URL(window.location.href);
     nextUrl.searchParams.set('room', freshCode);
     nextUrl.searchParams.delete('join');
@@ -1192,8 +1306,7 @@ newChampionshipBtn.addEventListener('click', () => {
 });
 
 function applyPilotNameChange(rawValue: string): void {
-  const clean = rawValue.toUpperCase().replace(/[^A-Z0-9_-]/g, '').slice(0, 10) || 'PILOTO';
-  localStorage.setItem('tp04_pilot_name', clean);
+  const clean = writePilotName(rawValue);
   if (playerNameInput && document.activeElement !== playerNameInput) {
     playerNameInput.value = clean;
   }
@@ -1207,7 +1320,10 @@ function applyPilotNameChange(rawValue: string): void {
     if (net.isHost) {
       net.broadcastHostSnapshot(true);
     } else {
-      flushImmediateClientAction();
+      // Profile edits must reach the host in the Hub and while joining too.
+      // sendClientInput also retains the latest name for the next JOIN_CLAIM.
+      net.sendClientInput({ ...buildInputPacket(), parryPressed: false, dashPressed: false,
+        yankPressed: false, emotePressed: 0, shotReleasedPower: undefined });
     }
     syncOverlaysAndHUD();
   }
@@ -1263,116 +1379,24 @@ hubBotsToggleBtn?.addEventListener('click', cycleBotMode);
 
 // 7. Game Step & Main Loop
 function stepGameFrame(dt: number): void {
+  if (net.shouldStepLocally() && tournament.state.active) tournament.step(dt, (nextGame) => net.switchGame(nextGame));
+  const mutator = tournament.state.active && !isGameplayPaused() ? tournament.state.currentMutator : 'NONE';
+  engines.forEach((engine) => engine.setChaosMutator(mutator));
+  if (isGameplayPaused()) {
+    clearPendingActions();
+    chargingParry = anchorHeld = false;
+    if (net.shouldStepLocally()) net.broadcastHostSnapshot();
+    return;
+  }
   const myArenaPlayer = arenaEngine.players[net.localSlotId] || arenaEngine.players[0];
+  const myChainPlayer = chainEngine.players[net.localSlotId] || chainEngine.players[0];
   const myPuttPlayer = puttEngine.players[net.localSlotId] || puttEngine.players[0];
   const myHotPlayer = hotCoreEngine.players[net.localSlotId] || hotCoreEngine.players[0];
   const myVoltPlayer = voltCrownEngine.players[net.localSlotId] || voltCrownEngine.players[0];
   const myHexPlayer = hexCrushEngine.players[net.localSlotId] || hexCrushEngine.players[0];
-  const myRicoPlayer = ricochetEngine.players[net.localSlotId] || ricochetEngine.players[0];
-  let moveX = 0;
-  let moveY = 0;
-  if (keys['KeyW'] || keys['ArrowUp']) moveY -= 1;
-  if (keys['KeyS'] || keys['ArrowDown']) moveY += 1;
-  if (keys['KeyA'] || keys['ArrowLeft']) moveX -= 1;
-  if (keys['KeyD'] || keys['ArrowRight']) moveX += 1;
-
-  if (touchGamepad.enabled && (Math.abs(touchGamepad.moveX) > 0.05 || Math.abs(touchGamepad.moveY) > 0.05)) {
-    moveX = touchGamepad.moveX;
-    moveY = touchGamepad.moveY;
-  }
-
-  if (
-    tournament.state.active &&
-    tournament.state.currentMutator === 'SUPER_SPEED' &&
-    !tournament.state.rouletteSpinning
-  ) {
-    moveX *= 1.45;
-    moveY *= 1.45;
-  }
-
-  const refX =
-    net.activeGame === 'TURBO_PUTT'
-      ? myPuttPlayer.x
-      : net.activeGame === 'HOT_CORE'
-        ? myHotPlayer.x
-        : net.activeGame === 'VOLT_CROWN'
-          ? myVoltPlayer.x
-          : net.activeGame === 'HEX_CRUSH'
-            ? myHexPlayer.x
-            : net.activeGame === 'RICOCHET_1'
-              ? myRicoPlayer.x
-              : myArenaPlayer.x;
-  const refY =
-    net.activeGame === 'TURBO_PUTT'
-      ? myPuttPlayer.y
-      : net.activeGame === 'HOT_CORE'
-        ? myHotPlayer.y
-        : net.activeGame === 'VOLT_CROWN'
-          ? myVoltPlayer.y
-          : net.activeGame === 'HEX_CRUSH'
-            ? myHexPlayer.y
-            : net.activeGame === 'RICOCHET_1'
-              ? myRicoPlayer.y
-              : myArenaPlayer.y;
-  let aimAngle = Math.atan2(mouseCourtPos.y - refY, mouseCourtPos.x - refX);
-  if (touchGamepad.enabled && (Math.abs(touchGamepad.moveX) > 0.1 || Math.abs(touchGamepad.moveY) > 0.1)) {
-    aimAngle = Math.atan2(touchGamepad.moveY, touchGamepad.moveX);
-  }
-
-  const primaryBall = arenaEngine.balls[0];
-  const clientBallDist = primaryBall
-    ? Math.hypot(primaryBall.x - myArenaPlayer.x, primaryBall.y - myArenaPlayer.y)
-    : 999;
-
-  // Quick-click putt support (if clicked and released within 1 frame)
-  const quickClickPutt =
-    net.activeGame === 'TURBO_PUTT' && pendingParry && !chargingParry ? 0.55 : undefined;
-
-  const myChainPlayer = chainEngine.players[net.localSlotId] || chainEngine.players[0];
-
-  const inputPacket: ClientInputPacket = {
-    slotId: net.localSlotId,
-    name: playerNameInput.value.toUpperCase() || 'ALEX',
-    cosmetics: robotWorkshop.cosmetics,
-    moveX,
-    moveY,
-    aimAngle,
-    parryPressed: pendingParry || touchGamepad.isHoldingA,
-    chargingParry: chargingParry || touchGamepad.isHoldingA,
-    feintPrimed: myArenaPlayer.feintPrimed,
-    shotReleasedPower: quickClickPutt,
-    dashPressed: pendingDash || touchGamepad.isHoldingB,
-    yankPressed: pendingYank || touchGamepad.isHoldingE,
-    anchorHeld: anchorHeld || touchGamepad.isHoldingB,
-    emotePressed: pendingEmote,
-    clientBallDist,
-    clientX:
-      net.activeGame === 'CHAIN_PANIC'
-        ? myChainPlayer.x
-        : net.activeGame === 'HOT_CORE'
-          ? myHotPlayer.x
-          : net.activeGame === 'VOLT_CROWN'
-            ? myVoltPlayer.x
-            : net.activeGame === 'HEX_CRUSH'
-              ? myHexPlayer.x
-              : net.activeGame === 'RICOCHET_1'
-                ? myRicoPlayer.x
-                : myArenaPlayer.x,
-    clientY:
-      net.activeGame === 'CHAIN_PANIC'
-        ? myChainPlayer.y
-        : net.activeGame === 'HOT_CORE'
-          ? myHotPlayer.y
-          : net.activeGame === 'VOLT_CROWN'
-            ? myVoltPlayer.y
-            : net.activeGame === 'HEX_CRUSH'
-              ? myHexPlayer.y
-              : net.activeGame === 'RICOCHET_1'
-                ? myRicoPlayer.y
-                : myArenaPlayer.y,
-    clientZ: net.activeGame === 'HEX_CRUSH' ? myHexPlayer.z : myChainPlayer.z,
-    sentAtMs: performance.now()
-  };
+  const inputPacket = buildInputPacket();
+  const { moveX, moveY, aimAngle } = inputPacket;
+  const quickClickPutt = inputPacket.shotReleasedPower;
 
   if (net.shouldStepLocally()) {
     if (net.activeGame === 'CHAIN_PANIC') {
@@ -1433,11 +1457,13 @@ function stepGameFrame(dt: number): void {
       arenaEngine.step(dt, inputPacket);
     }
 
-    // Chaotic Party Tournament Step & Game Winner Recording (Host-authoritative)
-    if (tournament.state.active) {
-      tournament.step(dt, (nextGame) => net.switchGame(nextGame));
-
-      if (net.activeGame === 'BASH_BOT' && arenaEngine.phase === 'MATCH_OVER') {
+    // Solo BASH OFF uses a 30s survival challenge; Putt uses a completed hole.
+    if (tournament.state.active && !tournament.evaluateSoloBashRound(
+      net.activeGame, arenaEngine.botDifficulty, arenaEngine.players, arenaEngine.roundTimer
+    )) {
+      if (net.activeGame === 'TURBO_PUTT' && puttEngine.status === 'HOLE_COMPLETE') {
+        tournament.recordRoundWinner(puttEngine.getRoundWinnerId());
+      } else if (net.activeGame === 'BASH_BOT' && arenaEngine.phase === 'MATCH_OVER') {
         tournament.recordRoundWinner(arenaEngine.lastRoundWinnerId);
       } else if (net.activeGame === 'HOT_CORE' && hotCoreEngine.status === 'MATCH_OVER') {
         tournament.recordRoundWinner(hotCoreEngine.lastWinnerId);
@@ -1448,29 +1474,11 @@ function stepGameFrame(dt: number): void {
       } else if (net.activeGame === 'RICOCHET_1' && ricochetEngine.status === 'MATCH_OVER') {
         tournament.recordRoundWinner(ricochetEngine.matchWinnerId);
       }
-
-      // Chaos Mutator: Periodic Dynamite Bomb Rain
-      if (
-        tournament.state.currentMutator === 'BOMB_RAIN' &&
-        !tournament.state.rouletteSpinning &&
-        Math.random() < 0.008
-      ) {
-        const bx = 220 + Math.random() * 560;
-        const by = 130 + Math.random() * 240;
-        if (net.activeGame === 'HEX_CRUSH') {
-          hexCrushEngine.damageTileAt(bx, by, 1);
-          hexCrushEngine.screenShake = 10;
-          sfx.playPinballBumper();
-        } else if (net.activeGame === 'BASH_BOT') {
-          arenaEngine.screenShake = 10;
-          sfx.playPinballBumper();
-        }
-      }
     }
 
     net.broadcastHostSnapshot();
   } else {
-    // Client-side prediction & dead-reckoning across all 5 games at 60/144fps for 0ms input lag!
+    // Predict presentation and local movement; game results remain host-authoritative.
     if (net.activeGame === 'BASH_BOT') {
       arenaEngine.stepClientPrediction(dt, net.localSlotId, inputPacket);
     } else if (net.activeGame === 'CHAIN_PANIC') {
@@ -1487,23 +1495,32 @@ function stepGameFrame(dt: number): void {
     } else if (net.activeGame === 'HEX_CRUSH') {
       hexCrushEngine.stepClientPrediction(dt, net.localSlotId, inputPacket);
     } else if (net.activeGame === 'RICOCHET_1') {
-      ricochetEngine.step(dt, inputPacket);
+      ricochetEngine.stepClientPrediction(dt, net.localSlotId, inputPacket);
     }
     net.sendClientInput(inputPacket);
   }
 
-  pendingParry = false;
-  pendingDash = false;
-  pendingYank = false;
-  pendingEmote = 0;
+  clearPendingActions();
 }
 
-// Keep Host physics alive at 30Hz even if Host tab is in background!
-setInterval(() => {
-  if (document.hidden && net.isHost) {
-    stepGameFrame(0.033);
-  }
-}, 33);
+// One clock prevents foreground/background callbacks from advancing physics twice.
+const simulationClock = new FixedStepClock(60, 8);
+simulationClock.reset(performance.now());
+const backgroundPump = window.setInterval(() => {
+  if (document.hidden && net.isHost) simulationClock.advance(performance.now(), stepGameFrame);
+}, 16);
+
+function releaseInputState(): void {
+  Object.keys(keys).forEach((key) => { keys[key] = false; });
+  chargingParry = anchorHeld = false;
+  clearPendingActions();
+  flushImmediateClientAction();
+}
+window.addEventListener('blur', releaseInputState);
+document.addEventListener('visibilitychange', () => {
+  releaseInputState();
+  simulationClock.reset(performance.now());
+});
 
 // 8. Start Room Connection & Render Loop (Last!)
 if (startAsClient) {
@@ -1513,13 +1530,18 @@ if (startAsClient) {
 }
 syncOverlaysAndHUD();
 
-let lastTime = performance.now();
+let animationFrame = 0;
+let lastHudSync = 0;
 
 function animate(now: number): void {
-  const dt = Math.min((now - lastTime) * 0.001, 0.05);
-  lastTime = now;
-
-  stepGameFrame(dt);
+  simulationClock.advance(now, stepGameFrame);
+  if (now - lastHudSync >= 100) {
+    syncOverlaysAndHUD();
+    lastHudSync = now;
+  }
+  const engine = getActiveEngine();
+  const ghostActive = tournament.state.active && !isGameplayPaused() && tournament.state.currentMutator === 'GHOST_PULSE';
+  renderers.forEach((renderer) => renderer.setGhostPulse(ghostActive, engine.simulationTime));
 
   const primaryBall = arenaEngine.balls[0];
   if (net.activeGame === 'CHAIN_PANIC') {
@@ -1575,7 +1597,8 @@ function animate(now: number): void {
     robotWorkshop.renderPreview(workshopPreviewCanvas, robotWorkshop.cosmetics, now * 0.001);
   }
 
-  requestAnimationFrame(animate);
+  getActiveRenderer().renderChaosBombs(engine.chaosBombs);
+  animationFrame = requestAnimationFrame(animate);
 }
 
 function initWorkshopUI(): void {
@@ -1668,4 +1691,17 @@ function initWorkshopUI(): void {
 }
 
 initWorkshopUI();
-requestAnimationFrame(animate);
+animationFrame = requestAnimationFrame(animate);
+
+function disposeSession(): void {
+  window.clearInterval(backgroundPump);
+  cancelAnimationFrame(animationFrame);
+  net.dispose();
+  touchGamepad.dispose();
+  bgm.dispose();
+  sfx.dispose();
+}
+window.addEventListener('pagehide', (event) => {
+  if (!event.persisted) disposeSession();
+});
+if (import.meta.hot) import.meta.hot.dispose(disposeSession);

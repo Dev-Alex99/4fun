@@ -4,6 +4,8 @@
  * Uses rock-solid lookahead scheduling (Web Audio clock) for jitter-free tempo.
  */
 
+import { readStorage, writeStorage } from '../utils/browser';
+
 export type BgmTrack = 'HUB' | 'BATTLE';
 
 export class ProceduralChiptuneEngine {
@@ -49,10 +51,7 @@ export class ProceduralChiptuneEngine {
   ];
 
   constructor() {
-    if (typeof localStorage !== 'undefined') {
-      const saved = localStorage.getItem('tp04_bgm_enabled');
-      this.enabled = saved === 'true';
-    }
+    this.enabled = readStorage('local', 'tp04_bgm_enabled') === 'true';
   }
 
   private ensureContext(): AudioContext | null {
@@ -79,9 +78,7 @@ export class ProceduralChiptuneEngine {
 
   public toggle(): boolean {
     this.enabled = !this.enabled;
-    if (typeof localStorage !== 'undefined') {
-      localStorage.setItem('tp04_bgm_enabled', String(this.enabled));
-    }
+    writeStorage('local', 'tp04_bgm_enabled', String(this.enabled));
     if (this.enabled) {
       this.start();
     } else {
@@ -98,8 +95,9 @@ export class ProceduralChiptuneEngine {
   }
 
   public start(): void {
+    if (!this.enabled || this.isRunning) return;
     const ac = this.ensureContext();
-    if (!ac || this.isRunning) return;
+    if (!ac) return;
 
     this.isRunning = true;
     this.tempoBpm = this.currentTrack === 'BATTLE' ? 134 : 108;
@@ -118,7 +116,7 @@ export class ProceduralChiptuneEngine {
   }
 
   public stop(): void {
-    if (this.timerId) {
+    if (this.timerId !== null) {
       clearInterval(this.timerId);
       this.timerId = null;
     }
@@ -132,15 +130,30 @@ export class ProceduralChiptuneEngine {
   }
 
   private scheduler(): void {
-    if (!this.ctx || !this.enabled) return;
-
-    while (this.nextNoteTime < this.ctx.currentTime + this.scheduleAheadTime) {
+    if (!this.ctx || !this.enabled || !this.isRunning) return;
+    const now = this.ctx.currentTime;
+    const stepDuration = 15 / this.tempoBpm;
+    // A throttled/background tab must skip old notes, never synthesize the missed minutes.
+    if (this.nextNoteTime < now) {
+      const missed = Math.ceil((now - this.nextNoteTime) / stepDuration);
+      this.currentStep = (this.currentStep + missed) % 16;
+      this.nextNoteTime = Math.max(now, this.nextNoteTime + missed * stepDuration);
+    }
+    let scheduled = 0;
+    while (this.nextNoteTime < now + this.scheduleAheadTime && scheduled++ < 8) {
       this.scheduleStep(this.currentStep, this.nextNoteTime);
-      const secondsPerBeat = 60.0 / this.tempoBpm;
-      const stepDuration = 0.25 * secondsPerBeat; // 16th note
       this.nextNoteTime += stepDuration;
       this.currentStep = (this.currentStep + 1) % 16;
     }
+  }
+
+  public dispose(): void {
+    this.stop();
+    this.masterGain?.disconnect();
+    const context = this.ctx;
+    this.ctx = null;
+    this.masterGain = null;
+    if (context && context.state !== 'closed') void context.close().catch(() => {});
   }
 
   private scheduleStep(step: number, time: number): void {

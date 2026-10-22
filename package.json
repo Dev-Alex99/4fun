@@ -7,16 +7,25 @@
   "scripts": {
     "dev": "vite",
     "test": "vitest run",
+    "test:network": "vitest run src/__tests__/networkSecurity.test.ts src/__tests__/networkStress.test.ts src/__tests__/rtcConfiguration.test.ts",
+    "typecheck:netlab": "tsc -p tsconfig.net-lab.json",
+    "turn:lab:start": "node scripts/turn-lab.mjs start --local",
+    "turn:lab:stop": "node scripts/turn-lab.mjs stop",
+    "turn:lab:status": "node scripts/turn-lab.mjs status",
+    "turn:lab:validate": "node scripts/turn-lab.mjs validate",
+    "dev:netlab": "vite --mode turn-lab --host 127.0.0.1",
+    "turn:node-lab": "npm exec --yes --package=node-turn@0.0.6 -- node scripts/turn-node-lab.mjs --local",
+    "dev:netlab:node": "vite --mode turn-node-lab --host 127.0.0.1",
     "build": "vitest run && tsc && vite build",
     "preview": "vite preview"
   },
   "dependencies": {
-    "peerjs": "^1.5.4"
+    "peerjs": "^1.5.5"
   },
   "devDependencies": {
-    "jsdom": "^25.0.1",
+    "jsdom": "^30.1.3",
     "typescript": "^5.6.3",
     "vite": "^5.4.10",
-    "vitest": "^2.1.8"
+    "vitest": "^2.1.9"
   }
 }

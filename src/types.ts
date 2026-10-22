@@ -77,6 +77,8 @@ export const CHAOS_MUTATORS: Record<ChaosMutatorId, ChaosMutatorDef> = {
 };
 
 export interface TournamentMatchState {
+  elapsedSeconds?: number;
+  pendingNextRound?: boolean;
   active: boolean;
   roundIndex: number; // 0..4
   totalRounds: number;
@@ -304,7 +306,13 @@ export interface HazardLaser {
   phase: number;
 }
 
-export interface ChainPanicSnapshot {
+export interface SimulationSnapshotMetadata {
+  roundEpoch?: number;
+  simulationTime?: number;
+  chaosBombs?: Array<{ x: number; y: number; fuse: number; radius: number }>;
+}
+
+export interface ChainPanicSnapshot extends SimulationSnapshotMetadata {
   levelIndex: number;
   levelTitle: string;
   mode: ChainGameMode;
@@ -419,7 +427,8 @@ export interface PuttExplosion {
   color: string;
 }
 
-export interface PuttWarSnapshot {
+export interface PuttWarSnapshot extends SimulationSnapshotMetadata {
+  holeTimeRemaining?: number;
   holeIndex: number;
   holeTitle: string;
   par: number;
@@ -500,7 +509,7 @@ export interface HotCoreBoostPad {
   vy: number;
 }
 
-export interface HotCoreSnapshot {
+export interface HotCoreSnapshot extends SimulationSnapshotMetadata {
   arenaIndex: number;
   arenaTitle: string;
   status: 'PLAYING' | 'ROUND_OVER' | 'MATCH_OVER';
@@ -592,7 +601,7 @@ export interface VoltPressurePlate {
   targetTrapId: string;
 }
 
-export interface VoltCrownSnapshot {
+export interface VoltCrownSnapshot extends SimulationSnapshotMetadata {
   arenaIndex: number;
   arenaTitle: string;
   status: 'PLAYING' | 'ROUND_OVER' | 'MATCH_OVER';
@@ -673,7 +682,7 @@ export interface SeismicShockwave {
   color: string;
 }
 
-export interface HexCrushSnapshot {
+export interface HexCrushSnapshot extends SimulationSnapshotMetadata {
   arenaIndex: number;
   arenaTitle: string;
   status: 'PLAYING' | 'ROUND_OVER' | 'MATCH_OVER';
@@ -757,7 +766,7 @@ export interface RicochetSpark {
   maxLife: number;
 }
 
-export interface RicochetSnapshot {
+export interface RicochetSnapshot extends SimulationSnapshotMetadata {
   arenaIndex: number;
   arenaTitle: string;
   status: 'PLAYING' | 'ROUND_OVER' | 'MATCH_OVER';
@@ -771,6 +780,13 @@ export interface RicochetSnapshot {
 }
 
 export interface ClientInputPacket {
+  inputSeq?: number;
+  lastSeenSnapshotSeq?: number;
+  /** Assigned by the host from measured RTT; never trusted from a remote payload. */
+  lagCompensationMs?: number;
+  activeGame?: ActiveGameId;
+  stateSeq?: number;
+  roundEpoch?: number;
   slotId: number;
   name: string;
   cosmetics?: RobotCosmetics;
@@ -793,7 +809,10 @@ export interface ClientInputPacket {
   sentAtMs?: number;
 }
 
-export interface WorldSnapshotPacket {
+export interface WorldSnapshotPacket extends SimulationSnapshotMetadata {
+  snapshotSeq?: number;
+  hostEpoch?: string;
+  hitStopTimer?: number;
   stateSeq?: number;
   hostName?: string;
   activeGame: ActiveGameId;

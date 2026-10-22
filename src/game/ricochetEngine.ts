@@ -1,3 +1,4 @@
+import { ChaosPhysics } from './chaosPhysics';
 /**
  * CARTRIDGE 07 // RICOCHET-1 (Heavy Bouncing Plasma Bullet + Interactive Laser Mirrors)
  * Pure tactical ricochet duel:
@@ -5,7 +6,7 @@
  * - Perfect parry accelerates the bullet and redirects along aim angle.
  * - Slide dodge [Dash / B] ducks under incoming high-velocity ricochets.
  * - Interactive rotating and sliding mirrors deflect trajectories at geometric angles.
- * - 100% deterministic & host-authoritative.
+ * - Host-authoritative simulation and results, with local movement prediction.
  */
 
 import {
@@ -17,6 +18,7 @@ import {
   RicochetSpark,
   RobotCosmetics
 } from '../types';
+import { reconcilePlayer } from './reconciliation';
 
 export const RICOCHET_WIDTH = 1000;
 export const RICOCHET_HEIGHT = 516;
@@ -76,7 +78,7 @@ export const RICOCHET_ARENAS: RicochetArenaDef[] = [
   }
 ];
 
-export class RicochetEngine {
+export class RicochetEngine extends ChaosPhysics {
   public arenaIndex = 0;
   public status: 'PLAYING' | 'ROUND_OVER' | 'MATCH_OVER' = 'PLAYING';
   public statusTimer = 0;
@@ -91,8 +93,10 @@ export class RicochetEngine {
   public sparks: RicochetSpark[] = [];
 
   private remoteInputs: Map<number, ClientInputPacket> = new Map();
+  private lastActionSeqBySlot = new Map<number, number>();
 
   constructor() {
+    super();
     this.initPlayers();
     this.loadArena(0);
   }
@@ -162,6 +166,7 @@ export class RicochetEngine {
   }
 
   public resetRound(): void {
+    this.resetChaosRound();
     this.status = 'PLAYING';
     this.statusTimer = 0;
     this.roundWinnerId = null;
@@ -175,14 +180,18 @@ export class RicochetEngine {
       { x: 880, y: 376 }
     ];
 
+    const activeIds = new Set(this.getActiveParticipants().map((p) => p.id));
     this.players.forEach((p, idx) => {
       p.x = spawnCoords[idx].x;
       p.y = spawnCoords[idx].y;
       p.vx = 0;
       p.vy = 0;
-      p.alive = true;
+      p.alive = activeIds.has(p.id);
+      p.lives = 3;
       p.parryTimer = 0;
+      p.parryCooldown = 0;
       p.slideTimer = 0;
+      p.slideCooldown = 0;
       p.respawnTimer = 0;
       p.aimAngle = idx % 2 === 0 ? 0 : Math.PI;
     });
@@ -208,6 +217,12 @@ export class RicochetEngine {
     ];
   }
 
+  public resetChampionship(): void {
+    this.players.forEach((player) => { player.score = 0; });
+    this.matchWinnerId = null;
+    this.loadArena(0);
+  }
+
   public syncPlayerIdentities(
     roster: Array<{ name: string; isBot: boolean; cosmetics?: RobotCosmetics }>,
     botsEnabled = true
@@ -217,15 +232,34 @@ export class RicochetEngine {
       if (this.players[idx]) {
         this.players[idx].name = r.name;
         this.players[idx].isBot = r.isBot;
-        if (r.cosmetics) this.players[idx].cosmetics = r.cosmetics;
+        this.players[idx].cosmetics = r.cosmetics ? { ...r.cosmetics } : undefined;
       }
     });
+    const activeIds = new Set(this.getActiveParticipants().map((p) => p.id));
+    this.players.forEach((p) => { if (!activeIds.has(p.id)) p.alive = false; });
+  }
+
+  public getActiveParticipants(): RicochetPlayer[] {
+    if (this.botsEnabled) return this.players;
+    const humans = this.players.filter((p) => !p.isBot);
+    // A duel needs an opponent: retain one practice drone only for a solo human.
+    const practiceDrone = humans.length === 1 ? this.players.find((p) => p.isBot) : undefined;
+    return practiceDrone ? [...humans, practiceDrone] : humans;
+  }
+
+  public clearRemoteInput(slotId: number): void {
+    this.remoteInputs.delete(slotId);
+    this.lastActionSeqBySlot.delete(slotId);
+    const player = this.players[slotId];
+    if (player) { player.vx = 0; player.vy = 0; }
   }
 
   public applyRemoteInput(packet: ClientInputPacket): void {
-    this.remoteInputs.set(packet.slotId, packet);
+    this.remoteInputs.set(packet.slotId, { ...packet, parryPressed: false, dashPressed: false });
     const p = this.players[packet.slotId];
-    if (!p || !p.alive) return;
+    if (!p || !p.alive || this.status !== 'PLAYING') return;
+    if (packet.actionSeq && packet.actionSeq <= (this.lastActionSeqBySlot.get(packet.slotId) ?? 0)) return;
+    if (packet.actionSeq) this.lastActionSeqBySlot.set(packet.slotId, Math.max(packet.actionSeq, this.lastActionSeqBySlot.get(packet.slotId) ?? 0));
 
     p.aimAngle = packet.aimAngle;
     if (packet.cosmetics) p.cosmetics = packet.cosmetics;
@@ -250,6 +284,10 @@ export class RicochetEngine {
   }
 
   public step(dt: number, localInput: ClientInputPacket): void {
+    this.advanceChaos(dt, true, this.status === 'PLAYING', (bomb) => {
+      this.applyChaosBlast(bomb, this.getActiveParticipants());
+      this.emitSparks(bomb.x, bomb.y, '#EF4444', 18);
+    });
     this.tick++;
     const safeDt = Math.min(dt, 0.05);
 
@@ -272,7 +310,13 @@ export class RicochetEngine {
     this.updateMirrors(safeDt);
 
     // 2. Update Players (Input, AI, Movement, Slide)
+    const participants = this.getActiveParticipants();
+    const activeIds = new Set(participants.map((p) => p.id));
     this.players.forEach((p) => {
+      if (!activeIds.has(p.id)) {
+        p.alive = false;
+        return;
+      }
       if (!p.alive) {
         if (p.lives > 0 && p.respawnTimer > 0) {
           p.respawnTimer -= safeDt;
@@ -287,7 +331,7 @@ export class RicochetEngine {
 
       const input = p.id === localInput.slotId ? localInput : this.remoteInputs.get(p.id);
 
-      if (p.isBot && this.botsEnabled) {
+      if (p.isBot) {
         this.stepBotAi(p, safeDt);
       } else if (input) {
         this.stepHumanInput(p, input, safeDt);
@@ -310,17 +354,19 @@ export class RicochetEngine {
       if (p.slideTimer > 0) {
         p.slideTimer -= safeDt;
         // Slide friction
-        p.vx *= 0.96;
-        p.vy *= 0.96;
+        p.vx *= Math.pow(0.96, safeDt * 60);
+        p.vy *= Math.pow(0.96, safeDt * 60);
       } else {
         // Normal walking damping
-        p.vx *= 0.82;
-        p.vy *= 0.82;
+        p.vx *= Math.pow(this.floatingDamping(0.82), safeDt * 60);
+        p.vy *= Math.pow(this.floatingDamping(0.82), safeDt * 60);
       }
     });
 
     // 3. Update Plasma Bullets (Ricochet Physics on walls, mirrors, and players)
-    this.updateBullets(safeDt);
+    const maxBulletSpeed = Math.max(380, ...this.bullets.map((b) => Math.hypot(b.vx, b.vy)));
+    const substeps = Math.max(1, Math.min(8, Math.ceil(maxBulletSpeed * this.speedMultiplier * safeDt / 10)));
+    for (let i = 0; i < substeps; i++) this.updateBullets(safeDt / substeps);
 
     // 4. Update Sparks
     for (let i = this.sparks.length - 1; i >= 0; i--) {
@@ -334,23 +380,51 @@ export class RicochetEngine {
     }
 
     // 5. Check Win / KO Conditions
-    const alivePlayers = this.players.filter((p) => p.lives > 0);
-    if (alivePlayers.length <= 1) {
+    const alivePlayers = participants.filter((p) => p.lives > 0);
+    const scoredLeader = participants.find((p) => p.score >= 5);
+    if (scoredLeader || (participants.length > 1 && alivePlayers.length === 1)) {
+      // Elimination is a complete match even when neutral ricochets awarded fewer than 5 KOs.
+      this.status = 'MATCH_OVER';
+      this.statusTimer = 4;
+      this.matchWinnerId = scoredLeader?.id ?? alivePlayers[0].id;
+      this.roundWinnerId = this.matchWinnerId;
+    } else if (alivePlayers.length === 0) {
       this.status = 'ROUND_OVER';
       this.statusTimer = 2.2;
-      this.roundWinnerId = alivePlayers[0]?.id ?? null;
-
-      const scoredLeader = this.players.find((p) => p.score >= 5);
-      if (scoredLeader) {
-        this.status = 'MATCH_OVER';
-        this.statusTimer = 4.0;
-        this.matchWinnerId = scoredLeader.id;
-      }
+      this.roundWinnerId = null;
     }
   }
 
+  /** Cosmetic geometry prediction; the host alone resolves player hits, lives and winners. */
+  public stepClientPrediction(dt: number, localSlotId: number, input: ClientInputPacket): void {
+    this.advanceChaos(dt, false, this.status === 'PLAYING', () => {});
+    const safeDt = Math.max(0, Math.min(dt, 0.05));
+    if (this.status !== 'PLAYING') return;
+    this.updateMirrors(safeDt);
+    const activeIds = new Set(this.getActiveParticipants().map((p) => p.id));
+    for (const p of this.players) {
+      if (!p.alive || !activeIds.has(p.id)) continue;
+      if (p.id === localSlotId) this.stepHumanInput(p, input, safeDt);
+      p.x += p.vx * safeDt;
+      p.y += p.vy * safeDt;
+      const pad = p.radius + 14;
+      p.x = Math.max(pad, Math.min(RICOCHET_WIDTH - pad, p.x));
+      p.y = Math.max(pad, Math.min(RICOCHET_HEIGHT - pad, p.y));
+      p.parryTimer = Math.max(0, p.parryTimer - safeDt);
+      p.parryCooldown = Math.max(0, p.parryCooldown - safeDt);
+      p.slideCooldown = Math.max(0, p.slideCooldown - safeDt);
+      p.slideTimer = Math.max(0, p.slideTimer - safeDt);
+      const damping = this.floatingDamping(p.slideTimer > 0 ? 0.96 : 0.82);
+      p.vx *= Math.pow(damping, safeDt * 60);
+      p.vy *= Math.pow(damping, safeDt * 60);
+    }
+    const maxBulletSpeed = Math.max(380, ...this.bullets.map((b) => Math.hypot(b.vx, b.vy)));
+    const substeps = Math.max(1, Math.min(8, Math.ceil(maxBulletSpeed * this.speedMultiplier * safeDt / 10)));
+    for (let i = 0; i < substeps; i++) this.updateBullets(safeDt / substeps, false);
+  }
+
   private updateMirrors(dt: number): void {
-    const time = this.tick * 0.016;
+    const time = this.simulationTime;
     this.mirrors.forEach((m) => {
       // Rotation
       if (m.rotSpeed !== 0) {
@@ -371,9 +445,10 @@ export class RicochetEngine {
     p.aimAngle = input.aimAngle;
 
     if (p.slideTimer <= 0) {
-      const moveSpeed = 220;
-      p.vx = input.moveX * moveSpeed;
-      p.vy = input.moveY * moveSpeed;
+      const moveSpeed = 220 * this.speedMultiplier;
+      const inputLength = Math.max(1, Math.hypot(input.moveX, input.moveY));
+      p.vx += input.moveX / inputLength * moveSpeed * 9.5 * safeDt;
+      p.vy += input.moveY / inputLength * moveSpeed * 9.5 * safeDt;
       if (Math.hypot(p.vx, p.vy) > 10) {
         p.walkCycle += safeDt * 10;
         p.tiltX = p.vx * 0.001;
@@ -437,15 +512,15 @@ export class RicochetEngine {
         const dy = targetY - bot.y;
         const dist = Math.hypot(dx, dy);
         if (dist > 10) {
-          bot.vx = (dx / dist) * 180;
-          bot.vy = (dy / dist) * 180;
+          bot.vx = (dx / dist) * 180 * this.speedMultiplier;
+          bot.vy = (dy / dist) * 180 * this.speedMultiplier;
           bot.walkCycle += dt * 8;
         }
       }
     }
   }
 
-  private updateBullets(dt: number): void {
+  private updateBullets(dt: number, authoritative = true): void {
     const boundsPad = 12;
 
     this.bullets.forEach((b) => {
@@ -455,28 +530,28 @@ export class RicochetEngine {
       b.trail.forEach((t) => (t.alpha -= 0.08));
 
       // Move
-      b.x += b.vx * dt;
-      b.y += b.vy * dt;
+      b.x += b.vx * dt * this.speedMultiplier;
+      b.y += b.vy * dt * this.speedMultiplier;
 
       // 1. Arena Perimeter Wall Bounces
       let bounced = false;
       if (b.x - b.radius < boundsPad) {
         b.x = boundsPad + b.radius;
-        b.vx = Math.abs(b.vx) * 1.015;
+        b.vx = Math.abs(b.vx) * 1.015 * this.bounceMultiplier;
         bounced = true;
       } else if (b.x + b.radius > RICOCHET_WIDTH - boundsPad) {
         b.x = RICOCHET_WIDTH - boundsPad - b.radius;
-        b.vx = -Math.abs(b.vx) * 1.015;
+        b.vx = -Math.abs(b.vx) * 1.015 * this.bounceMultiplier;
         bounced = true;
       }
 
       if (b.y - b.radius < boundsPad) {
         b.y = boundsPad + b.radius;
-        b.vy = Math.abs(b.vy) * 1.015;
+        b.vy = Math.abs(b.vy) * 1.015 * this.bounceMultiplier;
         bounced = true;
       } else if (b.y + b.radius > RICOCHET_HEIGHT - boundsPad) {
         b.y = RICOCHET_HEIGHT - boundsPad - b.radius;
-        b.vy = -Math.abs(b.vy) * 1.015;
+        b.vy = -Math.abs(b.vy) * 1.015 * this.bounceMultiplier;
         bounced = true;
       }
 
@@ -511,8 +586,13 @@ export class RicochetEngine {
 
           // V' = V - 2 * (V . N) * N
           const dot = b.vx * nx + b.vy * ny;
-          b.vx = (b.vx - 2 * dot * nx) * 1.04;
-          b.vy = (b.vy - 2 * dot * ny) * 1.04;
+          const side = (b.x - closeX) * nx + (b.y - closeY) * ny >= 0 ? 1 : -1;
+          if (dot * side >= 0) return;
+          // Separate from the mirror so a resting overlap cannot reflect every tick.
+          b.x = closeX + nx * side * (b.radius + 6.1);
+          b.y = closeY + ny * side * (b.radius + 6.1);
+          b.vx = (b.vx - 2 * dot * nx) * 1.04 * this.bounceMultiplier;
+          b.vy = (b.vy - 2 * dot * ny) * 1.04 * this.bounceMultiplier;
           b.bounceCount++;
           m.flashTimer = 0.22;
 
@@ -527,7 +607,7 @@ export class RicochetEngine {
 
       // 3. Player Parry Bat & KO Collision
       this.players.forEach((p) => {
-        if (!p.alive) return;
+        if (!authoritative || !p.alive) return;
 
         const distToPlayer = Math.hypot(b.x - p.x, b.y - p.y);
 
@@ -569,6 +649,12 @@ export class RicochetEngine {
           b.ownerId = null;
         }
       });
+      const velocity = Math.hypot(b.vx, b.vy);
+      if (velocity > 1100) {
+        b.vx *= 1100 / velocity;
+        b.vy *= 1100 / velocity;
+      }
+      b.speed = Math.hypot(b.vx, b.vy);
     });
   }
 
@@ -586,10 +672,14 @@ export class RicochetEngine {
         maxLife: 0.4
       });
     }
+    if (this.sparks.length > 96) this.sparks.splice(0, this.sparks.length - 96);
   }
 
   public getSnapshot(): RicochetSnapshot {
     return {
+      roundEpoch: this.roundEpoch,
+      simulationTime: this.simulationTime,
+      chaosBombs: this.chaosBombs.map((bomb) => ({ ...bomb })),
       arenaIndex: this.arenaIndex,
       arenaTitle: RICOCHET_ARENAS[this.arenaIndex]?.name || 'RICOCHET',
       status: this.status,
@@ -603,7 +693,8 @@ export class RicochetEngine {
     };
   }
 
-  public applySnapshot(snap: RicochetSnapshot): void {
+  public applySnapshot(snap: RicochetSnapshot, localSlotId?: number, predictionLeadSeconds = 0): void {
+    const reset = this.arenaIndex !== snap.arenaIndex || this.status !== snap.status || (snap.roundEpoch !== undefined && snap.roundEpoch !== this.roundEpoch);
     if (this.arenaIndex !== snap.arenaIndex) {
       this.loadArena(snap.arenaIndex);
     }
@@ -612,28 +703,22 @@ export class RicochetEngine {
     this.roundWinnerId = snap.roundWinnerId;
     this.matchWinnerId = snap.matchWinnerId;
 
-    snap.players.forEach((sp) => {
-      const lp = this.players[sp.id];
-      if (lp) {
-        // Interpolate smooth movement
-        lp.x += (sp.x - lp.x) * 0.35;
-        lp.y += (sp.y - lp.y) * 0.35;
-        lp.vx = sp.vx;
-        lp.vy = sp.vy;
-        lp.alive = sp.alive;
-        lp.lives = sp.lives;
-        lp.score = sp.score;
-        lp.aimAngle = sp.aimAngle;
-        lp.parryTimer = sp.parryTimer;
-        lp.slideTimer = sp.slideTimer;
-        lp.walkCycle = sp.walkCycle;
-        lp.tiltX = sp.tiltX;
-        if (sp.cosmetics) lp.cosmetics = sp.cosmetics;
-      }
+    this.players = snap.players.map((sp) => {
+      const previous = this.players[sp.id];
+      return reconcilePlayer(previous, sp, sp.id === localSlotId,
+        reset || previous?.alive !== sp.alive || previous?.lives !== sp.lives || snap.status !== 'PLAYING', predictionLeadSeconds);
     });
 
-    this.bullets = snap.bullets.map((b) => ({ ...b }));
+    this.bullets = snap.bullets.map((bullet) => {
+      const previous = this.bullets.find((value) => value.id === bullet.id);
+      const reconciled = reconcilePlayer(previous, bullet, false,
+        reset || previous?.ownerId !== bullet.ownerId || previous?.bounceCount !== bullet.bounceCount);
+      return { ...reconciled, trail: bullet.trail.map((point) => ({ ...point })) };
+    });
     this.mirrors = snap.mirrors.map((m) => ({ ...m }));
     this.sparks = snap.sparks.map((s) => ({ ...s }));
+    this.roundEpoch = snap.roundEpoch ?? this.roundEpoch;
+    this.simulationTime = snap.simulationTime ?? this.simulationTime;
+    this.chaosBombs = (snap.chaosBombs ?? []).map((bomb) => ({ ...bomb }));
   }
 }

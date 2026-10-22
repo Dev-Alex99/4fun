@@ -290,11 +290,21 @@ body {
   padding: 4px;
   border-radius: 11px;
   border: 2px solid var(--ink);
+  overflow-x: auto;
+  max-width: 100%;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+}
+
+.cartridge-tabs::-webkit-scrollbar {
+  display: none;
 }
 
 .tab-btn {
   padding: 5px 10px;
   font-size: 11px;
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .tab-btn.active-tab {
@@ -309,10 +319,40 @@ body {
   background: rgba(214, 207, 194, 0.94);
   backdrop-filter: blur(6px);
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: center;
-  padding: 22px;
+  padding: 18px 16px;
   z-index: 15;
+  overflow-y: auto;
+  overflow-x: hidden;
+  -webkit-overflow-scrolling: touch;
+  scroll-behavior: smooth;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--ink) #e6e1d6;
+}
+
+.hub-overlay:focus {
+  outline: none;
+}
+
+.hub-overlay::-webkit-scrollbar {
+  width: 10px;
+}
+
+.hub-overlay::-webkit-scrollbar-track {
+  background: #e6e1d6;
+  border-left: 2px solid var(--ink);
+}
+
+.hub-overlay::-webkit-scrollbar-thumb {
+  background: var(--ink);
+  border-radius: 5px;
+  border: 2px solid #e6e1d6;
+}
+
+.hub-overlay::-webkit-scrollbar-thumb:hover {
+  background: var(--orange);
 }
 
 .hub-overlay.hidden {
@@ -328,6 +368,8 @@ body {
   border-radius: 18px;
   padding: 18px 20px;
   box-shadow: 0 20px 44px rgba(24, 24, 27, 0.25);
+  margin: 0 auto 34px auto;
+  box-sizing: border-box;
 }
 
 .hub-banner {
@@ -336,7 +378,8 @@ body {
   justify-content: space-between;
   border-bottom: 2.5px solid var(--ink);
   padding-bottom: 14px;
-  margin-bottom: 18px;
+  margin-bottom: 16px;
+  gap: 16px;
 }
 
 .hub-eyebrow {
@@ -359,10 +402,142 @@ body {
   margin-top: 4px;
 }
 
+/* Quick Filter & Search Bar in Hub */
+.hub-filter-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  background: #e6e1d6;
+  border: 2px solid var(--ink);
+  border-radius: 12px;
+  padding: 8px 12px;
+  margin-bottom: 16px;
+}
+
+.hub-filter-pills {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.filter-pill {
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 800;
+  padding: 5px 11px;
+  border: 2px solid var(--ink);
+  border-radius: 8px;
+  background: #ffffff;
+  color: var(--ink);
+  cursor: pointer;
+  transition: all 0.12s ease;
+  box-shadow: 0 2px 0 var(--ink);
+}
+
+.filter-pill:hover {
+  background: #fef08a;
+  transform: translateY(-1px);
+  box-shadow: 0 3px 0 var(--ink);
+}
+
+.filter-pill.active {
+  background: var(--ink);
+  color: #fef08a;
+  box-shadow: none;
+  transform: translateY(2px);
+}
+
+.hub-filter-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.hub-search-box {
+  display: flex;
+  align-items: center;
+  background: #ffffff;
+  border: 2px solid var(--ink);
+  border-radius: 8px;
+  padding: 4px 8px;
+  gap: 6px;
+  box-shadow: 0 2px 0 var(--ink);
+}
+
+.search-icon {
+  font-size: 12px;
+  user-select: none;
+}
+
+.hub-search-input {
+  border: none;
+  outline: none;
+  background: transparent;
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--ink);
+  width: 150px;
+}
+
+.hub-search-input::placeholder {
+  color: #71717a;
+  font-weight: 600;
+}
+
+.clear-search-btn {
+  background: none;
+  border: none;
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+  color: #71717a;
+  padding: 0 2px;
+}
+
+.clear-search-btn:hover {
+  color: #ef4444;
+}
+
+.hub-no-results {
+  grid-column: 1 / -1;
+  background: #ffffff;
+  border: 2.5px dashed var(--ink);
+  border-radius: 14px;
+  padding: 32px 20px;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  margin: 12px 0;
+}
+
+.no-results-icon {
+  font-size: 32px;
+}
+
+.no-results-title {
+  font-family: var(--mono);
+  font-size: 16px;
+  font-weight: 900;
+}
+
+.no-results-desc {
+  font-size: 13px;
+  color: #52525b;
+  margin: 0;
+}
+
+/* Cartridge Grid with Fluid Responsive Columns */
 .hub-grid {
   display: grid;
-  grid-template-columns: repeat(5, 1fr);
-  gap: 10px;
+  grid-template-columns: repeat(auto-fill, minmax(275px, 1fr));
+  gap: 14px;
 }
 
 .game-cartridge {
@@ -370,11 +545,27 @@ body {
   border: 2.5px solid var(--ink);
   border-bottom-width: 5px;
   border-radius: 14px;
-  padding: 12px;
+  padding: 14px;
   display: flex;
   flex-direction: column;
   justify-content: space-between;
-  gap: 10px;
+  gap: 12px;
+  position: relative;
+  overflow: hidden;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
+}
+
+.game-cartridge:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 8px 0 var(--ink), 0 14px 22px rgba(24, 24, 27, 0.16);
+}
+
+.cart-accent-stripe {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 5px;
 }
 
 .cart-slot-empty {
@@ -549,10 +740,31 @@ body {
   background: rgba(214, 207, 194, 0.92);
   backdrop-filter: blur(4px);
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: center;
   padding: 20px;
   z-index: 20;
+  overflow-y: auto;
+  overflow-x: hidden;
+  -webkit-overflow-scrolling: touch;
+  scroll-behavior: smooth;
+  scrollbar-width: thin;
+  scrollbar-color: var(--ink) #e6e1d6;
+}
+
+.draft-overlay::-webkit-scrollbar {
+  width: 10px;
+}
+
+.draft-overlay::-webkit-scrollbar-track {
+  background: #e6e1d6;
+  border-left: 2px solid var(--ink);
+}
+
+.draft-overlay::-webkit-scrollbar-thumb {
+  background: var(--ink);
+  border-radius: 5px;
+  border: 2px solid #e6e1d6;
 }
 
 .draft-overlay.hidden {
@@ -568,6 +780,7 @@ body {
   border-radius: 16px;
   padding: 20px;
   box-shadow: 0 16px 36px rgba(24, 24, 27, 0.25);
+  margin: auto;
 }
 
 .draft-header {
@@ -1239,6 +1452,7 @@ body {
     padding: 6px;
     border-radius: 14px;
     gap: 6px;
+    max-height: 100vh;
   }
 
   .control-deck {
@@ -1299,6 +1513,116 @@ body {
     bottom: 6px;
     left: 6px;
     right: 6px;
+  }
+
+  /* Responsive Hub Elements */
+  .hub-overlay {
+    padding: 10px 8px;
+  }
+
+  .hub-container {
+    padding: 14px 12px;
+    border-radius: 14px;
+    margin-bottom: 24px;
+  }
+
+  .hub-banner {
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .hub-banner-actions {
+    width: 100%;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .hub-banner-actions .keycap-btn {
+    flex: 1 1 calc(50% - 6px);
+    justify-content: center;
+    text-align: center;
+  }
+
+  .hub-lobby-strip {
+    flex-direction: column;
+    gap: 10px;
+    padding: 10px;
+  }
+
+  .hub-pilot-box {
+    min-width: 100%;
+  }
+
+  .hub-pilot-input-row {
+    flex-wrap: wrap;
+  }
+
+  .hub-pilot-input {
+    flex: 1;
+  }
+
+  .tournament-hero-card {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 14px;
+    padding: 14px;
+  }
+
+  .tournament-hero-card .keycap-btn {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .hub-filter-bar {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+  }
+
+  .hub-filter-pills {
+    justify-content: flex-start;
+  }
+
+  .hub-filter-actions {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .hub-search-box {
+    flex: 1;
+  }
+
+  .hub-search-input {
+    width: 100%;
+  }
+
+  .hub-grid {
+    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    gap: 10px;
+  }
+}
+
+@media (max-width: 600px) {
+  .hub-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .hub-title {
+    font-size: 17px;
+  }
+
+  .tourney-title {
+    font-size: 16px;
+  }
+
+  .filter-pill {
+    font-size: 10px;
+    padding: 4px 8px;
+  }
+
+  .hub-banner-actions .keycap-btn {
+    flex: 1 1 100%;
   }
 }
 

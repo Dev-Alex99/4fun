@@ -40,6 +40,20 @@ export const ROBOT_SKINS: CosmeticOption<RobotSkinId>[] = [
   { id: 'VAPOR', label: "SYNTHWAVE '84", desc: 'Degradado violeta y magenta retro', color: '#d946ef' }
 ];
 
+export const DEFAULT_ROBOT_COSMETICS: Readonly<RobotCosmetics> = Object.freeze({
+  hat: 'NONE', visor: 'CYAN', skin: 'STOCK'
+});
+
+/** Validate persisted, UI, or network data instead of trusting a TypeScript cast. */
+export function normalizeRobotCosmetics(value: unknown, fallback: RobotCosmetics = DEFAULT_ROBOT_COSMETICS): RobotCosmetics {
+  const data = value && typeof value === 'object' ? value as Record<string, unknown> : {};
+  return {
+    hat: ROBOT_HATS.some((item) => item.id === data.hat) ? data.hat as RobotHatId : fallback.hat,
+    visor: ROBOT_VISORS.some((item) => item.id === data.visor) ? data.visor as RobotVisorId : fallback.visor,
+    skin: ROBOT_SKINS.some((item) => item.id === data.skin) ? data.skin as RobotSkinId : fallback.skin
+  };
+}
+
 export class RobotWorkshopManager {
   public cosmetics: RobotCosmetics = {
     hat: 'NONE',
@@ -52,8 +66,8 @@ export class RobotWorkshopManager {
   }
 
   public loadFromStorage(): RobotCosmetics {
-    if (typeof localStorage === 'undefined') return this.cosmetics;
     try {
+      if (typeof localStorage === 'undefined') return this.cosmetics;
       const savedHat = localStorage.getItem('tp04_robot_hat') as RobotHatId;
       const savedVisor = localStorage.getItem('tp04_robot_visor') as RobotVisorId;
       const savedSkin = localStorage.getItem('tp04_robot_skin') as RobotSkinId;
@@ -68,21 +82,25 @@ export class RobotWorkshopManager {
   }
 
   public saveCosmetics(update: Partial<RobotCosmetics>): RobotCosmetics {
-    this.cosmetics = { ...this.cosmetics, ...update };
-    if (typeof localStorage !== 'undefined') {
-      try {
+    this.cosmetics = normalizeRobotCosmetics(update, this.cosmetics);
+    try {
+      if (typeof localStorage !== 'undefined') {
         localStorage.setItem('tp04_robot_hat', this.cosmetics.hat);
         localStorage.setItem('tp04_robot_visor', this.cosmetics.visor);
         localStorage.setItem('tp04_robot_skin', this.cosmetics.skin);
-      } catch {
-        // Ignore write errors
       }
+    } catch {
+      // A browser may deny both access to storage and writes to it.
     }
     return this.cosmetics;
   }
 
+  public resolveCosmetics(value: unknown, isLocal = false): RobotCosmetics {
+    return normalizeRobotCosmetics(value, value == null && isLocal ? this.cosmetics : DEFAULT_ROBOT_COSMETICS);
+  }
+
   public getVisorColor(visorId?: RobotVisorId): string {
-    const v = ROBOT_VISORS.find((item) => item.id === (visorId || this.cosmetics.visor));
+    const v = ROBOT_VISORS.find((item) => item.id === (visorId || DEFAULT_ROBOT_COSMETICS.visor));
     return v?.color || '#00e5ff';
   }
 
@@ -91,7 +109,7 @@ export class RobotWorkshopManager {
     defaultBody: string,
     defaultShade: string
   ): { body: string; shade: string } {
-    const skin = skinId || this.cosmetics.skin;
+    const skin = skinId || DEFAULT_ROBOT_COSMETICS.skin;
     if (skin === 'STEALTH') {
       return { body: '#27272a', shade: '#18181b' };
     }
@@ -102,6 +120,23 @@ export class RobotWorkshopManager {
       return { body: '#d946ef', shade: '#86198f' };
     }
     return { body: defaultBody, shade: defaultShade };
+  }
+
+  public drawSkinStripes(ctx: CanvasRenderingContext2D, skinId: RobotSkinId, x: number, y: number, width: number, height: number, radius: number): void {
+    if (skinId !== 'WARNING') return;
+    ctx.save();
+    ctx.beginPath();
+    ctx.roundRect(x, y, width, height, radius);
+    ctx.clip();
+    ctx.strokeStyle = '#18181B';
+    ctx.lineWidth = 3.5;
+    for (let offset = -height; offset < width; offset += 8) {
+      ctx.beginPath();
+      ctx.moveTo(x + offset, y);
+      ctx.lineTo(x + offset + height, y + height);
+      ctx.stroke();
+    }
+    ctx.restore();
   }
 
   /**

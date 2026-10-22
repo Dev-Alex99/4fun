@@ -95,13 +95,17 @@ describe('ArenaEngine (01 // BASH-BOT)', () => {
     const engine = new ArenaEngine();
     const remotePlayer = engine.players[1];
     remotePlayer.isBot = false;
-    remotePlayer.alive = false;
-    remotePlayer.lastKOAt = performance.now() - 60; // Knocked out 60ms ago on Host
+    const ball = engine.balls[0];
+    ball.x = remotePlayer.x; ball.y = remotePlayer.y;
+    ball.vx = 0; ball.vy = 0; ball.targetId = remotePlayer.id;
+    engine.step(0.001, dummyInput); // Record a real host-side KO, including its ball/pass proof.
+    expect(remotePlayer.alive).toBe(false);
 
     engine.applyRemoteInput({
       ...dummyInput,
       slotId: 1,
       name: 'CARLOS',
+      lagCompensationMs: 180,
       parryPressed: true,
       clientBallDist: 38 // Ball was within parry reach on Carlos's screen!
     });
@@ -225,160 +229,76 @@ describe('PuttWarEngine (03 // TURBO-PUTT)', () => {
 });
 
 describe('MultiplayerRoomManager Anti-Freeze Watchdog & Moderation', () => {
+  function connectedRoom() {
+    const hostArena = new ArenaEngine(), hostChain = new ChainPanicEngine(), hostPutt = new PuttWarEngine();
+    const clientArena = new ArenaEngine(), clientChain = new ChainPanicEngine(), clientPutt = new PuttWarEngine();
+    const host = new MultiplayerRoomManager(hostArena, hostChain, () => {}, hostPutt);
+    const client = new MultiplayerRoomManager(clientArena, clientChain, () => {}, clientPutt);
+    client.isHost = false; client.role = 'CLIENT'; client.connectionState = 'CONNECTING';
+    type Conn = NonNullable<Parameters<typeof host.handleEnvelope>[2]>;
+    const epoch = (net: MultiplayerRoomManager) => (net as unknown as { hostEpoch: string }).hostEpoch;
+    const server = { peer: client.localPeerId, open: true, close: () => {}, send: (raw: unknown) => {
+      client.handleEnvelope(raw, reply => guest.send(JSON.stringify({ ...reply, protocolVersion: 1, hostEpoch: epoch(client) })), guest as unknown as Conn);
+    } };
+    const guest = { peer: 'tp04-deck-room-v4-TP04', open: true, close: () => {}, send: (raw: unknown) => {
+      host.handleEnvelope(raw, reply => server.send(JSON.stringify({ ...reply, protocolVersion: 1, hostEpoch: epoch(host) })), server as unknown as Conn);
+    } };
+    (host as unknown as { clientConns: Map<string, Conn> }).clientConns.set(client.localPeerId, server as unknown as Conn);
+    (client as unknown as { hostConn: Conn }).hostConn = guest as unknown as Conn;
+    guest.send(JSON.stringify({ protocolVersion: 1, sender: client.localPeerId, type: 'JOIN_CLAIM', payload: { peerId: client.localPeerId, name: 'SOFIA' } }));
+    return { host, client, hostArena, hostChain, hostPutt, clientArena, clientChain, clientPutt };
+  }
+
   it('only steps authoritative physics on the Host so Clients never spawn local bots or reset rounds', () => {
-    const arena = new ArenaEngine();
-    const chain = new ChainPanicEngine();
-    const net = new MultiplayerRoomManager(arena, chain, () => {});
-
+    const net = new MultiplayerRoomManager(new ArenaEngine(), new ChainPanicEngine(), () => {});
     expect(net.shouldStepLocally()).toBe(true);
-
-    // When connected as a Client, shouldStepLocally MUST be false so local bot AI never runs
     net.isHost = false;
     expect(net.shouldStepLocally()).toBe(false);
+    net.dispose();
   });
 
-  it('allows Host to kick & ban a remote player slot and reset it to a bot', () => {
-    const arena = new ArenaEngine();
-    const chain = new ChainPanicEngine();
-    const net = new MultiplayerRoomManager(arena, chain, () => {});
-
-    // Simulate a remote player in slot 1
-    arena.players[1].isBot = false;
-    arena.players[1].peerId = 'P-GRIEFER';
-    arena.players[1].name = 'TROLL';
-
-    const kicked = net.kickPlayerSlot(1);
-    expect(kicked).toBe(true);
-    expect(net.bannedPeerIds.has('P-GRIEFER')).toBe(true);
-    expect(arena.players[1].isBot).toBe(true);
+  it('allows Host to kick and ban a remote player slot and reset it to a bot', () => {
+    const { host, client, hostArena } = connectedRoom();
+    const id = client.localPeerId;
+    expect(host.kickPlayerSlot(1)).toBe(true);
+    expect(host.bannedPeerIds.has(id)).toBe(true);
+    expect(hostArena.players[1].isBot).toBe(true);
+    expect(client.kickedNotice).toContain('vetado');
+    host.dispose(); client.dispose();
   });
 
-  it('tracks peer join & leave cleanly and notifies all players with toasts', () => {
-    const arena = new ArenaEngine();
-    const chain = new ChainPanicEngine();
-    const net = new MultiplayerRoomManager(arena, chain, () => {});
-
-    // Simulate incoming JOIN_CLAIM from friend P-FRIEND1
-    (net as unknown as { handleEnvelope: (env: unknown, reply: () => void) => void }).handleEnvelope(
-      {
-        sender: 'P-FRIEND1',
-        type: 'JOIN_CLAIM',
-        payload: { peerId: 'P-FRIEND1', name: 'MATEO' }
-      },
-      () => {}
-    );
-
-    expect(arena.players[1].isBot).toBe(false);
-    expect(arena.players[1].name).toBe('MATEO');
-    expect(net.toasts.some((t) => t.text.includes('MATEO SE UNIÓ'))).toBe(true);
-
-    // Simulate P-FRIEND1 leaving the room (PEER_LEAVE)
-    (net as unknown as { handleEnvelope: (env: unknown, reply: () => void) => void }).handleEnvelope(
-      {
-        sender: 'P-FRIEND1',
-        type: 'PEER_LEAVE',
-        payload: { peerId: 'P-FRIEND1' }
-      },
-      () => {}
-    );
-
-    expect(arena.players[1].isBot).toBe(true);
-    expect(net.toasts.some((t) => t.text.includes('MATEO SALIÓ'))).toBe(true);
-  });
-
-  it('synchronizes GAME_SWITCH and ROOM_ACTION across Host and Friends even if Host tab is hidden', () => {
-    // Setup Host instance
-    const hostArena = new ArenaEngine();
-    const hostChain = new ChainPanicEngine();
-    const hostPutt = new PuttWarEngine();
-    const hostNet = new MultiplayerRoomManager(hostArena, hostChain, () => {}, hostPutt);
-
-    // Setup Friend (Client) instance
-    const clientArena = new ArenaEngine();
-    const clientChain = new ChainPanicEngine();
-    const clientPutt = new PuttWarEngine();
-    const clientNet = new MultiplayerRoomManager(clientArena, clientChain, () => {}, clientPutt);
-
-    // Wire virtual transport between Host and Client
-    const hostBus = {
-      postMessage: (env: unknown) => {
-        clientNet.handleEnvelope(env as Parameters<typeof clientNet.handleEnvelope>[0], (reply) => {
-          hostNet.handleEnvelope(reply, () => {});
-        });
-      }
-    };
-    const clientBus = {
-      postMessage: (env: unknown) => {
-        hostNet.handleEnvelope(env as Parameters<typeof hostNet.handleEnvelope>[0], (reply) => {
-          clientNet.handleEnvelope(reply, () => {});
-        });
-      }
-    };
-
-    (hostNet as unknown as { localBus: typeof hostBus }).localBus = hostBus;
-    (clientNet as unknown as { localBus: typeof clientBus }).localBus = clientBus;
-
-    // 1. Simulate Host tab being hidden in background (e.g. pasting link on Discord) when Friend joins!
-    Object.defineProperty(document, 'hidden', { configurable: true, get: () => true });
-    clientBus.postMessage({
-      sender: clientNet.localPeerId,
-      type: 'JOIN_CLAIM',
-      payload: { peerId: clientNet.localPeerId, name: 'SOFIA' }
-    });
-    Object.defineProperty(document, 'hidden', { configurable: true, get: () => false });
-
-    // Friend must be connected in Slot 1!
-    expect(clientNet.isHost).toBe(false);
-    expect(clientNet.localSlotId).toBe(1);
-    expect(hostArena.players[1].name).toBe('SOFIA');
+  it('tracks authenticated peer join and leave cleanly with room notifications', () => {
+    const { host, client, hostArena } = connectedRoom();
     expect(hostArena.players[1].isBot).toBe(false);
+    expect(hostArena.players[1].name).toBe('SOFIA');
+    expect(host.toasts.some(t => t.text.includes('SOFIA SE UNIÓ'))).toBe(true);
+    client.disconnectCleanly();
+    expect(hostArena.players[1].isBot).toBe(true);
+    expect(host.toasts.some(t => t.text.includes('SOFIA SALIÓ'))).toBe(true);
+    host.dispose();
+  });
 
-    // 2. Host clicks "JUGAR BASH-BOT" -> Client must immediately enter BASH_BOT!
-    hostNet.switchGame('BASH_BOT');
-    expect(hostNet.activeGame).toBe('BASH_BOT');
-    expect(clientNet.activeGame).toBe('BASH_BOT');
-
-    // 3. Friend (Client) clicks "JUGAR TURBO-PUTT" -> Host AND Client must both enter TURBO_PUTT!
-    clientNet.switchGame('TURBO_PUTT');
-    expect(hostNet.activeGame).toBe('TURBO_PUTT');
-    expect(clientNet.activeGame).toBe('TURBO_PUTT');
-
-    // 4. Host or Client changes Bot Difficulty to OFF and advances to Hole 3 -> Both sync!
-    hostNet.sendOrApplyRoomAction({ kind: 'BOT_DIFF', botDifficulty: 'OFF' });
-    expect(hostArena.botDifficulty).toBe('OFF');
-    expect(clientArena.botDifficulty).toBe('OFF');
-
-    // Verify bots are completely hidden on BOTH Host and Friend screens across all 3 games!
-    expect(hostArena.players.filter((p) => p.alive).length).toBe(2);
-    expect(clientArena.players.filter((p) => p.alive).length).toBe(2);
-    expect(clientChain.getActivePlayers().length).toBe(2);
-    expect(clientPutt.getActivePlayers().length).toBe(2);
-
-    clientNet.sendOrApplyRoomAction({ kind: 'LOAD_STAGE', holeIndex: 3 });
-    expect(hostPutt.holeIndex).toBe(3);
+  it('synchronizes host changes while hidden and rejects guests changing shared settings', () => {
+    const { host, client, hostArena, clientArena, clientChain, clientPutt, hostPutt } = connectedRoom();
+    expect(client.localSlotId).toBe(1); expect(client.isHost).toBe(false);
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => true });
+    host.switchGame('BASH_BOT');
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => false });
+    expect(client.activeGame).toBe('BASH_BOT');
+    client.switchGame('TURBO_PUTT');
+    expect(host.activeGame).toBe('BASH_BOT');
+    host.switchGame('TURBO_PUTT');
+    host.sendOrApplyRoomAction({ kind: 'BOT_DIFF', botDifficulty: 'OFF' });
+    expect(hostArena.botDifficulty).toBe('OFF'); expect(clientArena.botDifficulty).toBe('OFF');
+    expect(hostArena.players.filter(p => p.alive).length).toBe(2);
+    expect(clientArena.players.filter(p => p.alive).length).toBe(2);
+    expect(clientChain.getActivePlayers().length).toBe(2); expect(clientPutt.getActivePlayers().length).toBe(2);
+    client.sendOrApplyRoomAction({ kind: 'LOAD_STAGE', holeIndex: 3 });
+    expect(hostPutt.holeIndex).toBe(0);
+    host.sendOrApplyRoomAction({ kind: 'LOAD_STAGE', holeIndex: 3 });
     expect(clientPutt.holeIndex).toBe(3);
-
-    // 5. Verify a stray WORLD_SNAP or background tab with activeGame: 'HUB' NEVER kicks Client back to HUB!
-    clientNet.handleEnvelope(
-      {
-        sender: hostNet.localPeerId,
-        type: 'WORLD_SNAP',
-        payload: { ...hostArena.getSnapshot(), activeGame: 'HUB' }
-      },
-      () => {}
-    );
-    expect(clientNet.activeGame).toBe('TURBO_PUTT');
-
-    // Also verify packets from a rogue/duplicate tab sender are strictly ignored
-    clientNet.handleEnvelope(
-      {
-        sender: 'P-ROGUE-TAB-99',
-        type: 'GAME_SWITCH',
-        payload: { activeGame: 'HUB', botDifficulty: 'NORMAL', levelIndex: 0, holeIndex: 0 }
-      },
-      () => {}
-    );
-    expect(clientNet.activeGame).toBe('TURBO_PUTT');
+    host.switchGame('HUB'); expect(client.activeGame).toBe('HUB');
+    host.dispose(); client.dispose();
   });
 });
 

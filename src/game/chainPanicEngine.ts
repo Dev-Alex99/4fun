@@ -1,3 +1,5 @@
+import { reconcilePlayer } from './reconciliation';
+import { ChaosPhysics } from './chaosPhysics';
 import {
   ChainGameMode,
   ChainPanicSnapshot,
@@ -177,7 +179,7 @@ const SLOT_COLORS = [
 
 const CHAIN_EMOTES = ['¡SALTA!', '¡ANCLA!', '¡JALA CON [E]!', '¡CORRE!'];
 
-export class ChainPanicEngine {
+export class ChainPanicEngine extends ChaosPhysics {
   public levelIndex = 0;
   public mode: ChainGameMode = 'COOP';
   public botsEnabled = true;
@@ -206,6 +208,7 @@ export class ChainPanicEngine {
   private windCycleTimer = 0;
 
   constructor() {
+    super();
     this.initPlayers();
     this.loadLevel(0);
   }
@@ -245,7 +248,7 @@ export class ChainPanicEngine {
       if (this.players[idx]) {
         this.players[idx].name = r.name;
         this.players[idx].isBot = r.isBot;
-        if (r.cosmetics) this.players[idx].cosmetics = r.cosmetics;
+        this.players[idx].cosmetics = r.cosmetics ? { ...r.cosmetics } : undefined;
       }
     });
   }
@@ -264,6 +267,7 @@ export class ChainPanicEngine {
   }
 
   public loadLevel(idx: number): void {
+    this.resetChaosRound();
     this.levelIndex = (idx + CHAIN_LEVELS.length) % CHAIN_LEVELS.length;
     const def = this.getCurrentLevelDef();
     this.status = 'PLAYING';
@@ -344,31 +348,29 @@ export class ChainPanicEngine {
       : null;
   }
 
+  public clearRemoteInput(slotId: number): void {
+    this.remoteInputs.delete(slotId);
+    this.lastActionSeqBySlot.delete(slotId);
+    const player = this.players[slotId];
+    if (player) { player.vx = 0; player.vy = 0; player.isAnchored = false; }
+  }
+
   public applyRemoteInput(packet: ClientInputPacket): void {
-    this.remoteInputs.set(packet.slotId, packet);
+    this.remoteInputs.set(packet.slotId, { ...packet, clientX: undefined, clientY: undefined, clientZ: undefined });
     const p = this.players[packet.slotId];
     if (!p) return;
     if (packet.name) p.name = packet.name.slice(0, 10).toUpperCase();
 
     // Lag-compensation: honor client's jump height & smooth position in step(dt) at 60/144fps
-    if (typeof packet.clientZ === 'number' && packet.clientZ > p.z) {
-      p.z = packet.clientZ;
-      p.onGround = false;
-    }
-    if (typeof packet.clientX === 'number' && typeof packet.clientY === 'number') {
-      const dist = Math.hypot(packet.clientX - p.x, packet.clientY - p.y);
-      if (dist > 200) {
-        p.x = packet.clientX;
-        p.y = packet.clientY;
-      }
-    }
+
+
 
     const isDuplicateAction =
       typeof packet.actionSeq === 'number' &&
       packet.actionSeq > 0 &&
-      this.lastActionSeqBySlot.get(packet.slotId) === packet.actionSeq;
+      packet.actionSeq <= (this.lastActionSeqBySlot.get(packet.slotId) ?? 0);
     if (typeof packet.actionSeq === 'number' && packet.actionSeq > 0) {
-      this.lastActionSeqBySlot.set(packet.slotId, packet.actionSeq);
+      this.lastActionSeqBySlot.set(packet.slotId, Math.max(packet.actionSeq, this.lastActionSeqBySlot.get(packet.slotId) ?? 0));
     }
 
     if (!isDuplicateAction) {
@@ -479,6 +481,10 @@ export class ChainPanicEngine {
   }
 
   public step(dt: number, localInput: ClientInputPacket): void {
+    this.advanceChaos(dt, true, this.status === 'PLAYING', (bomb) => {
+      this.applyChaosBlast(bomb, this.players, this.botsEnabled);
+      this.addCallout(bomb.x, bomb.y - 26, 'BOOM', '#EF4444', '#FFFFFF');
+    });
     this.time += dt;
     this.remoteInputs.set(localInput.slotId, localInput);
 
@@ -574,7 +580,7 @@ export class ChainPanicEngine {
         if (p.emoteTimer <= 0) p.emoteText = null;
       }
 
-      const moveAccel = p.isAnchored ? 40 : 215;
+      const moveAccel = (p.isAnchored ? 40 : 215) * this.speedMultiplier;
 
       if (!p.isBot) {
         const inp = this.remoteInputs.get(p.id);
@@ -585,21 +591,7 @@ export class ChainPanicEngine {
             p.vx += (inp.moveX / len) * moveAccel * 9 * dt;
             p.vy += (inp.moveY / len) * moveAccel * 9 * dt;
           }
-          if (
-            p.id > 0 &&
-            !p.isDangling &&
-            typeof inp.clientX === 'number' &&
-            typeof inp.clientY === 'number'
-          ) {
-            const cDist = Math.hypot(inp.clientX - p.x, inp.clientY - p.y);
-            if (cDist < 180) {
-              const blend = 1 - Math.exp(-14 * dt);
-              p.x += (inp.clientX - p.x) * blend;
-              p.y += (inp.clientY - p.y) * blend;
-              inp.clientX += p.vx * dt;
-              inp.clientY += p.vy * dt;
-            }
-          }
+
         }
       } else {
         // Cooperative Bot AI
@@ -689,7 +681,7 @@ export class ChainPanicEngine {
       // Jump Z physics
       if (p.z > 0 || p.vz > 0) {
         p.z += p.vz * dt;
-        p.vz -= 620 * dt;
+        p.vz -= 620 * this.gravityMultiplier * dt;
         if (p.z <= 0) {
           p.z = 0;
           p.vz = 0;
@@ -799,7 +791,7 @@ export class ChainPanicEngine {
           const shareB = weightB / totalW;
 
           const stretch = dist - SLACK_LEN;
-          const pullForce = stretch * 14 * dt;
+          const pullForce = stretch * 14 * dt * this.bounceMultiplier;
           a.vx += nx * pullForce * shareA;
           a.vy += ny * pullForce * shareA;
           b.vx -= nx * pullForce * shareB;
@@ -907,6 +899,9 @@ export class ChainPanicEngine {
 
   public getSnapshot(): ChainPanicSnapshot {
     return {
+      roundEpoch: this.roundEpoch,
+      simulationTime: this.simulationTime,
+      chaosBombs: this.chaosBombs.map((bomb) => ({ ...bomb })),
       levelIndex: this.levelIndex,
       levelTitle: this.getCurrentLevelDef().title,
       mode: this.mode,
@@ -932,6 +927,7 @@ export class ChainPanicEngine {
    * Steps local walking, jumping, anchor, and laser rotation at 60/144fps so even 500ms ping feels instant!
    */
   public stepClientPrediction(dt: number, localSlotId: number, input: ClientInputPacket): void {
+    this.advanceChaos(dt, false, this.status === 'PLAYING', () => {});
     this.time += dt;
     for (let i = this.particles.length - 1; i >= 0; i--) {
       const pt = this.particles[i];
@@ -958,7 +954,7 @@ export class ChainPanicEngine {
     if (p) {
       if (p.yankCooldown > 0) p.yankCooldown = Math.max(0, p.yankCooldown - dt);
       p.isAnchored = Boolean(input.anchorHeld) && p.onGround && !p.isDangling;
-      const moveAccel = p.isAnchored ? 40 : 215;
+      const moveAccel = (p.isAnchored ? 40 : 215) * this.speedMultiplier;
 
       if (!p.isDangling && (input.moveX !== 0 || input.moveY !== 0)) {
         const len = Math.hypot(input.moveX, input.moveY);
@@ -968,7 +964,7 @@ export class ChainPanicEngine {
 
       if (p.z > 0 || p.vz !== 0) {
         p.z += p.vz * dt;
-        p.vz -= 680 * dt;
+        p.vz -= 620 * this.gravityMultiplier * dt;
         if (p.z <= 0) {
           p.z = 0;
           p.vz = 0;
@@ -976,7 +972,7 @@ export class ChainPanicEngine {
         }
       }
 
-      const damp = p.isAnchored ? 0.65 : 0.82;
+      const damp = p.isAnchored ? 0.62 : 0.82;
       p.vx *= Math.pow(damp, dt * 60);
       p.vy *= Math.pow(damp, dt * 60);
       p.x = Math.max(48, Math.min(952, p.x + p.vx * dt));
@@ -988,7 +984,7 @@ export class ChainPanicEngine {
     // Dead-reckon remote players smoothly between snapshots at 60/144fps
     this.players.forEach((other) => {
       if (other.id === localSlotId) return;
-      const damp = other.isAnchored ? 0.65 : 0.82;
+      const damp = other.isAnchored ? 0.62 : 0.82;
       other.vx *= Math.pow(damp, dt * 60);
       other.vy *= Math.pow(damp, dt * 60);
       other.x += other.vx * dt;
@@ -998,7 +994,8 @@ export class ChainPanicEngine {
     });
   }
 
-  public applySnapshot(snap: ChainPanicSnapshot, localSlotId?: number): void {
+  public applySnapshot(snap: ChainPanicSnapshot, localSlotId?: number, predictionLeadSeconds = 0): void {
+    const reset = this.levelIndex !== snap.levelIndex || this.status !== snap.status || (snap.roundEpoch !== undefined && snap.roundEpoch !== this.roundEpoch);
     this.levelIndex = snap.levelIndex;
     this.mode = snap.mode;
     this.status = snap.status;
@@ -1011,38 +1008,9 @@ export class ChainPanicEngine {
     this.wipes = snap.wipes;
 
     this.players = snap.players.map((sp) => {
-      const prev = this.players[sp.id];
-      if (!prev || this.status !== 'PLAYING') return { ...sp };
-
-      if (localSlotId !== undefined && sp.id === localSlotId && !sp.isDangling) {
-        const dist = Math.hypot(sp.x - prev.x, sp.y - prev.y);
-        if (dist < 180) {
-          const isLocallyMoving = Math.hypot(prev.vx, prev.vy) > 15;
-          // Only pull gently if the elastic cable is taut (dist > 95) or player is standing still
-          const pullFactor = dist > 95 ? 0.16 : isLocallyMoving ? 0.0 : 0.08;
-          return {
-            ...sp,
-            x: prev.x + (sp.x - prev.x) * pullFactor,
-            y: prev.y + (sp.y - prev.y) * pullFactor,
-            vx: prev.vx,
-            vy: prev.vy,
-            z: Math.max(prev.z, sp.z),
-            vz: prev.z > 0 ? prev.vz : sp.vz,
-            onGround: prev.z > 0 ? false : sp.onGround,
-            walkCycle: prev.walkCycle
-          };
-        }
-      }
-
-      const rDist = Math.hypot(sp.x - prev.x, sp.y - prev.y);
-      if (rDist < 150) {
-        return {
-          ...sp,
-          x: prev.x + (sp.x - prev.x) * 0.36,
-          y: prev.y + (sp.y - prev.y) * 0.36
-        };
-      }
-      return { ...sp };
+      const previous = this.players[sp.id];
+      return reconcilePlayer(previous, sp, sp.id === localSlotId,
+        reset || previous?.isDangling !== sp.isDangling || snap.status !== 'PLAYING', predictionLeadSeconds);
     });
 
     this.switches = snap.switches;
@@ -1050,6 +1018,9 @@ export class ChainPanicEngine {
     this.rotaryLasers = snap.rotaryLasers || [];
     this.fragileTiles = snap.fragileTiles || [];
     this.battery = snap.battery || null;
+    this.roundEpoch = snap.roundEpoch ?? this.roundEpoch;
+    this.simulationTime = snap.simulationTime ?? this.simulationTime;
+    this.chaosBombs = (snap.chaosBombs ?? []).map((bomb) => ({ ...bomb }));
   }
 
   public spawnDust(x: number, y: number, count: number): void {

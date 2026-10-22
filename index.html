@@ -187,7 +187,7 @@
           <!-- ======================================================== -->
           <!-- LANDING / CONSOLE HUB OVERLAY (SELECT GAME CARTRIDGE)    -->
           <!-- ======================================================== -->
-          <div id="hubOverlay" class="hub-overlay">
+          <div id="hubOverlay" class="hub-overlay" tabindex="-1">
             <div class="hub-container">
               <div class="hub-banner">
                 <div>
@@ -280,12 +280,39 @@
                 </button>
               </div>
 
-              <div class="hub-grid">
+              <!-- Quick Filter, Search & Random Game Bar -->
+              <div class="hub-filter-bar">
+                <div class="hub-filter-pills">
+                  <button class="filter-pill active" data-filter="ALL">TODOS (7)</button>
+                  <button class="filter-pill" data-filter="PVP">⚔️ DUELOS PVP (6)</button>
+                  <button class="filter-pill" data-filter="COOP">🤝 CO-OP (1)</button>
+                  <button class="filter-pill" data-filter="PARTY">🎉 GOLF & FIESTA (2)</button>
+                </div>
+                <div class="hub-filter-actions">
+                  <div class="hub-search-box">
+                    <span class="search-icon">🔍</span>
+                    <input
+                      id="hubSearchInput"
+                      class="hub-search-input"
+                      type="text"
+                      placeholder="Buscar minijuego..."
+                      autocomplete="off"
+                    />
+                    <button id="hubClearSearchBtn" class="clear-search-btn hidden" title="Limpiar búsqueda">✕</button>
+                  </div>
+                  <button id="hubRandomGameBtn" class="keycap-btn keycap-sm keycap-yellow" title="Elegir y lanzar un minijuego aleatorio">
+                    🎲 JUEGO AL AZAR
+                  </button>
+                </div>
+              </div>
+
+              <div class="hub-grid" id="hubGameGrid">
                 <!-- Cartridge 01: BASH-BOT -->
-                <div class="game-cartridge">
+                <div class="game-cartridge" data-category="PVP PARTY" data-game-title="TP-04 BASH-BOT PARRY PINBALL MULTIBALL">
+                  <div class="cart-accent-stripe" style="background: #ff4f00"></div>
                   <div>
                     <div class="cart-header">
-                      <span class="cart-badge" style="background: #ff4f00">CARTUCHO 01 // PVP</span>
+                      <span class="cart-badge" style="background: #ff4f00">🏓 CARTUCHO 01 // PVP</span>
                       <span class="cart-players">1 A 4 JUGADORES</span>
                     </div>
                     <h2 class="cart-title">TP-04 // BASH-BOT</h2>
@@ -303,10 +330,11 @@
                 </div>
 
                 <!-- Cartridge 02: CHAIN-PANIC -->
-                <div class="game-cartridge">
+                <div class="game-cartridge" data-category="COOP" data-game-title="TP-05 CHAIN-PANIC CUERDA COOPERATIVO SABOTAJE TRAIDOR">
+                  <div class="cart-accent-stripe" style="background: #1b4dff"></div>
                   <div>
                     <div class="cart-header">
-                      <span class="cart-badge" style="background: #1b4dff">CARTUCHO 02 // CO-OP CAOS</span>
+                      <span class="cart-badge" style="background: #1b4dff">⛓️ CARTUCHO 02 // CO-OP</span>
                       <span class="cart-players">4 ENCADENADOS</span>
                     </div>
                     <h2 class="cart-title">TP-05 // CHAIN-PANIC</h2>
@@ -324,10 +352,11 @@
                 </div>
 
                 <!-- Cartridge 03: TURBO-PUTT (Combat Mini-Golf + Worms) -->
-                <div class="game-cartridge">
+                <div class="game-cartridge" data-category="PVP PARTY" data-game-title="TP-06 TURBO-PUTT MINIGOLF WORMS COMBATE MINAS COHETES">
+                  <div class="cart-accent-stripe" style="background: #15803d"></div>
                   <div>
                     <div class="cart-header">
-                      <span class="cart-badge" style="background: #15803d">CARTUCHO 03 // GOLF + WORMS</span>
+                      <span class="cart-badge" style="background: #15803d">⛳ CARTUCHO 03 // GOLF</span>
                       <span class="cart-players">TIEMPO REAL 4P</span>
                     </div>
                     <h2 class="cart-title">TP-06 // TURBO-PUTT</h2>
@@ -345,10 +374,11 @@
                 </div>
 
                 <!-- Cartridge 04: HOT-CORE (Nuclear Hot Potato + Dodgeball Throw + Parry Reflector) -->
-                <div class="game-cartridge">
+                <div class="game-cartridge" data-category="PVP" data-game-title="TP-07 HOT-CORE PAPA NUCLEAR REACTOR SUPERVIVENCIA">
+                  <div class="cart-accent-stripe" style="background: #f59e0b"></div>
                   <div>
                     <div class="cart-header">
-                      <span class="cart-badge" style="background: #f59e0b; color: #18181b">CARTUCHO 04 // PAPA NUCLEAR</span>
+                      <span class="cart-badge" style="background: #f59e0b; color: #18181b">💣 CARTUCHO 04 // PAPA NUCLEAR</span>
                       <span class="cart-players">SUPERVIVENCIA 4P</span>
                     </div>
                     <h2 class="cart-title">TP-07 // HOT-CORE</h2>
@@ -366,10 +396,11 @@
                 </div>
 
                 <!-- Cartridge 05: VOLT-CROWN (King of the Hill + Interactive Map Traps) -->
-                <div class="game-cartridge">
+                <div class="game-cartridge" data-category="PVP" data-game-title="TP-08 VOLT-CROWN REY DE LA COLINA TÁSER SOBRECARGA CACERÍA">
+                  <div class="cart-accent-stripe" style="background: #eab308"></div>
                   <div>
                     <div class="cart-header">
-                      <span class="cart-badge" style="background: #eab308; color: #18181b">CARTUCHO 05 // CACERÍA</span>
+                      <span class="cart-badge" style="background: #eab308; color: #18181b">👑 CARTUCHO 05 // REY</span>
                       <span class="cart-players">REY DE LA COLINA</span>
                     </div>
                     <h2 class="cart-title">TP-08 // VOLT-CROWN</h2>
@@ -387,10 +418,11 @@
                 </div>
 
                 <!-- Cartridge 06: HEX-CRUSH (Seismic Spleef + Aerial Stomp) -->
-                <div class="game-cartridge">
+                <div class="game-cartridge" data-category="PVP" data-game-title="TP-10 HEX-CRUSH SPLEEF SÍSMICO PISOTÓN METEORO MARTILLO NANOPUENTE">
+                  <div class="cart-accent-stripe" style="background: #0284c7"></div>
                   <div>
                     <div class="cart-header">
-                      <span class="cart-badge" style="background: #0284c7; color: #f8fafc">CARTUCHO 06 // SPLEEF</span>
+                      <span class="cart-badge" style="background: #0284c7; color: #f8fafc">🧱 CARTUCHO 06 // SPLEEF</span>
                       <span class="cart-players">SUPERVIVENCIA 4P</span>
                     </div>
                     <h2 class="cart-title">TP-10 // HEX-CRUSH</h2>
@@ -408,10 +440,11 @@
                 </div>
 
                 <!-- Cartridge 07: RICOCHET-1 (Heavy Plasma Ricochet + Reflective Mirrors) -->
-                <div class="game-cartridge">
+                <div class="game-cartridge" data-category="PVP" data-game-title="TP-11 RICOCHET-1 BALA PLASMA ESPEJOS BARRIDA PLANCHA PARRY DUELO">
+                  <div class="cart-accent-stripe" style="background: #e11d48"></div>
                   <div>
                     <div class="cart-header">
-                      <span class="cart-badge" style="background: #e11d48; color: #ffffff">CARTUCHO 07 // RICOCHET</span>
+                      <span class="cart-badge" style="background: #e11d48; color: #ffffff">⚡ CARTUCHO 07 // RICOCHET</span>
                       <span class="cart-players">DUELO TÁCTICO 4P</span>
                     </div>
                     <h2 class="cart-title">TP-11 // RICOCHET-1</h2>
@@ -428,6 +461,16 @@
                     JUGAR RICOCHET-1 (07) →
                   </button>
                 </div>
+              </div>
+
+              <!-- Empty state if search finds nothing -->
+              <div id="hubNoResultsMsg" class="hub-no-results hidden">
+                <div class="no-results-icon">📡</div>
+                <div class="no-results-title">NO SE ENCONTRARON CARTUCHOS</div>
+                <p class="no-results-desc">No hay minijuegos que coincidan con el filtro o término de búsqueda.</p>
+                <button id="hubResetFiltersBtn" class="keycap-btn keycap-sm keycap-orange">
+                  MOSTRAR TODOS LOS JUEGOS
+                </button>
               </div>
             </div>
           </div>

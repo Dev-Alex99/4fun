@@ -1,3 +1,5 @@
+import { reconcilePlayer } from './reconciliation';
+import { ChaosPhysics } from './chaosPhysics';
 import { sfx } from '../audio/mechanicalSfx';
 import {
   ClientInputPacket,
@@ -261,7 +263,7 @@ const ARENA_MIN_Y = 66;
 const ARENA_MAX_Y = 450;
 const WINNING_BATTERY = 100;
 
-export class VoltCrownEngine {
+export class VoltCrownEngine extends ChaosPhysics {
   public arenaIndex = 0;
   public arenaTitle = VOLT_CROWN_ARENAS[0].title;
   public status: 'PLAYING' | 'ROUND_OVER' | 'MATCH_OVER' = 'PLAYING';
@@ -297,6 +299,7 @@ export class VoltCrownEngine {
   private lastActionSeqBySlot = new Map<number, number>();
 
   constructor() {
+    super();
     this.initPlayers();
     this.loadArena(0);
   }
@@ -339,7 +342,7 @@ export class VoltCrownEngine {
       if (this.players[idx]) {
         this.players[idx].name = r.name;
         this.players[idx].isBot = r.isBot;
-        if (r.cosmetics) this.players[idx].cosmetics = r.cosmetics;
+        this.players[idx].cosmetics = r.cosmetics ? { ...r.cosmetics } : undefined;
       }
     });
   }
@@ -366,6 +369,7 @@ export class VoltCrownEngine {
   }
 
   public loadArena(index: number): void {
+    this.resetChaosRound();
     this.arenaIndex =
       ((index % VOLT_CROWN_ARENAS.length) + VOLT_CROWN_ARENAS.length) %
       VOLT_CROWN_ARENAS.length;
@@ -676,41 +680,39 @@ export class VoltCrownEngine {
     }
   }
 
+  public clearRemoteInput(slotId: number): void {
+    this.remoteInputs.delete(slotId);
+    this.lastActionSeqBySlot.delete(slotId);
+    const player = this.players[slotId];
+    if (player) { player.vx = 0; player.vy = 0; }
+  }
+
   public applyRemoteInput(packet: ClientInputPacket): void {
-    this.remoteInputs.set(packet.slotId, packet);
+    this.remoteInputs.set(packet.slotId, { ...packet, clientX: undefined, clientY: undefined, clientZ: undefined });
     const p = this.players[packet.slotId];
     if (!p) return;
     if (packet.name) p.name = packet.name.slice(0, 10).toUpperCase();
     p.aimAngle = packet.aimAngle;
 
-    if (
-      p.alive &&
-      typeof packet.clientX === 'number' &&
-      typeof packet.clientY === 'number'
-    ) {
-      const dist = Math.hypot(packet.clientX - p.x, packet.clientY - p.y);
-      if (dist > 220) {
-        p.x = packet.clientX;
-        p.y = packet.clientY;
-      }
-    }
+
 
     const isDuplicateAction =
       typeof packet.actionSeq === 'number' &&
       packet.actionSeq > 0 &&
-      this.lastActionSeqBySlot.get(packet.slotId) === packet.actionSeq;
+      packet.actionSeq <= (this.lastActionSeqBySlot.get(packet.slotId) ?? 0);
     if (typeof packet.actionSeq === 'number' && packet.actionSeq > 0) {
-      this.lastActionSeqBySlot.set(packet.slotId, packet.actionSeq);
+      this.lastActionSeqBySlot.set(packet.slotId, Math.max(packet.actionSeq, this.lastActionSeqBySlot.get(packet.slotId) ?? 0));
     }
 
-    // FAVOR-THE-DEFENDER ROLLBACK RESCUE (650ms):
+    // FAVOR-THE-DEFENDER ROLLBACK RESCUE (280ms):
     // If the King pressed Defend/Shield or Pulse locally right as a taser arrived, reflect it!
     if (
       p.alive &&
+      !isDuplicateAction &&
       this.crown.holderId === p.id &&
       (packet.parryPressed || packet.yankPressed) &&
       p.lastStunnedAt &&
-      performance.now() - p.lastStunnedAt <= 650
+      performance.now() - p.lastStunnedAt <= 280
     ) {
       p.lastStunnedAt = undefined;
       p.stunTimer = 0;
@@ -738,6 +740,10 @@ export class VoltCrownEngine {
   }
 
   public step(dt: number, hostInput: ClientInputPacket): void {
+    this.advanceChaos(dt, true, this.status === 'PLAYING', (bomb) => {
+      this.applyChaosBlast(bomb, this.players, this.botsEnabled);
+      this.addCallout(bomb.x, bomb.y - 26, 'BOOM', '#EF4444', '#FFFFFF');
+    });
     this.remoteInputs.set(hostInput.slotId, hostInput);
 
     if (this.screenShake > 0) {
@@ -883,7 +889,7 @@ export class VoltCrownEngine {
       }
 
       const baseMoveSpeed = isKing ? 230 : 255;
-      const moveSpeed = p.dashTimer > 0 ? (isKing ? 580 : 660) : baseMoveSpeed;
+      const moveSpeed = (p.dashTimer > 0 ? (isKing ? 580 : 660) : baseMoveSpeed) * this.speedMultiplier;
 
       if (!p.isBot) {
         const inp = this.remoteInputs.get(p.id);
@@ -900,16 +906,7 @@ export class VoltCrownEngine {
           p.vy += my * moveSpeed * 8.5 * dt;
 
           // Dead reckoning smooth correction
-          if (typeof inp.clientX === 'number' && typeof inp.clientY === 'number') {
-            const err = Math.hypot(inp.clientX - p.x, inp.clientY - p.y);
-            if (err > 6 && err < 160) {
-              const blend = Math.min(1, dt * 10);
-              p.x += (inp.clientX - p.x) * blend;
-              p.y += (inp.clientY - p.y) * blend;
-              inp.clientX += p.vx * dt;
-              inp.clientY += p.vy * dt;
-            }
-          }
+
         }
       } else {
         this.stepBotAI(p, dt, moveSpeed, isKing);
@@ -944,7 +941,7 @@ export class VoltCrownEngine {
         }
       }
 
-      const damp = p.dashTimer > 0 ? 0.93 : 0.82;
+      const damp = this.floatingDamping(p.dashTimer > 0 ? 0.93 : 0.82);
       p.vx *= Math.pow(damp, dt * 60);
       p.vy *= Math.pow(damp, dt * 60);
       p.x += p.vx * dt;
@@ -984,8 +981,8 @@ export class VoltCrownEngine {
           }
           edx /= elen;
           edy /= elen;
-          p.vx = edx * 620;
-          p.vy = edy * 620;
+          p.vx = edx * 620 * this.bounceMultiplier;
+          p.vy = edy * 620 * this.bounceMultiplier;
           p.x += edx * (p.radius + 8);
           p.y += edy * (p.radius + 8);
 
@@ -1003,8 +1000,8 @@ export class VoltCrownEngine {
     for (let i = this.projectiles.length - 1; i >= 0; i--) {
       const proj = this.projectiles[i];
       proj.life -= dt;
-      proj.x += proj.vx * dt;
-      proj.y += proj.vy * dt;
+      proj.x += proj.vx * dt * this.speedMultiplier;
+      proj.y += proj.vy * dt * this.speedMultiplier;
 
       // Bounce off walls
       if (proj.x <= ARENA_MIN_X + 10 || proj.x >= ARENA_MAX_X - 10) {
@@ -1105,25 +1102,25 @@ export class VoltCrownEngine {
     } else {
       // Free bouncing crown
       this.crown.idleTimer += dt;
-      this.crown.x += this.crown.vx * dt;
-      this.crown.y += this.crown.vy * dt;
+      this.crown.x += this.crown.vx * dt * this.speedMultiplier;
+      this.crown.y += this.crown.vy * dt * this.speedMultiplier;
       this.crown.vx *= Math.pow(0.96, dt * 60);
       this.crown.vy *= Math.pow(0.96, dt * 60);
 
       // Bounce Crown off chamber walls
       if (this.crown.x <= ARENA_MIN_X + this.crown.radius) {
         this.crown.x = ARENA_MIN_X + this.crown.radius;
-        this.crown.vx = Math.abs(this.crown.vx) * 0.85;
+        this.crown.vx = Math.abs(this.crown.vx) * 0.85 * this.bounceMultiplier;
       } else if (this.crown.x >= ARENA_MAX_X - this.crown.radius) {
         this.crown.x = ARENA_MAX_X - this.crown.radius;
-        this.crown.vx = -Math.abs(this.crown.vx) * 0.85;
+        this.crown.vx = -Math.abs(this.crown.vx) * 0.85 * this.bounceMultiplier;
       }
       if (this.crown.y <= ARENA_MIN_Y + this.crown.radius) {
         this.crown.y = ARENA_MIN_Y + this.crown.radius;
-        this.crown.vy = Math.abs(this.crown.vy) * 0.85;
+        this.crown.vy = Math.abs(this.crown.vy) * 0.85 * this.bounceMultiplier;
       } else if (this.crown.y >= ARENA_MAX_Y - this.crown.radius) {
         this.crown.y = ARENA_MAX_Y - this.crown.radius;
-        this.crown.vy = -Math.abs(this.crown.vy) * 0.85;
+        this.crown.vy = -Math.abs(this.crown.vy) * 0.85 * this.bounceMultiplier;
       }
 
       // If Crown stays idle for >10s, drift back to center
@@ -1243,8 +1240,8 @@ export class VoltCrownEngine {
         const ny = dy / dist;
         p.x = b.x + nx * minDist;
         p.y = b.y + ny * minDist;
-        p.vx = nx * 560;
-        p.vy = ny * 560;
+        p.vx = nx * 560 * this.bounceMultiplier;
+        p.vy = ny * 560 * this.bounceMultiplier;
         b.hitAnim = 1.0;
         sfx.playPinballBumper();
       }
@@ -1256,13 +1253,29 @@ export class VoltCrownEngine {
     localSlotId: number,
     input: ClientInputPacket
   ): void {
+    this.advanceChaos(dt, false, this.status === 'PLAYING', () => {});
+    if (this.status !== 'PLAYING') return;
+    for (const player of this.players) {
+      player.shieldTimer = Math.max(0, player.shieldTimer - dt);
+      player.shieldCooldown = Math.max(0, player.shieldCooldown - dt);
+      player.dashTimer = Math.max(0, player.dashTimer - dt);
+      player.dashCooldown = Math.max(0, player.dashCooldown - dt);
+      player.taserCooldown = Math.max(0, player.taserCooldown - dt);
+      player.stunTimer = Math.max(0, player.stunTimer - dt);
+      player.immunityTimer = Math.max(0, player.immunityTimer - dt);
+      if (player.id !== localSlotId && player.alive) {
+        player.x += player.vx * dt;
+        player.y += player.vy * dt;
+        this.constrainPlayer(player);
+      }
+    }
     const p = this.players[localSlotId];
-    if (!p || !p.alive || p.stunTimer > 0) return;
+    if (!p || !p.alive) return;
 
     p.aimAngle = input.aimAngle;
     const isKing = this.crown.holderId === p.id;
     const baseSpeed = isKing ? 230 : 255;
-    const moveSpeed = p.dashTimer > 0 ? (isKing ? 580 : 660) : baseSpeed;
+    const moveSpeed = (p.dashTimer > 0 ? (isKing ? 580 : 660) : baseSpeed) * this.speedMultiplier;
 
     let mx = input.moveX;
     let my = input.moveY;
@@ -1272,9 +1285,11 @@ export class VoltCrownEngine {
       my /= mag;
     }
 
-    p.vx += mx * moveSpeed * 8.5 * dt;
-    p.vy += my * moveSpeed * 8.5 * dt;
-    const damp = p.dashTimer > 0 ? 0.93 : 0.82;
+    if (p.stunTimer <= 0) {
+      p.vx += mx * moveSpeed * 8.5 * dt;
+      p.vy += my * moveSpeed * 8.5 * dt;
+    }
+    const damp = this.floatingDamping(p.dashTimer > 0 ? 0.93 : 0.82);
     p.vx *= Math.pow(damp, dt * 60);
     p.vy *= Math.pow(damp, dt * 60);
     p.x += p.vx * dt;
@@ -1283,12 +1298,12 @@ export class VoltCrownEngine {
 
     // Extrapolate projectiles & free crown locally
     for (const proj of this.projectiles) {
-      proj.x += proj.vx * dt;
-      proj.y += proj.vy * dt;
+      proj.x += proj.vx * dt * this.speedMultiplier;
+      proj.y += proj.vy * dt * this.speedMultiplier;
     }
     if (this.crown.holderId === null) {
-      this.crown.x += this.crown.vx * dt;
-      this.crown.y += this.crown.vy * dt;
+      this.crown.x += this.crown.vx * dt * this.speedMultiplier;
+      this.crown.y += this.crown.vy * dt * this.speedMultiplier;
     } else if (this.crown.holderId === p.id) {
       this.crown.x = p.x;
       this.crown.y = p.y - 28;
@@ -1297,6 +1312,9 @@ export class VoltCrownEngine {
 
   public getSnapshot(): VoltCrownSnapshot {
     return {
+      roundEpoch: this.roundEpoch,
+      simulationTime: this.simulationTime,
+      chaosBombs: this.chaosBombs.map((bomb) => ({ ...bomb })),
       arenaIndex: this.arenaIndex,
       arenaTitle: this.arenaTitle,
       status: this.status,
@@ -1312,48 +1330,29 @@ export class VoltCrownEngine {
     };
   }
 
-  public applySnapshot(snap: VoltCrownSnapshot, localSlotId: number): void {
+  public applySnapshot(snap: VoltCrownSnapshot, localSlotId: number, predictionLeadSeconds = 0): void {
+    const reset = this.arenaIndex !== snap.arenaIndex || this.status !== snap.status || (snap.roundEpoch !== undefined && snap.roundEpoch !== this.roundEpoch);
     this.arenaIndex = snap.arenaIndex;
     this.arenaTitle = snap.arenaTitle;
     this.status = snap.status;
     this.statusTimer = snap.statusTimer;
     this.lastWinnerId = snap.lastWinnerId;
 
-    snap.players.forEach((sp) => {
-      const p = this.players[sp.id];
-      if (!p) return;
-      p.alive = sp.alive;
-      p.score = sp.score;
-      p.holdStreak = sp.holdStreak;
-      p.shieldTimer = sp.shieldTimer;
-      p.dashTimer = sp.dashTimer;
-      p.stunTimer = sp.stunTimer;
-      p.emoteText = sp.emoteText;
-      p.emoteTimer = sp.emoteTimer;
-
-      if (sp.id === localSlotId) {
-        // Zero rubber-banding for moving local player
-        const dist = Math.hypot(sp.x - p.x, sp.y - p.y);
-        if (dist > 160) {
-          p.x = sp.x;
-          p.y = sp.y;
-          p.vx = sp.vx;
-          p.vy = sp.vy;
-        }
-      } else {
-        p.aimAngle = sp.aimAngle;
-        p.vx = sp.vx;
-        p.vy = sp.vy;
-        p.x += (sp.x - p.x) * 0.45;
-        p.y += (sp.y - p.y) * 0.45;
-      }
+    this.players = snap.players.map((sp) => {
+      const previous = this.players[sp.id];
+      return reconcilePlayer(previous, sp, sp.id === localSlotId,
+        reset || previous?.alive !== sp.alive || snap.status !== 'PLAYING', predictionLeadSeconds);
     });
 
+    this.explosions = snap.explosions.map((ex) => ({ ...ex }));
     this.crown = { ...snap.crown };
     this.traps = snap.traps.map((t) => ({ ...t }));
     this.plates = snap.plates.map((pl) => ({ ...pl }));
     this.bumpers = snap.bumpers.map((b) => ({ ...b }));
     this.projectiles = snap.projectiles.map((pr) => ({ ...pr }));
+    this.roundEpoch = snap.roundEpoch ?? this.roundEpoch;
+    this.simulationTime = snap.simulationTime ?? this.simulationTime;
+    this.chaosBombs = (snap.chaosBombs ?? []).map((bomb) => ({ ...bomb }));
   }
 
   private addCallout(

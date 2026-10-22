@@ -1,3 +1,5 @@
+import { reconcilePlayer } from './reconciliation';
+import { ChaosPhysics } from './chaosPhysics';
 import { sfx } from '../audio/mechanicalSfx';
 import {
   ClientInputPacket,
@@ -88,7 +90,7 @@ const ARENA_MIN_Y = 66;
 const ARENA_MAX_Y = 450;
 const WINNING_SCORE = 5;
 
-export class HotCoreEngine {
+export class HotCoreEngine extends ChaosPhysics {
   public arenaIndex = 0;
   public arenaTitle = HOT_CORE_ARENAS[0].title;
   public status: 'PLAYING' | 'ROUND_OVER' | 'MATCH_OVER' = 'PLAYING';
@@ -125,6 +127,7 @@ export class HotCoreEngine {
   private beepAccum = 0;
 
   constructor() {
+    super();
     this.initPlayers();
     this.loadArena(0);
   }
@@ -165,7 +168,7 @@ export class HotCoreEngine {
       if (this.players[idx]) {
         this.players[idx].name = r.name;
         this.players[idx].isBot = r.isBot;
-        if (r.cosmetics) this.players[idx].cosmetics = r.cosmetics;
+        this.players[idx].cosmetics = r.cosmetics ? { ...r.cosmetics } : undefined;
       }
     });
   }
@@ -191,6 +194,7 @@ export class HotCoreEngine {
   }
 
   public loadArena(index: number): void {
+    this.resetChaosRound();
     this.arenaIndex = ((index % HOT_CORE_ARENAS.length) + HOT_CORE_ARENAS.length) % HOT_CORE_ARENAS.length;
     const def = HOT_CORE_ARENAS[this.arenaIndex];
     this.arenaTitle = def.title;
@@ -432,41 +436,39 @@ export class HotCoreEngine {
     this.addCallout(target.x, target.y - 34, `💣 ¡PASADO A ${target.name}!`, '#FF4F00');
   }
 
+  public clearRemoteInput(slotId: number): void {
+    this.remoteInputs.delete(slotId);
+    this.lastActionSeqBySlot.delete(slotId);
+    const player = this.players[slotId];
+    if (player) { player.vx = 0; player.vy = 0; }
+  }
+
   public applyRemoteInput(packet: ClientInputPacket): void {
-    this.remoteInputs.set(packet.slotId, packet);
+    this.remoteInputs.set(packet.slotId, { ...packet, clientX: undefined, clientY: undefined, clientZ: undefined });
     const p = this.players[packet.slotId];
     if (!p) return;
     if (packet.name) p.name = packet.name.slice(0, 10).toUpperCase();
     p.aimAngle = packet.aimAngle;
 
-    if (
-      p.alive &&
-      typeof packet.clientX === 'number' &&
-      typeof packet.clientY === 'number'
-    ) {
-      const dist = Math.hypot(packet.clientX - p.x, packet.clientY - p.y);
-      if (dist > 220) {
-        p.x = packet.clientX;
-        p.y = packet.clientY;
-      }
-    }
+
 
     const isDuplicateAction =
       typeof packet.actionSeq === 'number' &&
       packet.actionSeq > 0 &&
-      this.lastActionSeqBySlot.get(packet.slotId) === packet.actionSeq;
+      packet.actionSeq <= (this.lastActionSeqBySlot.get(packet.slotId) ?? 0);
     if (typeof packet.actionSeq === 'number' && packet.actionSeq > 0) {
-      this.lastActionSeqBySlot.set(packet.slotId, packet.actionSeq);
+      this.lastActionSeqBySlot.set(packet.slotId, Math.max(packet.actionSeq, this.lastActionSeqBySlot.get(packet.slotId) ?? 0));
     }
 
-    // FAVOR-THE-DEFENDER ROLLBACK RESCUE (Up to 650ms for high-latency connections!):
+    // FAVOR-THE-DEFENDER ROLLBACK RESCUE (Up to 280ms for high-latency connections!):
     // If a client pressed Shield Parry or EMP on their screen right before getting tagged, reflect the Core!
     if (
       p.alive &&
+      !isDuplicateAction &&
       this.core.holderId === p.id &&
       (packet.parryPressed || packet.yankPressed) &&
       p.lastTaggedAt &&
-      performance.now() - p.lastTaggedAt <= 650
+      performance.now() - p.lastTaggedAt <= 280
     ) {
       p.lastTaggedAt = undefined;
       this.executeParryReflection(p);
@@ -492,6 +494,10 @@ export class HotCoreEngine {
   }
 
   public step(dt: number, hostInput: ClientInputPacket): void {
+    this.advanceChaos(dt, true, this.status === 'PLAYING', (bomb) => {
+      this.applyChaosBlast(bomb, this.players, this.botsEnabled);
+      this.addCallout(bomb.x, bomb.y - 26, 'BOOM', '#EF4444', '#FFFFFF');
+    });
     this.remoteInputs.set(hostInput.slotId, hostInput);
 
     if (this.screenShake > 0) {
@@ -585,7 +591,7 @@ export class HotCoreEngine {
       if (p.passImmunityTimer > 0) p.passImmunityTimer = Math.max(0, p.passImmunityTimer - dt);
 
       const isCarrier = this.core.holderId === p.id;
-      const moveSpeed = isCarrier ? 295 : 235;
+      const moveSpeed = (isCarrier ? 295 : 235) * this.speedMultiplier;
 
       if (!p.isBot) {
         const inp = this.remoteInputs.get(p.id);
@@ -597,20 +603,7 @@ export class HotCoreEngine {
           }
           p.aimAngle = inp.aimAngle;
 
-          if (
-            p.id > 0 &&
-            typeof inp.clientX === 'number' &&
-            typeof inp.clientY === 'number'
-          ) {
-            const cDist = Math.hypot(inp.clientX - p.x, inp.clientY - p.y);
-            if (cDist < 220) {
-              const blend = 1 - Math.exp(-15 * dt);
-              p.x += (inp.clientX - p.x) * blend;
-              p.y += (inp.clientY - p.y) * blend;
-              inp.clientX += p.vx * dt;
-              inp.clientY += p.vy * dt;
-            }
-          }
+
         }
       } else {
         this.stepBotAI(p, dt, moveSpeed, isCarrier);
@@ -624,7 +617,7 @@ export class HotCoreEngine {
         }
       }
 
-      const damp = p.dashTimer > 0 ? 0.93 : 0.83;
+      const damp = this.floatingDamping(p.dashTimer > 0 ? 0.93 : 0.83);
       p.vx *= Math.pow(damp, dt * 60);
       p.vy *= Math.pow(damp, dt * 60);
       p.x += p.vx * dt;
@@ -660,8 +653,8 @@ export class HotCoreEngine {
     } else {
       // 4. Update Flying Core Projectile Physics
       this.core.flightTime += dt;
-      this.core.x += this.core.vx * dt;
-      this.core.y += this.core.vy * dt;
+      this.core.x += this.core.vx * dt * this.speedMultiplier;
+      this.core.y += this.core.vy * dt * this.speedMultiplier;
       this.core.vx *= Math.pow(0.99, dt * 60);
       this.core.vy *= Math.pow(0.99, dt * 60);
 
@@ -807,17 +800,17 @@ export class HotCoreEngine {
   private constrainCircleToArena(p: { x: number; y: number; vx: number; vy: number; radius: number }): void {
     if (p.x - p.radius < ARENA_MIN_X) {
       p.x = ARENA_MIN_X + p.radius;
-      p.vx = Math.abs(p.vx) * 0.6;
+      p.vx = Math.abs(p.vx) * 0.6 * this.bounceMultiplier;
     } else if (p.x + p.radius > ARENA_MAX_X) {
       p.x = ARENA_MAX_X - p.radius;
-      p.vx = -Math.abs(p.vx) * 0.6;
+      p.vx = -Math.abs(p.vx) * 0.6 * this.bounceMultiplier;
     }
     if (p.y - p.radius < ARENA_MIN_Y) {
       p.y = ARENA_MIN_Y + p.radius;
-      p.vy = Math.abs(p.vy) * 0.6;
+      p.vy = Math.abs(p.vy) * 0.6 * this.bounceMultiplier;
     } else if (p.y + p.radius > ARENA_MAX_Y) {
       p.y = ARENA_MAX_Y - p.radius;
-      p.vy = -Math.abs(p.vy) * 0.6;
+      p.vy = -Math.abs(p.vy) * 0.6 * this.bounceMultiplier;
     }
 
     for (const bmp of this.bumpers) {
@@ -830,8 +823,8 @@ export class HotCoreEngine {
         const ny = dy / d;
         p.x = bmp.x + nx * minD;
         p.y = bmp.y + ny * minD;
-        p.vx += nx * 280;
-        p.vy += ny * 280;
+        p.vx += nx * 280 * this.bounceMultiplier;
+        p.vy += ny * 280 * this.bounceMultiplier;
         bmp.hitAnim = 1.0;
       }
     }
@@ -849,8 +842,8 @@ export class HotCoreEngine {
         p.y = cy + ny * (p.radius + 1);
         const dot = p.vx * nx + p.vy * ny;
         if (dot < 0) {
-          p.vx -= 1.8 * dot * nx;
-          p.vy -= 1.8 * dot * ny;
+          p.vx -= (1 + 0.8 * this.bounceMultiplier) * dot * nx;
+          p.vy -= (1 + 0.8 * this.bounceMultiplier) * dot * ny;
         }
       }
     }
@@ -860,20 +853,20 @@ export class HotCoreEngine {
     const c = this.core;
     if (c.x - c.radius < ARENA_MIN_X) {
       c.x = ARENA_MIN_X + c.radius;
-      c.vx = Math.abs(c.vx);
+      c.vx = Math.abs(c.vx) * this.bounceMultiplier;
       sfx.playCartridgeClick();
     } else if (c.x + c.radius > ARENA_MAX_X) {
       c.x = ARENA_MAX_X - c.radius;
-      c.vx = -Math.abs(c.vx);
+      c.vx = -Math.abs(c.vx) * this.bounceMultiplier;
       sfx.playCartridgeClick();
     }
     if (c.y - c.radius < ARENA_MIN_Y) {
       c.y = ARENA_MIN_Y + c.radius;
-      c.vy = Math.abs(c.vy);
+      c.vy = Math.abs(c.vy) * this.bounceMultiplier;
       sfx.playCartridgeClick();
     } else if (c.y + c.radius > ARENA_MAX_Y) {
       c.y = ARENA_MAX_Y - c.radius;
-      c.vy = -Math.abs(c.vy);
+      c.vy = -Math.abs(c.vy) * this.bounceMultiplier;
       sfx.playCartridgeClick();
     }
 
@@ -887,7 +880,7 @@ export class HotCoreEngine {
         const ny = dy / d;
         c.x = bmp.x + nx * minD;
         c.y = bmp.y + ny * minD;
-        const spd = Math.max(580, Math.hypot(c.vx, c.vy) * 1.08);
+        const spd = Math.min(1600, Math.max(580, Math.hypot(c.vx, c.vy) * 1.08) * this.bounceMultiplier);
         c.vx = nx * spd;
         c.vy = ny * spd;
         bmp.hitAnim = 1.0;
@@ -908,8 +901,8 @@ export class HotCoreEngine {
         c.y = cy + ny * (c.radius + 1);
         const dot = c.vx * nx + c.vy * ny;
         if (dot < 0) {
-          c.vx -= 2 * dot * nx;
-          c.vy -= 2 * dot * ny;
+          c.vx -= (1 + this.bounceMultiplier) * dot * nx;
+          c.vy -= (1 + this.bounceMultiplier) * dot * ny;
           sfx.playCartridgeClick();
         }
       }
@@ -920,6 +913,7 @@ export class HotCoreEngine {
    * 60/144fps Client-Side Prediction & Dead-Reckoning for 04 // HOT-CORE
    */
   public stepClientPrediction(dt: number, localSlotId: number, input: ClientInputPacket): void {
+    this.advanceChaos(dt, false, this.status === 'PLAYING', () => {});
     for (let i = this.explosions.length - 1; i >= 0; i--) {
       const ex = this.explosions[i];
       ex.life -= dt * 2.4;
@@ -946,7 +940,7 @@ export class HotCoreEngine {
 
       if (pl.id === localSlotId) {
         const isCarrier = this.core.holderId === pl.id;
-        const moveSpeed = isCarrier ? 295 : 235;
+        const moveSpeed = (isCarrier ? 295 : 235) * this.speedMultiplier;
         if (input.moveX !== 0 || input.moveY !== 0) {
           const len = Math.hypot(input.moveX, input.moveY);
           pl.vx += (input.moveX / len) * moveSpeed * 9.5 * dt;
@@ -955,7 +949,7 @@ export class HotCoreEngine {
         pl.aimAngle = input.aimAngle;
       }
 
-      const damp = pl.dashTimer > 0 ? 0.93 : 0.83;
+      const damp = this.floatingDamping(pl.dashTimer > 0 ? 0.93 : 0.83);
       pl.vx *= Math.pow(damp, dt * 60);
       pl.vy *= Math.pow(damp, dt * 60);
       pl.x += pl.vx * dt;
@@ -973,14 +967,17 @@ export class HotCoreEngine {
         this.core.y = holder.y - 18;
       }
     } else {
-      this.core.x += this.core.vx * dt;
-      this.core.y += this.core.vy * dt;
+      this.core.x += this.core.vx * dt * this.speedMultiplier;
+      this.core.y += this.core.vy * dt * this.speedMultiplier;
       this.constrainCoreProjectile();
     }
   }
 
   public getSnapshot(): HotCoreSnapshot {
     return {
+      roundEpoch: this.roundEpoch,
+      simulationTime: this.simulationTime,
+      chaosBombs: this.chaosBombs.map((bomb) => ({ ...bomb })),
       arenaIndex: this.arenaIndex,
       arenaTitle: this.arenaTitle,
       status: this.status,
@@ -995,7 +992,8 @@ export class HotCoreEngine {
     };
   }
 
-  public applySnapshot(snap: HotCoreSnapshot, localSlotId?: number): void {
+  public applySnapshot(snap: HotCoreSnapshot, localSlotId?: number, predictionLeadSeconds = 0): void {
+    const reset = this.arenaIndex !== snap.arenaIndex || this.status !== snap.status || (snap.roundEpoch !== undefined && snap.roundEpoch !== this.roundEpoch);
     if (this.arenaIndex !== snap.arenaIndex) {
       this.loadArena(snap.arenaIndex);
     }
@@ -1005,37 +1003,9 @@ export class HotCoreEngine {
     this.lastWinnerId = snap.lastWinnerId;
 
     this.players = snap.players.map((sp) => {
-      const prev = this.players[sp.id];
-      if (!prev || this.status !== 'PLAYING' || !sp.alive) return { ...sp };
-
-      if (localSlotId !== undefined && sp.id === localSlotId && prev.alive) {
-        const dist = Math.hypot(sp.x - prev.x, sp.y - prev.y);
-        if (dist < 220) {
-          const isLocallyMoving = Math.hypot(prev.vx, prev.vy) > 16;
-          const pullFactor = isLocallyMoving ? 0.0 : 0.08;
-          return {
-            ...sp,
-            x: prev.x + (sp.x - prev.x) * pullFactor,
-            y: prev.y + (sp.y - prev.y) * pullFactor,
-            vx: prev.vx,
-            vy: prev.vy,
-            aimAngle: prev.aimAngle,
-            walkCycle: prev.walkCycle,
-            shieldTimer: Math.max(prev.shieldTimer, sp.shieldTimer),
-            dashTimer: Math.max(prev.dashTimer, sp.dashTimer)
-          };
-        }
-      }
-
-      const rDist = Math.hypot(sp.x - prev.x, sp.y - prev.y);
-      if (prev.alive && rDist < 160) {
-        return {
-          ...sp,
-          x: prev.x + (sp.x - prev.x) * 0.36,
-          y: prev.y + (sp.y - prev.y) * 0.36
-        };
-      }
-      return { ...sp };
+      const previous = this.players[sp.id];
+      return reconcilePlayer(previous, sp, sp.id === localSlotId,
+        reset || previous?.alive !== sp.alive || snap.status !== 'PLAYING', predictionLeadSeconds);
     });
 
     this.core = { ...snap.core };
@@ -1043,6 +1013,9 @@ export class HotCoreEngine {
     this.pillars = snap.pillars.map((p) => ({ ...p }));
     this.boostPads = snap.boostPads.map((bp) => ({ ...bp }));
     this.explosions = snap.explosions.map((e) => ({ ...e }));
+    this.roundEpoch = snap.roundEpoch ?? this.roundEpoch;
+    this.simulationTime = snap.simulationTime ?? this.simulationTime;
+    this.chaosBombs = (snap.chaosBombs ?? []).map((bomb) => ({ ...bomb }));
   }
 
   public spawnDust(x: number, y: number, count: number): void {

@@ -1,3 +1,5 @@
+import { robotWorkshop } from '../game/robotWorkshop';
+import { CanvasViewportRenderer } from './canvasViewport';
 import {
   CHAMBER_BOTTOM,
   CHAMBER_CENTER_X,
@@ -9,48 +11,16 @@ import {
 } from '../game/hexCrushEngine';
 import { HexCrushPlayer, HexTile } from '../types';
 
-export class HexCrushRenderer {
-  private canvas: HTMLCanvasElement;
-  private ctx: CanvasRenderingContext2D;
-  private scale = 1;
-  private offsetX = 0;
-  private offsetY = 0;
-
+export class HexCrushRenderer extends CanvasViewportRenderer {
   constructor(canvas: HTMLCanvasElement) {
-    this.canvas = canvas;
-    const context = canvas.getContext('2d');
-    if (!context) throw new Error('Could not initialize 2D context');
-    this.ctx = context;
-  }
-
-  private syncViewport(): void {
-    const parent = this.canvas.parentElement;
-    if (!parent) return;
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    const targetW = Math.floor(parent.clientWidth * dpr);
-    const targetH = Math.floor(parent.clientHeight * dpr);
-
-    if (this.canvas.width !== targetW || this.canvas.height !== targetH) {
-      this.canvas.width = targetW;
-      this.canvas.height = targetH;
-    }
-
-    const w = parent.clientWidth;
-    const h = parent.clientHeight;
-    this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-
-    const padX = 24;
-    const padY = 44;
-    this.scale = Math.min((w - padX * 2) / 1000, (h - padY * 2) / 516);
-    this.offsetX = (w - 1000 * this.scale) * 0.5;
-    this.offsetY = (h - 516 * this.scale) * 0.5;
+    super(canvas, 1000, 516, 24, 44);
   }
 
   public render(engine: HexCrushEngine, localSlotId: number): void {
     this.syncViewport();
     const ctx = this.ctx;
-    const w = this.canvas.clientWidth;
-    const h = this.canvas.clientHeight;
+    const w = this.viewportWidth;
+    const h = this.viewportHeight;
     const nowSec = performance.now() * 0.001;
 
     // 1. Matte Warm Putty Backdrop
@@ -413,6 +383,9 @@ export class HexCrushRenderer {
     if (!p.alive && p.fallTimer <= 0) return;
 
     ctx.save();
+    this.applyGhostPulse();
+    const cosmetics = robotWorkshop.resolveCosmetics(p.cosmetics, isLocal);
+    const skinColors = robotWorkshop.getSkinColors(cosmetics.skin, p.bodyColor, p.shadeColor);
     ctx.translate(p.x, p.y);
 
     // 1. Floor Drop Shadow (Scales down as elevation z increases)
@@ -467,12 +440,14 @@ export class HexCrushRenderer {
     ctx.stroke();
 
     // Robot Chassis Body
-    ctx.fillStyle = p.bodyColor;
+    ctx.fillStyle = skinColors.body;
     this.roundRect(ctx, -16, -18, 32, 24, 8);
     ctx.fill();
     ctx.lineWidth = 2.5;
     ctx.strokeStyle = '#18181B';
     ctx.stroke();
+
+    robotWorkshop.drawSkinStripes(ctx, cosmetics.skin, -16, -18, 32, 24, 8);
 
     // Directional Visor Eye
     const vx = Math.cos(p.aimAngle) * 6;
@@ -481,10 +456,12 @@ export class HexCrushRenderer {
     this.roundRect(ctx, vx - 8, vy - 4, 16, 8, 3);
     ctx.fill();
 
-    ctx.fillStyle = '#38BDF8';
+    ctx.fillStyle = robotWorkshop.getVisorColor(cosmetics.visor);
     ctx.beginPath();
     ctx.arc(vx + Math.cos(p.aimAngle) * 2, vy, 2.6, 0, Math.PI * 2);
     ctx.fill();
+
+    robotWorkshop.drawHat(ctx, cosmetics.hat, 0, -18, nowSec);
 
     // Heavy Mechanical Hammer on back / side
     ctx.save();

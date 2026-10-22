@@ -16,6 +16,8 @@ export interface TouchGamepadOptions {
   onReleaseE?: () => void;
 }
 
+type HoldingButton = 'isHoldingA' | 'isHoldingB' | 'isHoldingE';
+
 export class TouchGamepad {
   public moveX = 0;
   public moveY = 0;
@@ -24,148 +26,171 @@ export class TouchGamepad {
   public isHoldingE = false;
   public isTouchDevice = false;
   public enabled = false;
+  public callbacks: TouchGamepadOptions = {};
 
   private joystickZone: HTMLElement | null = null;
   private joystickBase: HTMLElement | null = null;
   private joystickThumb: HTMLElement | null = null;
-  private btnA: HTMLElement | null = null;
-  private btnB: HTMLElement | null = null;
-  private btnE: HTMLElement | null = null;
   private container: HTMLElement | null = null;
-
-  private joystickTouchId: number | null = null;
+  private joystickPointerId: number | null = null;
   private joystickCenter = { x: 0, y: 0 };
   private readonly maxRadius = 45;
-
-  public callbacks: TouchGamepadOptions = {};
+  private readonly cleanup: Array<() => void> = [];
+  private readonly buttons = new Map<HoldingButton, { element: HTMLElement; pointerId: number | null; release: () => void }>();
 
   constructor() {
     if (typeof window !== 'undefined') {
-      this.isTouchDevice =
-        'ontouchstart' in window ||
-        navigator.maxTouchPoints > 0 ||
-        (navigator as unknown as { msMaxTouchPoints?: number }).msMaxTouchPoints! > 0;
+      this.isTouchDevice = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
       this.enabled = this.isTouchDevice;
     }
   }
 
   public init(containerId = 'virtualGamepad', options: TouchGamepadOptions = {}): void {
     if (typeof document === 'undefined') return;
+    const enabled = this.enabled;
+    this.dispose();
     this.callbacks = options;
     this.container = document.getElementById(containerId);
     if (!this.container) return;
-
-    this.joystickZone = document.getElementById('touchJoystickZone');
-    this.joystickBase = document.getElementById('touchJoystickBase');
-    this.joystickThumb = document.getElementById('touchJoystickThumb');
-    this.btnA = document.getElementById('touchBtnA');
-    this.btnB = document.getElementById('touchBtnB');
-    this.btnE = document.getElementById('touchBtnE');
-
+    this.joystickZone = this.container.querySelector('#touchJoystickZone');
+    this.joystickBase = this.container.querySelector('#touchJoystickBase');
+    this.joystickThumb = this.container.querySelector('#touchJoystickThumb');
     this.bindJoystickEvents();
-    this.bindButtonEvents();
-
-    if (this.enabled) {
-      this.show();
-    } else {
-      this.hide();
-    }
+    this.bindButton('touchBtnA', 'isHoldingA', () => this.callbacks.onPressA?.(), () => this.callbacks.onReleaseA?.());
+    this.bindButton('touchBtnB', 'isHoldingB', () => this.callbacks.onPressB?.(), () => this.callbacks.onReleaseB?.());
+    this.bindButton('touchBtnE', 'isHoldingE', () => this.callbacks.onPressE?.(), () => this.callbacks.onReleaseE?.());
+    this.listen(window, 'blur', () => this.releaseAll());
+    this.listen(document, 'visibilitychange', () => { if (document.hidden) this.releaseAll(); });
+    if (enabled) this.show(); else this.hide();
   }
 
   public show(): void {
-    if (this.container) {
-      this.container.classList.remove('hidden');
-    }
+    this.container?.classList.remove('hidden');
     this.enabled = true;
   }
 
   public hide(): void {
-    if (this.container) {
-      this.container.classList.add('hidden');
-    }
+    this.container?.classList.add('hidden');
     this.enabled = false;
-    this.resetJoystick();
+    this.releaseAll();
+  }
+
+  public dispose(): void {
+    this.hide();
+    for (const remove of this.cleanup.splice(0)) remove();
+    this.buttons.clear();
+    this.callbacks = {};
+    this.container = this.joystickZone = this.joystickBase = this.joystickThumb = null;
   }
 
   public toggle(): boolean {
-    if (this.enabled) {
-      this.hide();
-    } else {
-      this.show();
-    }
+    if (this.enabled) this.hide(); else this.show();
     return this.enabled;
   }
 
   public triggerHaptic(durationMs = 12): void {
     if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
-      try {
-        navigator.vibrate(durationMs);
-      } catch {
-        // Ignore audio/haptic security context limitations
-      }
+      try { navigator.vibrate(durationMs); } catch { /* Optional browser capability. */ }
     }
+  }
+
+  private listen(target: EventTarget, type: string, listener: (event: PointerEvent) => void): void {
+    const handler = listener as EventListener;
+    target.addEventListener(type, handler, { passive: false });
+    this.cleanup.push(() => target.removeEventListener(type, handler));
+  }
+
+  private capture(element: HTMLElement, pointerId: number): void {
+    try { element.setPointerCapture?.(pointerId); } catch { /* Pointer may already have ended. */ }
+  }
+
+  private releaseCapture(element: HTMLElement | null, pointerId: number | null): void {
+    if (pointerId === null) return;
+    try { element?.releasePointerCapture?.(pointerId); } catch { /* Capture may already be lost. */ }
   }
 
   private resetJoystick(): void {
-    this.moveX = 0;
-    this.moveY = 0;
-    this.joystickTouchId = null;
-    if (this.joystickThumb) {
-      this.joystickThumb.style.transform = `translate(0px, 0px)`;
-    }
+    const pointerId = this.joystickPointerId;
+    this.joystickPointerId = null;
+    this.moveX = this.moveY = 0;
+    if (this.joystickThumb) this.joystickThumb.style.transform = 'translate(0px, 0px)';
+    this.releaseCapture(this.joystickZone, pointerId);
+  }
+
+  private releaseButton(prop: HoldingButton): void {
+    const button = this.buttons.get(prop);
+    const pointerId = button?.pointerId ?? null;
+    if (button) button.pointerId = null;
+    const wasHolding = this[prop];
+    this[prop] = false;
+    button?.element.classList.remove('touch-btn-pressed');
+    this.releaseCapture(button?.element ?? null, pointerId);
+    if (wasHolding) button?.release();
+  }
+
+  private releaseAll(): void {
+    this.resetJoystick();
+    this.releaseButton('isHoldingA');
+    this.releaseButton('isHoldingB');
+    this.releaseButton('isHoldingE');
+  }
+
+  private preparePointerSurface(element: HTMLElement): void {
+    const oldTouchAction = element.style.touchAction;
+    element.style.touchAction = 'none';
+    this.cleanup.push(() => { element.style.touchAction = oldTouchAction; });
   }
 
   private bindJoystickEvents(): void {
-    if (!this.joystickZone || !this.joystickBase) return;
-
-    const handleStart = (e: TouchEvent) => {
-      e.preventDefault();
-      if (this.joystickTouchId !== null) return;
-
-      const touch = e.changedTouches[0];
-      if (!touch || !this.joystickBase) return;
-
-      this.joystickTouchId = touch.identifier;
-      const rect = this.joystickBase.getBoundingClientRect();
-      this.joystickCenter = {
-        x: rect.left + rect.width / 2,
-        y: rect.top + rect.height / 2
-      };
-
-      this.updateJoystickPosition(touch.clientX, touch.clientY);
+    const zone = this.joystickZone;
+    if (!zone || !this.joystickBase) return;
+    this.preparePointerSurface(zone);
+    this.listen(zone, 'pointerdown', (event) => {
+      if (!this.enabled || this.joystickPointerId !== null || event.button > 0) return;
+      event.preventDefault();
+      this.joystickPointerId = event.pointerId;
+      const rect = this.joystickBase!.getBoundingClientRect();
+      this.joystickCenter = { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+      this.capture(zone, event.pointerId);
+      this.updateJoystickPosition(event.clientX, event.clientY);
       this.triggerHaptic(8);
+    });
+    this.listen(window, 'pointermove', (event) => {
+      if (!this.enabled || event.pointerId !== this.joystickPointerId) return;
+      event.preventDefault();
+      this.updateJoystickPosition(event.clientX, event.clientY);
+    });
+    const end = (event: PointerEvent) => {
+      if (event.pointerId === this.joystickPointerId) this.resetJoystick();
     };
+    this.listen(window, 'pointerup', end);
+    this.listen(window, 'pointercancel', end);
+    this.listen(zone, 'lostpointercapture', end);
+  }
 
-    const handleMove = (e: TouchEvent) => {
-      e.preventDefault();
-      if (this.joystickTouchId === null) return;
-
-      for (let i = 0; i < e.changedTouches.length; i++) {
-        const touch = e.changedTouches[i];
-        if (touch && touch.identifier === this.joystickTouchId) {
-          this.updateJoystickPosition(touch.clientX, touch.clientY);
-          break;
-        }
-      }
+  private bindButton(id: string, prop: HoldingButton, press: () => void, release: () => void): void {
+    const element = this.container?.querySelector<HTMLElement>('#' + id);
+    if (!element) return;
+    const button = { element, pointerId: null as number | null, release };
+    this.buttons.set(prop, button);
+    this.preparePointerSurface(element);
+    this.listen(element, 'pointerdown', (event) => {
+      if (!this.enabled || this[prop] || event.button > 0) return;
+      event.preventDefault();
+      event.stopPropagation();
+      button.pointerId = event.pointerId;
+      this[prop] = true;
+      element.classList.add('touch-btn-pressed');
+      this.capture(element, event.pointerId);
+      this.triggerHaptic(14);
+      press();
+    });
+    const end = (event: PointerEvent) => {
+      if (event.pointerId === button.pointerId) this.releaseButton(prop);
     };
-
-    const handleEnd = (e: TouchEvent) => {
-      e.preventDefault();
-      if (this.joystickTouchId === null) return;
-
-      for (let i = 0; i < e.changedTouches.length; i++) {
-        const touch = e.changedTouches[i];
-        if (touch && touch.identifier === this.joystickTouchId) {
-          this.resetJoystick();
-          break;
-        }
-      }
-    };
-
-    this.joystickZone.addEventListener('touchstart', handleStart, { passive: false });
-    this.joystickZone.addEventListener('touchmove', handleMove, { passive: false });
-    this.joystickZone.addEventListener('touchend', handleEnd, { passive: false });
-    this.joystickZone.addEventListener('touchcancel', handleEnd, { passive: false });
+    this.listen(window, 'pointerup', end);
+    this.listen(window, 'pointercancel', end);
+    this.listen(element, 'lostpointercapture', end);
   }
 
   private updateJoystickPosition(clientX: number, clientY: number): void {
@@ -200,44 +225,6 @@ export class TouchGamepad {
     }
   }
 
-  private bindButtonEvents(): void {
-    const bindBtn = (
-      btn: HTMLElement | null,
-      onPress?: () => void,
-      onRelease?: () => void,
-      holdingProp?: 'isHoldingA' | 'isHoldingB' | 'isHoldingE'
-    ) => {
-      if (!btn) return;
-
-      const handlePress = (e: Event) => {
-        e.preventDefault();
-        e.stopPropagation();
-        btn.classList.add('touch-btn-pressed');
-        if (holdingProp) this[holdingProp] = true;
-        this.triggerHaptic(14);
-        onPress?.();
-      };
-
-      const handleRelease = (e: Event) => {
-        e.preventDefault();
-        e.stopPropagation();
-        btn.classList.remove('touch-btn-pressed');
-        if (holdingProp) this[holdingProp] = false;
-        onRelease?.();
-      };
-
-      btn.addEventListener('touchstart', handlePress, { passive: false });
-      btn.addEventListener('touchend', handleRelease, { passive: false });
-      btn.addEventListener('touchcancel', handleRelease, { passive: false });
-      btn.addEventListener('pointerdown', handlePress);
-      btn.addEventListener('pointerup', handleRelease);
-      btn.addEventListener('pointercancel', handleRelease);
-    };
-
-    bindBtn(this.btnA, () => this.callbacks.onPressA?.(), () => this.callbacks.onReleaseA?.(), 'isHoldingA');
-    bindBtn(this.btnB, () => this.callbacks.onPressB?.(), () => this.callbacks.onReleaseB?.(), 'isHoldingB');
-    bindBtn(this.btnE, () => this.callbacks.onPressE?.(), () => this.callbacks.onReleaseE?.(), 'isHoldingE');
-  }
 }
 
 export const touchGamepad = new TouchGamepad();

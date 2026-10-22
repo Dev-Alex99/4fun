@@ -1,3 +1,4 @@
+import { CanvasViewportRenderer } from './canvasViewport';
 /**
  * 07 // RICOCHET-1 RENDERER
  * Renders the reflective arena, laser mirrors, bouncing plasma bullets,
@@ -12,58 +13,16 @@ import {
 import { ReflectiveMirror, RicochetBullet, RicochetPlayer } from '../types';
 import { robotWorkshop } from '../game/robotWorkshop';
 
-export class RicochetRenderer {
-  private canvas: HTMLCanvasElement;
-  private ctx: CanvasRenderingContext2D;
-  private scale = 1;
-  private offsetX = 0;
-  private offsetY = 0;
-
+export class RicochetRenderer extends CanvasViewportRenderer {
   constructor(canvas: HTMLCanvasElement) {
-    this.canvas = canvas;
-    const context = canvas.getContext('2d');
-    if (!context) throw new Error('Could not initialize 2D context for Ricochet');
-    this.ctx = context;
-  }
-
-  private syncViewport(): void {
-    const parent = this.canvas.parentElement;
-    if (!parent) return;
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    const targetW = Math.floor(parent.clientWidth * dpr);
-    const targetH = Math.floor(parent.clientHeight * dpr);
-
-    if (this.canvas.width !== targetW || this.canvas.height !== targetH) {
-      this.canvas.width = targetW;
-      this.canvas.height = targetH;
-    }
-
-    const w = parent.clientWidth;
-    const h = parent.clientHeight;
-    this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-
-    const padX = 24;
-    const padY = 44;
-    this.scale = Math.min((w - padX * 2) / RICOCHET_WIDTH, (h - padY * 2) / RICOCHET_HEIGHT);
-    this.offsetX = (w - RICOCHET_WIDTH * this.scale) * 0.5;
-    this.offsetY = (h - RICOCHET_HEIGHT * this.scale) * 0.5;
-  }
-
-  public screenToCourt(screenX: number, screenY: number): { x: number; y: number } {
-    const rect = this.canvas.getBoundingClientRect();
-    const px = screenX - rect.left - this.offsetX;
-    const py = screenY - rect.top - this.offsetY;
-    return {
-      x: px / this.scale,
-      y: py / this.scale
-    };
+    super(canvas, RICOCHET_WIDTH, RICOCHET_HEIGHT, 24, 44);
   }
 
   public render(engine: RicochetEngine, localSlotId: number): void {
     this.syncViewport();
     const ctx = this.ctx;
-    const w = this.canvas.clientWidth;
-    const h = this.canvas.clientHeight;
+    const w = this.viewportWidth;
+    const h = this.viewportHeight;
     const nowSec = performance.now() * 0.001;
 
     // 1. Hardware Matte Putty Backdrop
@@ -231,6 +190,7 @@ export class RicochetRenderer {
     const bobY = isSliding ? 8 : Math.abs(Math.sin(p.walkCycle)) * 4.5;
 
     ctx.save();
+    this.applyGhostPulse();
     ctx.translate(p.x, p.y);
 
     // Slide Skid Sparks & Shadow
@@ -256,7 +216,7 @@ export class RicochetRenderer {
     ctx.translate(0, isSliding ? 6 : -bobY);
     if (isSliding) ctx.rotate(0.25 * (p.vx > 0 ? 1 : -1));
 
-    const cosmetics = p.cosmetics || (isLocal ? robotWorkshop.cosmetics : undefined);
+    const cosmetics = robotWorkshop.resolveCosmetics(p.cosmetics, isLocal);
     const skinColors = robotWorkshop.getSkinColors(cosmetics?.skin, p.bodyColor, p.shadeColor);
 
     // Bevel
@@ -274,6 +234,8 @@ export class RicochetRenderer {
     ctx.roundRect(-16, -21, 32, 24, 9);
     ctx.fill();
     ctx.stroke();
+
+    robotWorkshop.drawSkinStripes(ctx, cosmetics.skin, -16, -21, 32, 24, 9);
 
     // Visor
     const lookX = Math.cos(p.aimAngle) * 3.5;

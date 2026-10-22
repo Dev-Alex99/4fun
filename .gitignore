@@ -3,5 +3,9 @@ dist
 .vercel
 .DS_Store
 *.log
+.env.local
+.env.*.local
+infra/turn/.runtime/
+.codebase-memory/
 
 .vercel

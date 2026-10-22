@@ -1,3 +1,5 @@
+import { reconcilePlayer } from './reconciliation';
+import { ChaosPhysics } from './chaosPhysics';
 import { sfx } from '../audio/mechanicalSfx';
 import {
   ClientInputPacket,
@@ -225,7 +227,7 @@ export const HEX_CRUSH_ARENAS: HexArenaDef[] = [
   }
 ];
 
-export class HexCrushEngine {
+export class HexCrushEngine extends ChaosPhysics {
   public arenaIndex = 0;
   public arenaTitle = '';
   public status: 'PLAYING' | 'ROUND_OVER' | 'MATCH_OVER' = 'PLAYING';
@@ -251,6 +253,7 @@ export class HexCrushEngine {
   private nextBotThinkTime = 0;
 
   constructor() {
+    super();
     this.initPlayers();
     this.loadArena(0);
   }
@@ -295,7 +298,7 @@ export class HexCrushEngine {
       if (this.players[idx]) {
         this.players[idx].name = r.name;
         this.players[idx].isBot = r.isBot;
-        if (r.cosmetics) this.players[idx].cosmetics = r.cosmetics;
+        this.players[idx].cosmetics = r.cosmetics ? { ...r.cosmetics } : undefined;
       }
     });
     const activeIds = new Set(this.getActiveParticipants().map((p) => p.id));
@@ -306,24 +309,20 @@ export class HexCrushEngine {
     });
   }
 
+  public clearRemoteInput(slotId: number): void {
+    this.remoteInputs.delete(slotId);
+    const player = this.players[slotId];
+    if (player) { player.vx = 0; player.vy = 0; }
+  }
+
   public applyRemoteInput(packet: ClientInputPacket): void {
-    this.remoteInputs.set(packet.slotId, packet);
+    this.remoteInputs.set(packet.slotId, { ...packet, clientX: undefined, clientY: undefined, clientZ: undefined });
     const p = this.players[packet.slotId];
     if (!p) return;
     if (packet.name) p.name = packet.name.slice(0, 10).toUpperCase();
     p.aimAngle = packet.aimAngle;
 
-    if (
-      p.alive &&
-      typeof packet.clientX === 'number' &&
-      typeof packet.clientY === 'number'
-    ) {
-      const err = Math.hypot(packet.clientX - p.x, packet.clientY - p.y);
-      if (err > 14 && err < 160) {
-        p.x = p.x * 0.7 + packet.clientX * 0.3;
-        p.y = p.y * 0.7 + packet.clientY * 0.3;
-      }
-    }
+
   }
 
   public resetChampionship(): void {
@@ -337,6 +336,7 @@ export class HexCrushEngine {
   }
 
   public loadArena(index: number): void {
+    this.resetChaosRound();
     this.arenaIndex =
       ((index % HEX_CRUSH_ARENAS.length) + HEX_CRUSH_ARENAS.length) % HEX_CRUSH_ARENAS.length;
     const def = HEX_CRUSH_ARENAS[this.arenaIndex];
@@ -549,6 +549,10 @@ export class HexCrushEngine {
   }
 
   public step(dt: number, hostInput: ClientInputPacket): void {
+    this.advanceChaos(dt, true, this.status === 'PLAYING', (bomb) => {
+      this.applyChaosBlast(bomb, this.players, this.botsEnabled);
+      for (const tile of this.tiles) { if (Math.hypot(tile.x - bomb.x, tile.y - bomb.y) < bomb.radius * 0.55) tile.health = Math.max(0, tile.health - 1); }
+    });
     this.remoteInputs.set(hostInput.slotId, hostInput);
 
     if (this.screenShake > 0) {
@@ -709,7 +713,7 @@ export class HexCrushEngine {
 
       // Vertical Z Physics (Jumps & Ground Pounds)
       if (p.z > 0 || p.vz !== 0) {
-        const gravity = p.isGroundPounding ? 1800 : 960;
+        const gravity = (p.isGroundPounding ? 1800 : 960) * this.gravityMultiplier;
         p.vz -= gravity * dt;
         p.z += p.vz * dt;
 
@@ -726,7 +730,7 @@ export class HexCrushEngine {
       }
 
       // Movement & Inputs
-      const moveSpeed = 245;
+      const moveSpeed = 245 * this.speedMultiplier;
       if (!p.isBot) {
         const inp = this.remoteInputs.get(p.id);
         if (inp && p.stunTimer <= 0) {
@@ -742,16 +746,7 @@ export class HexCrushEngine {
           p.vy += my * moveSpeed * 8.5 * dt;
 
           // Dead reckoning correction
-          if (typeof inp.clientX === 'number' && typeof inp.clientY === 'number') {
-            const err = Math.hypot(inp.clientX - p.x, inp.clientY - p.y);
-            if (err > 6 && err < 160) {
-              const blend = Math.min(1, dt * 10);
-              p.x += (inp.clientX - p.x) * blend;
-              p.y += (inp.clientY - p.y) * blend;
-              inp.clientX += p.vx * dt;
-              inp.clientY += p.vy * dt;
-            }
-          }
+
         }
       } else {
         this.stepBotAI(p, dt, moveSpeed, nowMs);
@@ -883,17 +878,17 @@ export class HexCrushEngine {
     const pad = p.radius + 6;
     if (p.x < CHAMBER_LEFT + pad) {
       p.x = CHAMBER_LEFT + pad;
-      p.vx = Math.abs(p.vx) * 0.5;
+      p.vx = Math.abs(p.vx) * 0.5 * this.bounceMultiplier;
     } else if (p.x > CHAMBER_RIGHT - pad) {
       p.x = CHAMBER_RIGHT - pad;
-      p.vx = -Math.abs(p.vx) * 0.5;
+      p.vx = -Math.abs(p.vx) * 0.5 * this.bounceMultiplier;
     }
     if (p.y < CHAMBER_TOP + pad) {
       p.y = CHAMBER_TOP + pad;
-      p.vy = Math.abs(p.vy) * 0.5;
+      p.vy = Math.abs(p.vy) * 0.5 * this.bounceMultiplier;
     } else if (p.y > CHAMBER_BOTTOM - pad) {
       p.y = CHAMBER_BOTTOM - pad;
-      p.vy = -Math.abs(p.vy) * 0.5;
+      p.vy = -Math.abs(p.vy) * 0.5 * this.bounceMultiplier;
     }
 
     // Pinball Bumper collisions
@@ -905,8 +900,8 @@ export class HexCrushEngine {
       if (dist < minD) {
         const nx = (dx / (dist || 1));
         const ny = (dy / (dist || 1));
-        p.vx = nx * 580;
-        p.vy = ny * 580;
+        p.vx = nx * 580 * this.bounceMultiplier;
+        p.vy = ny * 580 * this.bounceMultiplier;
         p.x = b.x + nx * minD;
         p.y = b.y + ny * minD;
         b.hitAnim = 1;
@@ -1053,28 +1048,24 @@ export class HexCrushEngine {
   }
 
   public stepClientPrediction(dt: number, localSlotId: number, input: ClientInputPacket): void {
+    this.advanceChaos(dt, false, this.status === 'PLAYING', () => {});
+    if (this.status !== 'PLAYING') return;
+    for (const player of this.players) {
+      player.hammerCooldown = Math.max(0, player.hammerCooldown - dt);
+      player.jumpCooldown = Math.max(0, player.jumpCooldown - dt);
+      player.bridgeCooldown = Math.max(0, player.bridgeCooldown - dt);
+      player.stunTimer = Math.max(0, player.stunTimer - dt);
+      if (player.id !== localSlotId && player.alive && player.fallTimer <= 0) {
+        player.x += player.vx * dt;
+        player.y += player.vy * dt;
+        this.constrainPlayer(player);
+      }
+    }
     const p = this.players[localSlotId];
     if (!p || !p.alive || p.stunTimer > 0 || p.fallTimer > 0) return;
 
-    p.aimAngle = input.aimAngle;
-    let mx = input.moveX;
-    let my = input.moveY;
-    const mag = Math.hypot(mx, my);
-    if (mag > 1) {
-      mx /= mag;
-      my /= mag;
-    }
-    const moveSpeed = 245;
-    p.vx += mx * moveSpeed * 8.5 * dt;
-    p.vy += my * moveSpeed * 8.5 * dt;
-    const damp = p.z > 0 ? 0.94 : 0.82;
-    p.vx *= Math.pow(damp, dt * 60);
-    p.vy *= Math.pow(damp, dt * 60);
-    p.x += p.vx * dt;
-    p.y += p.vy * dt;
-
     if (p.z > 0 || p.vz !== 0) {
-      const gravity = p.isGroundPounding ? 1800 : 960;
+      const gravity = (p.isGroundPounding ? 1800 : 960) * this.gravityMultiplier;
       p.vz -= gravity * dt;
       p.z += p.vz * dt;
       if (p.z <= 0) {
@@ -1084,6 +1075,24 @@ export class HexCrushEngine {
       }
     }
 
+    p.aimAngle = input.aimAngle;
+    let mx = input.moveX;
+    let my = input.moveY;
+    const mag = Math.hypot(mx, my);
+    if (mag > 1) {
+      mx /= mag;
+      my /= mag;
+    }
+    const moveSpeed = 245 * this.speedMultiplier;
+    p.vx += mx * moveSpeed * 8.5 * dt;
+    p.vy += my * moveSpeed * 8.5 * dt;
+    const damp = p.z > 0 ? 0.94 : 0.82;
+    p.vx *= Math.pow(damp, dt * 60);
+    p.vy *= Math.pow(damp, dt * 60);
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
+
+
     this.constrainPlayer(p);
     input.clientX = p.x;
     input.clientY = p.y;
@@ -1092,6 +1101,9 @@ export class HexCrushEngine {
 
   public getSnapshot(): HexCrushSnapshot {
     return {
+      roundEpoch: this.roundEpoch,
+      simulationTime: this.simulationTime,
+      chaosBombs: this.chaosBombs.map((bomb) => ({ ...bomb })),
       arenaIndex: this.arenaIndex,
       arenaTitle: this.arenaTitle,
       status: this.status,
@@ -1106,7 +1118,8 @@ export class HexCrushEngine {
     };
   }
 
-  public applySnapshot(snap: HexCrushSnapshot, localSlotId: number): void {
+  public applySnapshot(snap: HexCrushSnapshot, localSlotId: number, predictionLeadSeconds = 0): void {
+    const reset = this.arenaIndex !== snap.arenaIndex || this.status !== snap.status || (snap.roundEpoch !== undefined && snap.roundEpoch !== this.roundEpoch);
     if (this.arenaIndex !== snap.arenaIndex) {
       this.arenaIndex = snap.arenaIndex;
       this.arenaTitle = snap.arenaTitle;
@@ -1115,29 +1128,19 @@ export class HexCrushEngine {
     this.statusTimer = snap.statusTimer;
     this.roundWinnerId = snap.roundWinnerId;
     this.matchWinnerId = snap.matchWinnerId;
-    this.tiles = snap.tiles;
-    this.shockwaves = snap.shockwaves;
-    this.bumpers = snap.bumpers;
-    this.explosions = snap.explosions;
+    this.tiles = snap.tiles.map((value) => ({ ...value }));
+    this.shockwaves = snap.shockwaves.map((value) => ({ ...value }));
+    this.bumpers = snap.bumpers.map((value) => ({ ...value }));
+    this.explosions = snap.explosions.map((value) => ({ ...value }));
 
-    snap.players.forEach((sp) => {
-      const local = this.players[sp.id];
-      if (!local) return;
-      if (sp.id === localSlotId) {
-        // Reconcile non-local fields
-        local.alive = sp.alive;
-        local.score = sp.score;
-        local.hammerCooldown = sp.hammerCooldown;
-        local.jumpCooldown = sp.jumpCooldown;
-        local.bridgeCooldown = sp.bridgeCooldown;
-        local.stunTimer = sp.stunTimer;
-        local.fallTimer = sp.fallTimer;
-        local.fallScale = sp.fallScale;
-        local.fallRotation = sp.fallRotation;
-      } else {
-        Object.assign(local, sp);
-      }
+    this.players = snap.players.map((sp) => {
+      const previous = this.players[sp.id];
+      return reconcilePlayer(previous, sp, sp.id === localSlotId,
+        reset || previous?.alive !== sp.alive || (previous?.fallTimer === 0) !== (sp.fallTimer === 0) || snap.status !== 'PLAYING', predictionLeadSeconds);
     });
+    this.roundEpoch = snap.roundEpoch ?? this.roundEpoch;
+    this.simulationTime = snap.simulationTime ?? this.simulationTime;
+    this.chaosBombs = (snap.chaosBombs ?? []).map((bomb) => ({ ...bomb }));
   }
 
   public addCallout(

@@ -1,48 +1,18 @@
+import { robotWorkshop } from '../game/robotWorkshop';
+import { CanvasViewportRenderer } from './canvasViewport';
 import { PuttWarEngine } from '../game/puttWarEngine';
 import { PuttBallPlayer } from '../types';
 
-export class PuttWarRenderer {
-  private canvas: HTMLCanvasElement;
-  private ctx: CanvasRenderingContext2D;
-  private scale = 1;
-  private offsetX = 0;
-  private offsetY = 0;
-
+export class PuttWarRenderer extends CanvasViewportRenderer {
   constructor(canvas: HTMLCanvasElement) {
-    this.canvas = canvas;
-    const context = canvas.getContext('2d');
-    if (!context) throw new Error('Could not initialize 2D context');
-    this.ctx = context;
-  }
-
-  private syncViewport(): void {
-    const parent = this.canvas.parentElement;
-    if (!parent) return;
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    const targetW = Math.floor(parent.clientWidth * dpr);
-    const targetH = Math.floor(parent.clientHeight * dpr);
-
-    if (this.canvas.width !== targetW || this.canvas.height !== targetH) {
-      this.canvas.width = targetW;
-      this.canvas.height = targetH;
-    }
-
-    const w = parent.clientWidth;
-    const h = parent.clientHeight;
-    this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-
-    const padX = 28;
-    const padY = 48;
-    this.scale = Math.min((w - padX * 2) / 1000, (h - padY * 2) / 516);
-    this.offsetX = (w - 1000 * this.scale) * 0.5;
-    this.offsetY = (h - 516 * this.scale) * 0.5;
+    super(canvas, 1000, 516, 28, 48);
   }
 
   public render(engine: PuttWarEngine, localSlotId: number): void {
     this.syncViewport();
     const ctx = this.ctx;
-    const w = this.canvas.clientWidth;
-    const h = this.canvas.clientHeight;
+    const w = this.viewportWidth;
+    const h = this.viewportHeight;
 
     // 1. Matte Warm Putty Backdrop
     ctx.fillStyle = '#DCD6CB';
@@ -399,10 +369,13 @@ export class PuttWarRenderer {
     isLocal: boolean
   ): void {
     ctx.save();
+    this.applyGhostPulse();
+    const cosmetics = robotWorkshop.resolveCosmetics(p.cosmetics, isLocal);
+    const skinColors = robotWorkshop.getSkinColors(cosmetics.skin, p.bodyColor, p.shadeColor);
 
     // If sunk in cup, render badge above cup
     if (p.sunkInCup) {
-      ctx.fillStyle = p.bodyColor;
+      ctx.fillStyle = skinColors.body;
       this.roundRect(ctx, p.x - 32, p.y - 38 - p.sunkOrder * 20, 64, 18, 4);
       ctx.fill();
       ctx.lineWidth = 1.5;
@@ -458,13 +431,15 @@ export class PuttWarRenderer {
     ctx.fill();
 
     // 3. Spherical Golf-Bot Chassis
-    ctx.fillStyle = p.anvilTimer > 0 ? '#52525B' : p.bodyColor;
+    ctx.fillStyle = p.anvilTimer > 0 ? '#52525B' : skinColors.body;
     ctx.beginPath();
     ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
     ctx.fill();
     ctx.lineWidth = isLocal ? 3 : 2.2;
     ctx.strokeStyle = '#18181B';
     ctx.stroke();
+
+    robotWorkshop.drawSkinStripes(ctx, cosmetics.skin, p.x - p.radius, p.y - p.radius, p.radius * 2, p.radius * 2, p.radius);
 
     // Inner mechanical equatorial ring
     ctx.fillStyle = '#F4F0E8';
@@ -475,10 +450,12 @@ export class PuttWarRenderer {
     // Expressive visor eyes facing aimAngle
     const lookX = Math.cos(p.aimAngle) * 3.5;
     const lookY = Math.sin(p.aimAngle) * 3.5;
-    ctx.fillStyle = '#18181B';
+    ctx.fillStyle = robotWorkshop.getVisorColor(cosmetics.visor);
     ctx.beginPath();
     ctx.arc(p.x + lookX, p.y + lookY, 4.5, 0, Math.PI * 2);
     ctx.fill();
+
+    robotWorkshop.drawHat(ctx, cosmetics.hat, p.x, p.y - p.radius, performance.now() * 0.001);
 
     // Held Weapon Badge
     if (p.heldPowerup !== 'NONE') {

@@ -1,0 +1,34 @@
+# LOCAL TEST LAB ONLY. Browser peers and this single relay share one host.
+listening-port=3478
+listening-ip=0.0.0.0
+relay-ip=127.0.0.1
+external-ip=127.0.0.1
+min-port=49160
+max-port=49179
+realm=tp04.local
+server-name=tp04.local
+fingerprint
+use-auth-secret
+static-auth-secret=${TURN_SHARED_SECRET}
+stale-nonce=300
+max-allocate-lifetime=3600
+max-allocate-timeout=30
+user-quota=16
+total-quota=16
+max-bps=2000000
+bps-capacity=20000000
+relay-threads=1
+no-tls
+# DTLS is opt-in in Coturn 4.18; it is deliberately not enabled here.
+cli=false
+web-admin=false
+no-tcp-relay
+no-multicast-peers
+# Allow only this lab's advertised relay address. This exception is unsafe in production.
+allow-loopback-peers
+denied-peer-ip=0.0.0.0-255.255.255.255
+allowed-peer-ip=127.0.0.1
+denied-peer-ip=::-ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff
+log-file=stdout
+simple-log
+pidfile=/tmp/turnserver.pid

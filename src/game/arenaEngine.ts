@@ -1,3 +1,5 @@
+import { reconcilePlayer } from './reconciliation';
+import { ChaosPhysics } from './chaosPhysics';
 import {
   BotDifficulty,
   ClientInputPacket,
@@ -32,7 +34,7 @@ const SLOT_PALETTE = [
 const EMOTE_LABELS = ['¡EZ!', '¡UY!', '💀 K.O.', '¡MÍRAME!'];
 const LAYOUT_ORDER: CourtLayout[] = ['PINBALL', 'CLASSIC', 'CORE'];
 
-export class ArenaEngine {
+export class ArenaEngine extends ChaosPhysics {
   public tick = 0;
   public phase: RoundPhase = 'PLAYING';
   public botDifficulty: BotDifficulty = 'NORMAL';
@@ -59,9 +61,12 @@ export class ArenaEngine {
   private lastActionSeqBySlot = new Map<number, number>();
   private roundEndTimer: ReturnType<typeof setTimeout> | null = null;
   private pendingWinnerAwardedId: number | null = null;
+  private parryContacts: Array<{ slotId: number; ballId: number; passId: number; targetId: number; ownerId: number; at: number }> = [];
+  private knockoutProofs = new Map<number, { ballId: number; lethalPassId: number; continuationPassId: number; ownerId: number; at: number }>();
   private onPhaseChange?: () => void;
 
   constructor(onPhaseChange?: () => void) {
+    super();
     this.onPhaseChange = onPhaseChange;
     this.initPlayers();
     this.spawnRound();
@@ -114,7 +119,8 @@ export class ArenaEngine {
     const preservedPeers = this.players.map((p) => ({
       peerId: p.peerId,
       name: p.name,
-      isBot: p.isBot
+      isBot: p.isBot,
+      cosmetics: p.cosmetics ? { ...p.cosmetics } : undefined
     }));
     this.roundIndex = 0;
     this.initPlayers();
@@ -122,6 +128,7 @@ export class ArenaEngine {
       this.players[idx].peerId = saved.peerId;
       this.players[idx].name = saved.name;
       this.players[idx].isBot = saved.isBot;
+      this.players[idx].cosmetics = saved.cosmetics;
     });
     this.phase = 'PLAYING';
     this.spawnRound();
@@ -129,6 +136,9 @@ export class ArenaEngine {
   }
 
   public spawnRound(): void {
+    this.resetChaosRound();
+    this.parryContacts = [];
+    this.knockoutProofs.clear();
     if (this.roundEndTimer) {
       clearTimeout(this.roundEndTimer);
       this.roundEndTimer = null;
@@ -211,52 +221,50 @@ export class ArenaEngine {
     sfx.playHornEmote(emoteIndex);
   }
 
+  public clearRemoteInput(slotId: number): void {
+    this.remoteInputs.delete(slotId);
+    this.lastActionSeqBySlot.delete(slotId);
+    this.parryContacts = this.parryContacts.filter((contact) => contact.slotId !== slotId);
+    this.knockoutProofs.delete(slotId);
+    const player = this.players[slotId];
+    if (player) { player.vx = 0; player.vy = 0; player.chargeTime = 0; player.feintPrimed = false; }
+  }
+
   public applyRemoteInput(packet: ClientInputPacket): void {
     const slot = this.players[packet.slotId];
     if (!slot) return;
     if (packet.name) slot.name = packet.name.slice(0, 10).toUpperCase();
-    if (packet.feintPrimed) slot.feintPrimed = true;
-    this.remoteInputs.set(packet.slotId, packet);
+    this.remoteInputs.set(packet.slotId, { ...packet, clientX: undefined, clientY: undefined, clientZ: undefined });
 
     // If player was just spawned or teleported (>220px), snap once; otherwise smooth in step(dt) at 60/144fps!
-    if (
-      slot.alive &&
-      typeof packet.clientX === 'number' &&
-      typeof packet.clientY === 'number'
-    ) {
-      const dx = packet.clientX - slot.x;
-      const dy = packet.clientY - slot.y;
-      if (Math.hypot(dx, dy) > 220) {
-        slot.x = packet.clientX;
-        slot.y = packet.clientY;
-      }
-    }
+
 
     // Deduplicate redundant 3-packet action bursts while allowing the first arrived packet to execute
     const isDuplicateAction =
       typeof packet.actionSeq === 'number' &&
       packet.actionSeq > 0 &&
-      this.lastActionSeqBySlot.get(packet.slotId) === packet.actionSeq;
+      packet.actionSeq <= (this.lastActionSeqBySlot.get(packet.slotId) ?? 0);
     if (typeof packet.actionSeq === 'number' && packet.actionSeq > 0) {
-      this.lastActionSeqBySlot.set(packet.slotId, packet.actionSeq);
+      this.lastActionSeqBySlot.set(packet.slotId, Math.max(packet.actionSeq, this.lastActionSeqBySlot.get(packet.slotId) ?? 0));
     }
 
     if (!isDuplicateAction && packet.emotePressed > 0) {
       this.triggerEmote(slot, packet.emotePressed);
     }
 
-    // FAVOR-THE-DEFENDER ROLLBACK RESCUE (Up to 650ms for terrible connections!):
-    // If the client pressed parry on time on their screen, but due to high network RTT (up to 650ms)
-    // the Host just marked them K.O. moments ago, rollback the K.O., cancel any pending round end, and deflect!
+    // Rewind only a host-proven KO within the host-measured latency budget (max 180ms).
     if (
       !slot.alive &&
+      !isDuplicateAction &&
       packet.parryPressed &&
       slot.lastKOAt &&
-      performance.now() - slot.lastKOAt <= 650 &&
+      performance.now() - slot.lastKOAt <= this.trustedRewindWindow(packet.lagCompensationMs) &&
       this.balls.length > 0
     ) {
-      const batReach = (slot.radius + 36) * slot.parryRadiusMult;
-      if (packet.clientBallDist <= batReach + 58) {
+      const proof = this.knockoutProofs.get(slot.id);
+      const nearbyBall = proof && this.balls.find((ball) => ball.id === proof.ballId
+        && ball.passId === proof.continuationPassId && ball.ownerId === proof.ownerId);
+      if (proof && performance.now() - proof.at <= this.trustedRewindWindow(packet.lagCompensationMs) && nearbyBall) {
         if (this.roundEndTimer) {
           clearTimeout(this.roundEndTimer);
           this.roundEndTimer = null;
@@ -271,8 +279,11 @@ export class ArenaEngine {
         this.phase = 'PLAYING';
         slot.alive = true;
         slot.lastKOAt = undefined;
+        this.knockoutProofs.delete(slot.id);
+        slot.parryTimer = 0.26 + slot.parryWindowBonus;
+        slot.parryCooldown = 0.42;
         slot.aimAngle = packet.aimAngle;
-        const ball = this.balls[0];
+        const ball = nearbyBall;
         ball.x = slot.x + Math.cos(slot.aimAngle) * 24;
         ball.y = slot.y + Math.sin(slot.aimAngle) * 24;
         this.executeDeflection(slot, ball, true);
@@ -284,7 +295,7 @@ export class ArenaEngine {
     if (this.phase === 'PLAYING' && slot.alive && !isDuplicateAction) {
       if (packet.parryPressed) {
         slot.aimAngle = packet.aimAngle;
-        this.triggerParry(slot, packet.clientBallDist);
+        this.triggerParry(slot, packet.clientBallDist, packet.lagCompensationMs);
       }
       if (packet.dashPressed) {
         const dirX = packet.moveX || Math.cos(packet.aimAngle);
@@ -294,13 +305,13 @@ export class ArenaEngine {
     }
   }
 
-  public triggerParry(p: PlayerState, clientBallDist?: number): void {
+  public triggerParry(p: PlayerState, clientBallDist?: number, lagCompensationMs = 0): void {
     if (!p.alive || p.parryCooldown > 0) return;
     p.parryTimer = 0.26 + p.parryWindowBonus;
     p.parryCooldown = 0.42;
     p.batSwingDir *= -1;
 
-    // Lag-Compensated Parry Validation for remote clients (generous +46px tolerance for high jitter)
+    // Client distance is telemetry; the host validates current reach or a recorded contact.
     if (clientBallDist !== undefined && this.balls.length > 0) {
       const batReach = (p.radius + 28) * p.parryRadiusMult;
       const closestBall = this.balls.reduce((best, b) => {
@@ -308,17 +319,27 @@ export class ArenaEngine {
         return d < Math.hypot(best.x - p.x, best.y - p.y) ? b : best;
       }, this.balls[0]);
 
-      if (clientBallDist <= batReach + closestBall.radius + 46 && closestBall.ownerId !== p.id) {
+      const hostDistance = Math.hypot(closestBall.x - p.x, closestBall.y - p.y);
+      const rewindWindow = this.trustedRewindWindow(lagCompensationMs);
+      const recentContact = rewindWindow > 0 && this.parryContacts.some((contact) => contact.slotId === p.id
+        && contact.ballId === closestBall.id && contact.passId === closestBall.passId
+        && contact.targetId === p.id && contact.ownerId === closestBall.ownerId
+        && performance.now() - contact.at <= rewindWindow);
+      if ((hostDistance <= batReach + closestBall.radius + 12 || recentContact) && closestBall.ownerId !== p.id) {
         this.executeDeflection(p, closestBall, true);
       }
     }
   }
 
+  private trustedRewindWindow(value = 0): number {
+    return Number.isFinite(value) ? Math.max(0, Math.min(180, value)) : 0;
+  }
+
   public triggerDash(p: PlayerState, dirX: number, dirY: number): void {
     if (!p.alive || p.dashCooldown > 0) return;
     const len = Math.hypot(dirX, dirY) || 1;
-    p.vx = (dirX / len) * 620;
-    p.vy = (dirY / len) * 620;
+    p.vx = (dirX / len) * 620 * this.speedMultiplier;
+    p.vy = (dirY / len) * 620 * this.speedMultiplier;
     p.dashTimer = 0.14;
     p.dashCooldown = 1.2 * p.dashCooldownMult;
     sfx.playDashPiston();
@@ -339,13 +360,12 @@ export class ArenaEngine {
   }
 
   public selectDraftMod(slotId: number, modId: string): void {
-    if (this.phase !== 'CARD_DRAFT') return;
+    if (this.phase !== 'CARD_DRAFT' || !Number.isInteger(slotId) || !this.draftOptions.includes(modId)) return;
     const player = this.players[slotId];
-    if (player) {
-      applyHardwareMod(player, modId);
-    }
+    if (!player || player.isBot) return;
+    applyHardwareMod(player, modId);
     this.players.forEach((p) => {
-      if (p.isBot && p.id !== slotId) {
+      if (p.isBot && this.botDifficulty !== 'OFF' && p.id !== slotId) {
         const randomMod = this.draftOptions[Math.floor(Math.random() * this.draftOptions.length)];
         if (randomMod) applyHardwareMod(p, randomMod);
       }
@@ -442,6 +462,10 @@ export class ArenaEngine {
   }
 
   public step(dt: number, localInput: ClientInputPacket): void {
+    this.advanceChaos(dt, true, this.phase === 'PLAYING', (bomb) => {
+      this.applyChaosBlast(bomb, this.players, this.botDifficulty !== 'OFF');
+      this.addCallout(bomb.x, bomb.y - 26, 'BOOM', '#EF4444', '#FFFFFF');
+    });
     this.tick++;
 
     // Update particles & callouts
@@ -523,7 +547,7 @@ export class ArenaEngine {
       if (p.dashTimer > 0) p.dashTimer = Math.max(0, p.dashTimer - dt);
       if (p.dashCooldown > 0) p.dashCooldown = Math.max(0, p.dashCooldown - dt);
 
-      const moveSpeed = 235 * p.speedMult;
+      const moveSpeed = 235 * p.speedMult * this.speedMultiplier;
 
       if (!p.isBot) {
         const input = this.remoteInputs.get(p.id);
@@ -536,20 +560,7 @@ export class ArenaEngine {
           p.aimAngle = input.aimAngle;
 
           // Frame-rate independent smooth convergence toward remote client's predicted position (zero 28Hz stutter!)
-          if (
-            p.id > 0 &&
-            typeof input.clientX === 'number' &&
-            typeof input.clientY === 'number'
-          ) {
-            const cDist = Math.hypot(input.clientX - p.x, input.clientY - p.y);
-            if (cDist < 220) {
-              const blend = 1 - Math.exp(-15 * dt);
-              p.x += (input.clientX - p.x) * blend;
-              p.y += (input.clientY - p.y) * blend;
-              input.clientX += p.vx * dt;
-              input.clientY += p.vy * dt;
-            }
-          }
+
 
           if (input.chargingParry) {
             p.chargeTime += dt;
@@ -607,7 +618,7 @@ export class ArenaEngine {
         }
       }
 
-      const damping = p.dashTimer > 0 ? 0.94 : 0.83;
+      const damping = this.floatingDamping(p.dashTimer > 0 ? 0.94 : 0.83);
       p.vx *= Math.pow(damping, dt * 60);
       p.vy *= Math.pow(damping, dt * 60);
 
@@ -623,8 +634,8 @@ export class ArenaEngine {
           const ny = (p.y - bmp.y) / d;
           p.x = bmp.x + nx * minDist;
           p.y = bmp.y + ny * minDist;
-          p.vx += nx * 240;
-          p.vy += ny * 240;
+          p.vx += nx * 240 * this.bounceMultiplier;
+          p.vy += ny * 240 * this.bounceMultiplier;
           bmp.hitAnim = 1.0;
         }
       });
@@ -670,8 +681,8 @@ export class ArenaEngine {
         ball.curveSpin *= Math.pow(0.95, dt * 60);
       }
 
-      ball.x += ball.vx * dt;
-      ball.y += ball.vy * dt;
+      ball.x += ball.vx * dt * this.speedMultiplier;
+      ball.y += ball.vy * dt * this.speedMultiplier;
       ball.rotation += ball.speed * dt * 0.04;
       ball.z = 12 + Math.abs(Math.sin(performance.now() * 0.012 + ball.id * 2)) * 8;
 
@@ -687,7 +698,12 @@ export class ArenaEngine {
           const dot = ball.vx * nx + ball.vy * ny;
           ball.vx -= 2 * dot * nx;
           ball.vy -= 2 * dot * ny;
-          ball.speed = Math.min(950, ball.speed * 1.06);
+        if (this.bounceMultiplier > 1) {
+          ball.speed = Math.min(1400, ball.speed * this.bounceMultiplier);
+          const speed = Math.hypot(ball.vx, ball.vy) || 1;
+          ball.vx = ball.vx / speed * ball.speed; ball.vy = ball.vy / speed * ball.speed;
+        }
+          ball.speed = Math.min(1400, ball.speed * 1.06);
           ball.ownerId = -1;
           bmp.hitAnim = 1.0;
           sfx.playPinballBumper();
@@ -707,6 +723,11 @@ export class ArenaEngine {
         const dot = ball.vx * nx + ball.vy * ny;
         ball.vx -= 2 * dot * nx;
         ball.vy -= 2 * dot * ny;
+        if (this.bounceMultiplier > 1) {
+          ball.speed = Math.min(1400, ball.speed * this.bounceMultiplier);
+          const speed = Math.hypot(ball.vx, ball.vy) || 1;
+          ball.vx = ball.vx / speed * ball.speed; ball.vy = ball.vy / speed * ball.speed;
+        }
         // Allow solo player (when bots are OFF) to parry again after wall bounce
         ball.ownerId = -1;
         this.spawnDust(ball.x, ball.y, 4);
@@ -720,6 +741,12 @@ export class ArenaEngine {
         if (!p.alive) return;
         const d = Math.hypot(ball.x - p.x, ball.y - p.y);
         const batReach = (p.radius + 26) * p.parryRadiusMult;
+        if (d <= batReach + ball.radius + 12 && ball.ownerId !== p.id) {
+          const now = performance.now();
+          this.parryContacts = this.parryContacts.filter((contact) => now - contact.at <= 180);
+          this.parryContacts.push({ slotId: p.id, ballId: ball.id, passId: ball.passId, targetId: ball.targetId, ownerId: ball.ownerId, at: now });
+          if (this.parryContacts.length > 96) this.parryContacts.splice(0, this.parryContacts.length - 96);
+        }
 
         if (p.parryTimer > 0 && d <= batReach + ball.radius && ball.ownerId !== p.id) {
           const isPerfect = p.parryTimer > 0.15;
@@ -727,6 +754,8 @@ export class ArenaEngine {
         } else if (d <= p.radius + ball.radius - 2) {
           p.alive = false;
           p.lastKOAt = performance.now();
+          const proof = { ballId: ball.id, lethalPassId: ball.passId, continuationPassId: ball.passId, ownerId: ball.ownerId, at: p.lastKOAt };
+          this.knockoutProofs.set(p.id, proof);
           this.hitStopTimer = 0.095;
           this.screenShake = 14;
           sfx.playKODisassembly();
@@ -773,6 +802,8 @@ export class ArenaEngine {
             ball.targetId = remaining[Math.floor(Math.random() * remaining.length)].id;
             ball.passId = this.nextPassId++;
           }
+          proof.continuationPassId = ball.passId;
+          proof.ownerId = ball.ownerId;
         }
       });
     });
@@ -781,6 +812,10 @@ export class ArenaEngine {
   public getSnapshot(): WorldSnapshotPacket {
     const botsActive = this.botDifficulty !== 'OFF';
     return {
+      roundEpoch: this.roundEpoch,
+      simulationTime: this.simulationTime,
+      chaosBombs: this.chaosBombs.map((bomb) => ({ ...bomb })),
+      hitStopTimer: this.hitStopTimer,
       activeGame: 'BASH_BOT',
       botDifficulty: this.botDifficulty,
       tick: this.tick,
@@ -802,10 +837,15 @@ export class ArenaEngine {
 
   /**
    * Client-side prediction & dead-reckoning step: runs on non-Host tabs at 60/120/144fps
-   * so local movement, remote players, and gyro-balls glide with 0ms input lag and zero stutters!
+   * to predict local controls and extrapolate players and gyro-balls between authoritative snapshots.
    */
   public stepClientPrediction(dt: number, localSlotId: number, input: ClientInputPacket): void {
+    this.advanceChaos(dt, false, this.phase === 'PLAYING', () => {});
     if (this.phase !== 'PLAYING') return;
+    if (this.hitStopTimer > 0) {
+      this.hitStopTimer = Math.max(0, this.hitStopTimer - dt);
+      return;
+    }
     const p = this.players[localSlotId];
 
     // Step ALL alive players (local prediction + remote velocity dead-reckoning)
@@ -817,7 +857,7 @@ export class ArenaEngine {
       if (pl.dashCooldown > 0) pl.dashCooldown = Math.max(0, pl.dashCooldown - dt);
 
       if (pl.id === localSlotId) {
-        const moveSpeed = 235 * pl.speedMult;
+        const moveSpeed = 235 * pl.speedMult * this.speedMultiplier;
         if (input.moveX !== 0 || input.moveY !== 0) {
           const len = Math.hypot(input.moveX, input.moveY);
           pl.vx += (input.moveX / len) * moveSpeed * 9.5 * dt;
@@ -826,7 +866,7 @@ export class ArenaEngine {
         pl.aimAngle = input.aimAngle;
       }
 
-      const damping = pl.dashTimer > 0 ? 0.94 : 0.83;
+      const damping = this.floatingDamping(pl.dashTimer > 0 ? 0.94 : 0.83);
       pl.vx *= Math.pow(damping, dt * 60);
       pl.vy *= Math.pow(damping, dt * 60);
       pl.x += pl.vx * dt;
@@ -841,6 +881,8 @@ export class ArenaEngine {
           const ny = (pl.y - bmp.y) / d;
           pl.x = bmp.x + nx * minDist;
           pl.y = bmp.y + ny * minDist;
+          pl.vx += nx * 240 * this.bounceMultiplier;
+          pl.vy += ny * 240 * this.bounceMultiplier;
         }
       });
 
@@ -864,28 +906,29 @@ export class ArenaEngine {
         const batReach = (p.radius + 30) * p.parryRadiusMult;
         if (d <= batReach + ball.radius) {
           ball.ownerId = p.id;
+          ball.targetId = this.chooseNextTarget(p);
           ball.vx = Math.cos(p.aimAngle) * ball.speed * 1.15;
           ball.vy = Math.sin(p.aimAngle) * ball.speed * 1.15;
           sfx.playBatParry(this.comboCount + 1, true, false);
         }
       }
 
-      if (Math.abs(ball.curveSpin) > 0.02) {
-        const perpX = -ball.vy;
-        const perpY = ball.vx;
-        ball.vx += perpX * ball.curveSpin * dt;
-        ball.vy += perpY * ball.curveSpin * dt;
-        ball.curveSpin *= Math.pow(0.96, dt * 60);
+      const target = this.players[ball.targetId];
+      if (target && target.alive) {
+        const desiredAngle = Math.atan2(target.y - ball.y, target.x - ball.x);
+        const currentAngle = Math.atan2(ball.vy, ball.vx);
+        const diff = Math.atan2(Math.sin(desiredAngle - currentAngle), Math.cos(desiredAngle - currentAngle));
+        const turnRate = 5.5 + ball.speed * 0.004;
+        const nextAngle = currentAngle + diff * Math.min(1, turnRate * dt) + ball.curveSpin * dt;
+        ball.vx = Math.cos(nextAngle) * ball.speed;
+        ball.vy = Math.sin(nextAngle) * ball.speed;
+        ball.curveSpin *= Math.pow(0.95, dt * 60);
       }
 
-      const curLen = Math.hypot(ball.vx, ball.vy) || 1;
-      ball.vx = (ball.vx / curLen) * ball.speed;
-      ball.vy = (ball.vy / curLen) * ball.speed;
+      ball.x += ball.vx * dt * this.speedMultiplier;
+      ball.y += ball.vy * dt * this.speedMultiplier;
 
-      ball.x += ball.vx * dt;
-      ball.y += ball.vy * dt;
-
-      // Predict arena wall bounce so ball never flies outside the court during a Wi-Fi lag spike!
+      // Predict arena wall geometry between authoritative snapshots.
       const bx = (ball.x - COURT_CENTER_X) / (COURT_RX - ball.radius);
       const by = (ball.y - COURT_CENTER_Y) / (COURT_RY - ball.radius);
       const bLen = Math.hypot(bx, by);
@@ -897,6 +940,11 @@ export class ArenaEngine {
         const dot = ball.vx * nx + ball.vy * ny;
         ball.vx -= 2 * dot * nx;
         ball.vy -= 2 * dot * ny;
+        if (this.bounceMultiplier > 1) {
+          ball.speed = Math.min(1400, ball.speed * this.bounceMultiplier);
+          const speed = Math.hypot(ball.vx, ball.vy) || 1;
+          ball.vx = ball.vx / speed * ball.speed; ball.vy = ball.vy / speed * ball.speed;
+        }
       }
 
       ball.rotation += ball.speed * dt * 0.04;
@@ -905,7 +953,8 @@ export class ArenaEngine {
     });
   }
 
-  public applySnapshot(snap: WorldSnapshotPacket, localSlotId?: number): void {
+  public applySnapshot(snap: WorldSnapshotPacket, localSlotId?: number, predictionLeadSeconds = 0): void {
+    const reset = this.courtLayout !== snap.courtLayout || this.phase !== snap.phase || (snap.roundEpoch !== undefined && snap.roundEpoch !== this.roundEpoch);
     const prevPhase = this.phase;
     const prevDiff = this.botDifficulty;
     if (snap.botDifficulty) {
@@ -913,6 +962,7 @@ export class ArenaEngine {
     }
     this.tick = snap.tick;
     this.phase = snap.phase;
+    this.hitStopTimer = snap.hitStopTimer ?? 0;
     this.courtLayout = snap.courtLayout;
     this.roundTimer = snap.roundTimer;
     this.multiballActive = snap.multiballActive;
@@ -922,49 +972,17 @@ export class ArenaEngine {
 
     const botsActive = this.botDifficulty !== 'OFF';
 
-    // Preserve local player's predicted movement 100% while moving to eliminate backward rubber-banding ("tirones")!
+    // Reconcile prediction gradually; round changes and discontinuities restore host state immediately.
     this.players = snap.players.map((sp) => {
-      const sanitizedAlive = sp.isBot && !botsActive ? false : sp.alive;
-      const prev = this.players[sp.id];
-      if (!prev) return { ...sp, alive: sanitizedAlive };
-
-      if (localSlotId !== undefined && sp.id === localSlotId && sanitizedAlive && prev.alive) {
-        const dist = Math.hypot(sp.x - prev.x, sp.y - prev.y);
-        if (dist < 240) {
-          const isLocallyMoving = Math.hypot(prev.vx, prev.vy) > 18;
-          const pullFactor = isLocallyMoving ? 0.0 : 0.08;
-          return {
-            ...sp,
-            alive: sanitizedAlive,
-            x: prev.x + (sp.x - prev.x) * pullFactor,
-            y: prev.y + (sp.y - prev.y) * pullFactor,
-            vx: prev.vx,
-            vy: prev.vy,
-            aimAngle: prev.aimAngle,
-            walkCycle: prev.walkCycle,
-            tiltX: prev.tiltX,
-            parryTimer: Math.max(prev.parryTimer, sp.parryTimer),
-            dashTimer: Math.max(prev.dashTimer, sp.dashTimer)
-          };
-        }
-      }
-
-      // Smoothly blend remote players (velocity is extrapolated at 60/144fps in stepClientPrediction!)
-      const rDist = Math.hypot(sp.x - prev.x, sp.y - prev.y);
-      if (sanitizedAlive && prev.alive && rDist < 160) {
-        return {
-          ...sp,
-          alive: sanitizedAlive,
-          x: prev.x + (sp.x - prev.x) * 0.36,
-          y: prev.y + (sp.y - prev.y) * 0.36
-        };
-      }
-      return { ...sp, alive: sanitizedAlive };
+      const authoritative = { ...sp, alive: sp.isBot && !botsActive ? false : sp.alive };
+      const previous = this.players[sp.id];
+      return reconcilePlayer(previous, authoritative, sp.id === localSlotId,
+        reset || previous?.alive !== authoritative.alive || snap.phase !== 'PLAYING', this.hitStopTimer > 0 ? 0 : predictionLeadSeconds);
     });
 
     this.balls = snap.balls.map((sb) => {
       const prevB = this.balls.find((b) => b.id === sb.id);
-      if (prevB && Math.hypot(sb.x - prevB.x, sb.y - prevB.y) < 160) {
+      if (!reset && prevB && Math.hypot(sb.x - prevB.x, sb.y - prevB.y) < 160) {
         const samePass = prevB.passId === sb.passId && prevB.ownerId === sb.ownerId;
         const posBlend = samePass ? 0.25 : 0.82;
         return {
@@ -981,6 +999,9 @@ export class ArenaEngine {
     if (prevPhase !== this.phase || prevDiff !== this.botDifficulty) {
       this.onPhaseChange?.();
     }
+    this.roundEpoch = snap.roundEpoch ?? this.roundEpoch;
+    this.simulationTime = snap.simulationTime ?? this.simulationTime;
+    this.chaosBombs = (snap.chaosBombs ?? []).map((bomb) => ({ ...bomb }));
   }
 
   public spawnDust(x: number, y: number, count: number): void {

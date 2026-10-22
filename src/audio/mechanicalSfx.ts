@@ -25,6 +25,12 @@ class MechanicalAudioEngine {
     this.ensureContext();
   }
 
+  public dispose(): void {
+    const context = this.ctx;
+    this.ctx = null;
+    if (context && context.state !== 'closed') void context.close().catch(() => {});
+  }
+
   public playBatParry(combo: number, isPerfect: boolean, isFeint = false): void {
     const ac = this.ensureContext();
     if (!ac) return;
