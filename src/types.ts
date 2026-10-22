@@ -5,7 +5,8 @@ export type ActiveGameId =
   | 'TURBO_PUTT'
   | 'HOT_CORE'
   | 'VOLT_CROWN'
-  | 'HEX_CRUSH';
+  | 'HEX_CRUSH'
+  | 'RICOCHET_1';
 
 export type ChaosMutatorId =
   | 'NONE'
@@ -686,6 +687,89 @@ export interface HexCrushSnapshot {
   explosions: PuttExplosion[];
 }
 
+// ========================================================
+// 07 // RICOCHET-1 TYPES
+// ========================================================
+export interface RicochetPlayer {
+  id: number;
+  name: string;
+  bodyColor: string;
+  shadeColor: string;
+  cosmetics?: RobotCosmetics;
+  isBot: boolean;
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  radius: number;
+  alive: boolean;
+  lives: number;
+  score: number;
+  aimAngle: number;
+  parryTimer: number;
+  parryCooldown: number;
+  slideTimer: number;
+  slideCooldown: number;
+  walkCycle: number;
+  tiltX: number;
+  respawnTimer: number;
+  lastHitByPlayerId: number | null;
+  feintPrimed?: boolean;
+}
+
+export interface RicochetBullet {
+  id: number;
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  speed: number;
+  radius: number;
+  ownerId: number | null;
+  bounceCount: number;
+  glowColor: string;
+  isSupercharged: boolean;
+  trail: Array<{ x: number; y: number; alpha: number }>;
+}
+
+export interface ReflectiveMirror {
+  id: number;
+  x: number;
+  y: number;
+  baseX: number;
+  baseY: number;
+  length: number;
+  angle: number; // Current angle radians
+  rotSpeed: number; // Radians per sec (0 for fixed)
+  moveRangeX: number;
+  moveRangeY: number;
+  moveSpeed: number;
+  flashTimer: number;
+}
+
+export interface RicochetSpark {
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  color: string;
+  life: number;
+  maxLife: number;
+}
+
+export interface RicochetSnapshot {
+  arenaIndex: number;
+  arenaTitle: string;
+  status: 'PLAYING' | 'ROUND_OVER' | 'MATCH_OVER';
+  statusTimer: number;
+  roundWinnerId: number | null;
+  matchWinnerId: number | null;
+  players: RicochetPlayer[];
+  bullets: RicochetBullet[];
+  mirrors: ReflectiveMirror[];
+  sparks: RicochetSpark[];
+}
+
 export interface ClientInputPacket {
   slotId: number;
   name: string;
@@ -730,6 +814,7 @@ export interface WorldSnapshotPacket {
   hotCoreState?: HotCoreSnapshot;
   voltCrownState?: VoltCrownSnapshot;
   hexCrushState?: HexCrushSnapshot;
+  ricochetState?: RicochetSnapshot;
   tournamentState?: TournamentMatchState;
   hostSentAtMs?: number;
 }

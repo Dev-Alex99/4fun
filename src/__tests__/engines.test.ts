@@ -4,6 +4,7 @@ import { CHAIN_LEVELS, ChainPanicEngine } from '../game/chainPanicEngine';
 import { HOT_CORE_ARENAS, HotCoreEngine } from '../game/hotCoreEngine';
 import { VOLT_CROWN_ARENAS, VoltCrownEngine } from '../game/voltCrownEngine';
 import { HEX_CRUSH_ARENAS, HexCrushEngine } from '../game/hexCrushEngine';
+import { RICOCHET_ARENAS, RicochetEngine } from '../game/ricochetEngine';
 import { TournamentManager } from '../game/tournamentManager';
 import { PUTT_HOLES, PuttWarEngine } from '../game/puttWarEngine';
 import { MultiplayerRoomManager } from '../net/multiplayerRoom';
@@ -866,6 +867,91 @@ describe('RobotWorkshopManager (Cosmetics & Garage)', () => {
     const skinColors = workshop.getSkinColors('STEALTH', '#ffffff', '#aaaaaa');
     expect(skinColors.body).toBe('#27272a');
     expect(skinColors.shade).toBe('#18181b');
+  });
+});
+
+describe('RicochetEngine (07 // RICOCHET-1)', () => {
+  it('initializes 4 players in distinct corners with lives and 1 heavy plasma bullet', () => {
+    const engine = new RicochetEngine();
+    expect(engine.players.length).toBe(4);
+    expect(engine.bullets.length).toBe(1);
+    expect(engine.mirrors.length).toBeGreaterThan(0);
+    expect(RICOCHET_ARENAS.length).toBe(3);
+
+    const p0 = engine.players[0];
+    expect(p0.lives).toBe(3);
+    expect(p0.alive).toBe(true);
+    expect(p0.score).toBe(0);
+  });
+
+  it('cycles arenas cleanly with different mirror configurations', () => {
+    const engine = new RicochetEngine();
+    expect(engine.arenaIndex).toBe(0);
+
+    engine.loadArena(1);
+    expect(engine.arenaIndex).toBe(1);
+    expect(engine.mirrors.some((m) => m.moveRangeY > 0)).toBe(true);
+
+    engine.loadArena(2);
+    expect(engine.arenaIndex).toBe(2);
+  });
+
+  it('reflects bullet and applies supercharge when parried', () => {
+    const engine = new RicochetEngine();
+    const p0 = engine.players[0];
+    const bullet = engine.bullets[0];
+
+    // Place bullet right next to p0
+    bullet.x = p0.x + 20;
+    bullet.y = p0.y;
+    bullet.vx = -300;
+    bullet.vy = 0;
+
+    // Trigger parry towards right (aimAngle = 0)
+    p0.parryTimer = 0.2;
+    p0.aimAngle = 0;
+
+    engine.step(0.016, dummyInput);
+
+    expect(bullet.ownerId).toBe(p0.id);
+    expect(bullet.isSupercharged).toBe(true);
+    expect(bullet.vx).toBeGreaterThan(0);
+  });
+
+  it('allows players to slide-dodge under incoming bullets', () => {
+    const engine = new RicochetEngine();
+    const p0 = engine.players[0];
+    const bullet = engine.bullets[0];
+
+    bullet.x = p0.x + 5;
+    bullet.y = p0.y;
+    bullet.vx = -300;
+    bullet.vy = 0;
+    bullet.ownerId = 1; // Enemy bullet
+    bullet.bounceCount = 1;
+
+    // Put p0 in slide
+    p0.slideTimer = 0.25;
+
+    engine.step(0.016, dummyInput);
+
+    // p0 should NOT be KO'd because they ducked in a slide!
+    expect(p0.alive).toBe(true);
+    expect(p0.lives).toBe(3);
+  });
+
+  it('handles snapshot generation and synchronization between host and client', () => {
+    const host = new RicochetEngine();
+    const client = new RicochetEngine();
+
+    host.players[0].score = 4;
+    host.bullets[0].isSupercharged = true;
+
+    const snap = host.getSnapshot();
+    client.applySnapshot(snap);
+
+    expect(client.players[0].score).toBe(4);
+    expect(client.bullets[0].isSupercharged).toBe(true);
   });
 });
 

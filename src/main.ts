@@ -4,6 +4,7 @@ import { CHAIN_LEVELS, ChainPanicEngine } from './game/chainPanicEngine';
 import { HOT_CORE_ARENAS, HotCoreEngine } from './game/hotCoreEngine';
 import { VOLT_CROWN_ARENAS, VoltCrownEngine } from './game/voltCrownEngine';
 import { HEX_CRUSH_ARENAS, HexCrushEngine } from './game/hexCrushEngine';
+import { RICOCHET_ARENAS, RicochetEngine } from './game/ricochetEngine';
 import { TournamentManager } from './game/tournamentManager';
 import { PUTT_HOLES, PuttWarEngine } from './game/puttWarEngine';
 import { HARDWARE_MODS } from './game/hardwareMods';
@@ -12,6 +13,7 @@ import { ChainPanicRenderer } from './render/chainPanicRenderer';
 import { HotCoreRenderer } from './render/hotCoreRenderer';
 import { VoltCrownRenderer } from './render/voltCrownRenderer';
 import { HexCrushRenderer } from './render/hexCrushRenderer';
+import { RicochetRenderer } from './render/ricochetRenderer';
 import { PuttWarRenderer } from './render/puttWarRenderer';
 import { generateRoomCode, MultiplayerRoomManager } from './net/multiplayerRoom';
 import { sfx } from './audio/mechanicalSfx';
@@ -171,6 +173,7 @@ const puttEngine = new PuttWarEngine();
 const hotCoreEngine = new HotCoreEngine();
 const voltCrownEngine = new VoltCrownEngine();
 const hexCrushEngine = new HexCrushEngine();
+const ricochetEngine = new RicochetEngine();
 const tournament = new TournamentManager();
 const courtRenderer = new CourtRenderer(canvas);
 const chainRenderer = new ChainPanicRenderer(canvas);
@@ -178,6 +181,7 @@ const puttRenderer = new PuttWarRenderer(canvas);
 const hotCoreRenderer = new HotCoreRenderer(canvas);
 const voltCrownRenderer = new VoltCrownRenderer(canvas);
 const hexCrushRenderer = new HexCrushRenderer(canvas);
+const ricochetRenderer = new RicochetRenderer(canvas);
 const net = new MultiplayerRoomManager(
   arenaEngine,
   chainEngine,
@@ -186,7 +190,8 @@ const net = new MultiplayerRoomManager(
   hotCoreEngine,
   voltCrownEngine,
   hexCrushEngine,
-  tournament
+  tournament,
+  ricochetEngine
 );
 
 // 5. UI & HUD Synchronization Function
@@ -402,6 +407,26 @@ function syncOverlaysAndHUD(): void {
     installedModsStrip.textContent = `SECTOR ${hexCrushEngine.arenaIndex + 1}/${
       HEX_CRUSH_ARENAS.length
     } • RONDA 0${hexCrushEngine.roundNumber} • EN PIE: ${aliveCount}/4 • VICTORIAS: ${localHex?.score ?? 0}/3🏆`;
+  } else if (net.activeGame === 'RICOCHET_1') {
+    prevSectorBtn.classList.remove('hidden');
+    nextSectorBtn.classList.remove('hidden');
+    prevSectorBtn.textContent = '◀ SECTOR';
+    nextSectorBtn.textContent = 'SECTOR ▶';
+    chainModeBtn.classList.add('hidden');
+
+    controlsLegendStrip.innerHTML = `
+      <span><strong>[WASD]</strong> MOVER</span>
+      <span class="sep">•</span>
+      <span><strong>[CLIC IZQ / ESPACIO]</strong> PARRY REFLECTOR</span>
+      <span class="sep">•</span>
+      <span><strong>[CLIC DER / SHIFT]</strong> BARRIDA EN PLANCHA</span>
+      <span class="sep">•</span>
+      <span><strong>[1-4]</strong> BOCINA</span>
+    `;
+    const localRico = ricochetEngine.players[net.localSlotId] || ricochetEngine.players[0];
+    installedModsStrip.textContent = `SECTOR ${ricochetEngine.arenaIndex + 1}/${
+      RICOCHET_ARENAS.length
+    } • BALA: ${Math.round(ricochetEngine.bullets[0]?.speed ?? 0)} RPM • KOs: ${localRico?.score ?? 0}/5 🏆 • VIDAS: ${localRico?.lives ?? 0} ❤️`;
   } else {
     prevSectorBtn.classList.add('hidden');
     nextSectorBtn.classList.add('hidden');
@@ -436,6 +461,7 @@ function syncOverlaysAndHUD(): void {
       const hotP = hotCoreEngine.players[p.id];
       const voltP = voltCrownEngine.players[p.id];
       const hexP = hexCrushEngine.players[p.id];
+      const ricoP = ricochetEngine.players[p.id];
       const isKing = voltCrownEngine.crown.holderId === p.id;
       const scoreBadge =
         net.activeGame === 'CHAIN_PANIC'
@@ -448,7 +474,9 @@ function syncOverlaysAndHUD(): void {
                 ? `${isKing ? '👑' : '⚡'}${Math.floor(voltP ? voltP.score : 0)}%`
                 : net.activeGame === 'HEX_CRUSH'
                   ? `${hexP ? hexP.score : 0}/3🏆`
-                  : `${p.score}`;
+                  : net.activeGame === 'RICOCHET_1'
+                    ? `${ricoP ? ricoP.score : 0}⚔️ (${ricoP ? ricoP.lives : 0}❤️)`
+                    : `${p.score}`;
       const canKick = net.isHost && p.id > 0 && !p.isBot;
       return `
       <div class="player-slot" style="background:${p.bodyColor}">
@@ -687,6 +715,7 @@ function flushImmediateClientAction(): void {
   const myHotPlayer = hotCoreEngine.players[net.localSlotId] || hotCoreEngine.players[0];
   const myVoltPlayer = voltCrownEngine.players[net.localSlotId] || voltCrownEngine.players[0];
   const myHexPlayer = hexCrushEngine.players[net.localSlotId] || hexCrushEngine.players[0];
+  const myRicoPlayer = ricochetEngine.players[net.localSlotId] || ricochetEngine.players[0];
 
   // Trigger immediate local visual feedback (0ms input lag!)
   if (net.activeGame === 'BASH_BOT') {
@@ -733,7 +762,9 @@ function flushImmediateClientAction(): void {
           ? myVoltPlayer.x
           : net.activeGame === 'HEX_CRUSH'
             ? myHexPlayer.x
-            : myArenaPlayer.x;
+            : net.activeGame === 'RICOCHET_1'
+              ? myRicoPlayer.x
+              : myArenaPlayer.x;
   const refY =
     net.activeGame === 'TURBO_PUTT'
       ? myPuttPlayer.y
@@ -743,7 +774,9 @@ function flushImmediateClientAction(): void {
           ? myVoltPlayer.y
           : net.activeGame === 'HEX_CRUSH'
             ? myHexPlayer.y
-            : myArenaPlayer.y;
+            : net.activeGame === 'RICOCHET_1'
+              ? myRicoPlayer.y
+              : myArenaPlayer.y;
   const aimAngle = Math.atan2(mouseCourtPos.y - refY, mouseCourtPos.x - refX);
   const primaryBall = arenaEngine.balls[0];
   const clientBallDist = primaryBall
@@ -774,7 +807,9 @@ function flushImmediateClientAction(): void {
             ? myVoltPlayer.x
             : net.activeGame === 'HEX_CRUSH'
               ? myHexPlayer.x
-              : myArenaPlayer.x,
+              : net.activeGame === 'RICOCHET_1'
+                ? myRicoPlayer.x
+                : myArenaPlayer.x,
     clientY:
       net.activeGame === 'CHAIN_PANIC'
         ? myChainPlayer.y
@@ -784,7 +819,9 @@ function flushImmediateClientAction(): void {
             ? myVoltPlayer.y
             : net.activeGame === 'HEX_CRUSH'
               ? myHexPlayer.y
-              : myArenaPlayer.y,
+              : net.activeGame === 'RICOCHET_1'
+                ? myRicoPlayer.y
+                : myArenaPlayer.y,
     clientZ: net.activeGame === 'HEX_CRUSH' ? myHexPlayer.z : myChainPlayer.z,
     sentAtMs: performance.now()
   });
@@ -825,7 +862,9 @@ window.addEventListener('keydown', (e) => {
       net.activeGame === 'CHAIN_PANIC' ||
       net.activeGame === 'TURBO_PUTT' ||
       net.activeGame === 'HOT_CORE' ||
-      net.activeGame === 'VOLT_CROWN'
+      net.activeGame === 'VOLT_CROWN' ||
+      net.activeGame === 'HEX_CRUSH' ||
+      net.activeGame === 'RICOCHET_1'
     ) {
       pendingYank = true;
     } else {
@@ -1040,7 +1079,9 @@ touchGamepad.init('virtualGamepad', {
       net.activeGame === 'CHAIN_PANIC' ||
       net.activeGame === 'TURBO_PUTT' ||
       net.activeGame === 'HOT_CORE' ||
-      net.activeGame === 'VOLT_CROWN'
+      net.activeGame === 'VOLT_CROWN' ||
+      net.activeGame === 'HEX_CRUSH' ||
+      net.activeGame === 'RICOCHET_1'
     ) {
       pendingYank = true;
     } else {
@@ -1088,6 +1129,11 @@ prevSectorBtn.addEventListener('click', () => {
       kind: 'LOAD_STAGE',
       arenaIndex: hexCrushEngine.arenaIndex - 1
     });
+  } else if (net.activeGame === 'RICOCHET_1') {
+    net.sendOrApplyRoomAction({
+      kind: 'LOAD_STAGE',
+      arenaIndex: ricochetEngine.arenaIndex - 1
+    });
   } else {
     net.sendOrApplyRoomAction({
       kind: 'LOAD_STAGE',
@@ -1117,6 +1163,11 @@ nextSectorBtn.addEventListener('click', () => {
     net.sendOrApplyRoomAction({
       kind: 'LOAD_STAGE',
       arenaIndex: hexCrushEngine.arenaIndex + 1
+    });
+  } else if (net.activeGame === 'RICOCHET_1') {
+    net.sendOrApplyRoomAction({
+      kind: 'LOAD_STAGE',
+      arenaIndex: ricochetEngine.arenaIndex + 1
     });
   } else {
     net.sendOrApplyRoomAction({
@@ -1217,6 +1268,7 @@ function stepGameFrame(dt: number): void {
   const myHotPlayer = hotCoreEngine.players[net.localSlotId] || hotCoreEngine.players[0];
   const myVoltPlayer = voltCrownEngine.players[net.localSlotId] || voltCrownEngine.players[0];
   const myHexPlayer = hexCrushEngine.players[net.localSlotId] || hexCrushEngine.players[0];
+  const myRicoPlayer = ricochetEngine.players[net.localSlotId] || ricochetEngine.players[0];
   let moveX = 0;
   let moveY = 0;
   if (keys['KeyW'] || keys['ArrowUp']) moveY -= 1;
@@ -1247,7 +1299,9 @@ function stepGameFrame(dt: number): void {
           ? myVoltPlayer.x
           : net.activeGame === 'HEX_CRUSH'
             ? myHexPlayer.x
-            : myArenaPlayer.x;
+            : net.activeGame === 'RICOCHET_1'
+              ? myRicoPlayer.x
+              : myArenaPlayer.x;
   const refY =
     net.activeGame === 'TURBO_PUTT'
       ? myPuttPlayer.y
@@ -1257,7 +1311,9 @@ function stepGameFrame(dt: number): void {
           ? myVoltPlayer.y
           : net.activeGame === 'HEX_CRUSH'
             ? myHexPlayer.y
-            : myArenaPlayer.y;
+            : net.activeGame === 'RICOCHET_1'
+              ? myRicoPlayer.y
+              : myArenaPlayer.y;
   let aimAngle = Math.atan2(mouseCourtPos.y - refY, mouseCourtPos.x - refX);
   if (touchGamepad.enabled && (Math.abs(touchGamepad.moveX) > 0.1 || Math.abs(touchGamepad.moveY) > 0.1)) {
     aimAngle = Math.atan2(touchGamepad.moveY, touchGamepad.moveX);
@@ -1299,7 +1355,9 @@ function stepGameFrame(dt: number): void {
             ? myVoltPlayer.x
             : net.activeGame === 'HEX_CRUSH'
               ? myHexPlayer.x
-              : myArenaPlayer.x,
+              : net.activeGame === 'RICOCHET_1'
+                ? myRicoPlayer.x
+                : myArenaPlayer.x,
     clientY:
       net.activeGame === 'CHAIN_PANIC'
         ? myChainPlayer.y
@@ -1309,7 +1367,9 @@ function stepGameFrame(dt: number): void {
             ? myVoltPlayer.y
             : net.activeGame === 'HEX_CRUSH'
               ? myHexPlayer.y
-              : myArenaPlayer.y,
+              : net.activeGame === 'RICOCHET_1'
+                ? myRicoPlayer.y
+                : myArenaPlayer.y,
     clientZ: net.activeGame === 'HEX_CRUSH' ? myHexPlayer.z : myChainPlayer.z,
     sentAtMs: performance.now()
   };
@@ -1358,6 +1418,8 @@ function stepGameFrame(dt: number): void {
       if (pendingDash) hexCrushEngine.triggerJumpOrPound(myHexPlayer);
       if (pendingYank) hexCrushEngine.triggerEmergencyNanobridge(myHexPlayer);
       hexCrushEngine.step(dt, inputPacket);
+    } else if (net.activeGame === 'RICOCHET_1') {
+      ricochetEngine.step(dt, inputPacket);
     } else if (net.activeGame === 'BASH_BOT') {
       if (pendingEmote > 0) arenaEngine.triggerEmote(myArenaPlayer, pendingEmote);
       if (pendingParry) arenaEngine.triggerParry(myArenaPlayer);
@@ -1383,6 +1445,8 @@ function stepGameFrame(dt: number): void {
         tournament.recordRoundWinner(voltCrownEngine.lastWinnerId);
       } else if (net.activeGame === 'HEX_CRUSH' && hexCrushEngine.status === 'MATCH_OVER') {
         tournament.recordRoundWinner(hexCrushEngine.matchWinnerId);
+      } else if (net.activeGame === 'RICOCHET_1' && ricochetEngine.status === 'MATCH_OVER') {
+        tournament.recordRoundWinner(ricochetEngine.matchWinnerId);
       }
 
       // Chaos Mutator: Periodic Dynamite Bomb Rain
@@ -1422,6 +1486,8 @@ function stepGameFrame(dt: number): void {
       voltCrownEngine.stepClientPrediction(dt, net.localSlotId, inputPacket);
     } else if (net.activeGame === 'HEX_CRUSH') {
       hexCrushEngine.stepClientPrediction(dt, net.localSlotId, inputPacket);
+    } else if (net.activeGame === 'RICOCHET_1') {
+      ricochetEngine.step(dt, inputPacket);
     }
     net.sendClientInput(inputPacket);
   }
@@ -1482,6 +1548,12 @@ function animate(now: number): void {
     rpmBadge.textContent = `🧱 SECTOR 0${hexCrushEngine.arenaIndex + 1} • R0${hexCrushEngine.roundNumber} (${aliveCount} EN PIE)`;
     rpmBadge.style.background = '#0284C7';
     hexCrushRenderer.render(hexCrushEngine, net.localSlotId);
+  } else if (net.activeGame === 'RICOCHET_1') {
+    const b = ricochetEngine.bullets[0];
+    const spd = Math.round(b?.speed ?? 0);
+    rpmBadge.textContent = `⚡ VEL BALA: ${spd} RPM • SECTOR 0${ricochetEngine.arenaIndex + 1}`;
+    rpmBadge.style.background = b?.isSupercharged ? '#F59E0B' : '#E11D48';
+    ricochetRenderer.render(ricochetEngine, net.localSlotId);
   } else {
     if (primaryBall) {
       const rpm = Math.round((primaryBall.speed / primaryBall.baseSpeed) * 100);

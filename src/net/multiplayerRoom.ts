@@ -4,6 +4,7 @@ import { ChainPanicEngine } from '../game/chainPanicEngine';
 import { HotCoreEngine } from '../game/hotCoreEngine';
 import { VoltCrownEngine } from '../game/voltCrownEngine';
 import { HexCrushEngine } from '../game/hexCrushEngine';
+import { RicochetEngine } from '../game/ricochetEngine';
 import { TournamentManager } from '../game/tournamentManager';
 import { PuttWarEngine } from '../game/puttWarEngine';
 import {
@@ -137,6 +138,7 @@ export class MultiplayerRoomManager {
   private hotCoreEngine?: HotCoreEngine;
   private voltCrownEngine?: VoltCrownEngine;
   private hexCrushEngine?: HexCrushEngine;
+  private ricochetEngine?: RicochetEngine;
   public tournamentManager?: TournamentManager;
   private onStatusUpdate: () => void;
 
@@ -178,7 +180,8 @@ export class MultiplayerRoomManager {
     hotCoreEngine?: HotCoreEngine,
     voltCrownEngine?: VoltCrownEngine,
     hexCrushEngine?: HexCrushEngine,
-    tournamentManager?: TournamentManager
+    tournamentManager?: TournamentManager,
+    ricochetEngine?: RicochetEngine
   ) {
     this.arenaEngine = arenaEngine;
     this.chainEngine = chainEngine;
@@ -188,6 +191,7 @@ export class MultiplayerRoomManager {
     this.voltCrownEngine = voltCrownEngine;
     this.hexCrushEngine = hexCrushEngine;
     this.tournamentManager = tournamentManager;
+    this.ricochetEngine = ricochetEngine;
 
     // Always generate a unique peer ID per tab instance so duplicated tabs never collide!
     this.localPeerId =
@@ -298,6 +302,8 @@ export class MultiplayerRoomManager {
         this.voltCrownEngine?.loadArena(this.voltCrownEngine.arenaIndex);
       } else if (nextGame === 'HEX_CRUSH') {
         this.hexCrushEngine?.loadArena(this.hexCrushEngine.arenaIndex);
+      } else if (nextGame === 'RICOCHET_1') {
+        this.ricochetEngine?.loadArena(this.ricochetEngine.arenaIndex);
       }
 
       const switchEnv: NetEnvelope = {
@@ -393,6 +399,7 @@ export class MultiplayerRoomManager {
         this.hotCoreEngine?.loadArena(this.hotCoreEngine.arenaIndex);
         this.voltCrownEngine?.loadArena(this.voltCrownEngine.arenaIndex);
         this.hexCrushEngine?.loadArena(this.hexCrushEngine.arenaIndex);
+        this.ricochetEngine?.loadArena(this.ricochetEngine.arenaIndex);
       }
     } else if (action.kind === 'LOAD_STAGE') {
       if (typeof action.levelIndex === 'number' && this.chainEngine.levelIndex !== action.levelIndex) {
@@ -429,6 +436,14 @@ export class MultiplayerRoomManager {
       ) {
         this.hexCrushEngine.loadArena(action.arenaIndex);
       }
+      if (
+        typeof action.arenaIndex === 'number' &&
+        this.ricochetEngine &&
+        this.activeGame === 'RICOCHET_1' &&
+        this.ricochetEngine.arenaIndex !== action.arenaIndex
+      ) {
+        this.ricochetEngine.loadArena(action.arenaIndex);
+      }
     } else if (action.kind === 'CHAIN_MODE' && action.chainMode) {
       this.chainEngine.mode = action.chainMode;
       if (this.isHost) {
@@ -445,6 +460,8 @@ export class MultiplayerRoomManager {
         this.voltCrownEngine?.resetChampionship();
       } else if (this.activeGame === 'HEX_CRUSH') {
         this.hexCrushEngine?.resetChampionship();
+      } else if (this.activeGame === 'RICOCHET_1') {
+        this.ricochetEngine?.resetRound();
       } else {
         this.arenaEngine.resetChampionship();
       }
@@ -475,6 +492,7 @@ export class MultiplayerRoomManager {
     this.hotCoreEngine?.syncPlayerIdentities(roster, botsActive);
     this.voltCrownEngine?.syncPlayerIdentities(roster, botsActive);
     this.hexCrushEngine?.syncPlayerIdentities(roster, botsActive);
+    this.ricochetEngine?.syncPlayerIdentities(roster, botsActive);
   }
 
   /**
@@ -1115,6 +1133,7 @@ export class MultiplayerRoomManager {
       this.hotCoreEngine?.applyRemoteInput(inp);
       this.voltCrownEngine?.applyRemoteInput(inp);
       this.hexCrushEngine?.applyRemoteInput(inp);
+      this.ricochetEngine?.applyRemoteInput(inp);
       if (prevName && prevName !== inp.name) {
         this.syncEnginesRoster();
         this.broadcastHostSnapshot(true);
@@ -1175,6 +1194,9 @@ export class MultiplayerRoomManager {
       }
       if (snap.hexCrushState) {
         this.hexCrushEngine?.applySnapshot(snap.hexCrushState, this.localSlotId);
+      }
+      if (snap.ricochetState) {
+        this.ricochetEngine?.applySnapshot(snap.ricochetState);
       }
       if (snap.tournamentState) {
         this.tournamentManager?.applySnapshot(snap.tournamentState);
@@ -1329,6 +1351,8 @@ export class MultiplayerRoomManager {
       snap.voltCrownState = this.voltCrownEngine?.getSnapshot();
     } else if (this.activeGame === 'HEX_CRUSH') {
       snap.hexCrushState = this.hexCrushEngine?.getSnapshot();
+    } else if (this.activeGame === 'RICOCHET_1') {
+      snap.ricochetState = this.ricochetEngine?.getSnapshot();
     }
     if (this.tournamentManager?.state.active) {
       snap.tournamentState = this.tournamentManager.getSnapshot();

@@ -11,7 +11,8 @@ const PLAYABLE_GAMES: ActiveGameId[] = [
   'HEX_CRUSH',
   'HOT_CORE',
   'VOLT_CROWN',
-  'TURBO_PUTT'
+  'TURBO_PUTT',
+  'RICOCHET_1'
 ];
 
 const AVAILABLE_MUTATORS: ChaosMutatorId[] = [
