@@ -173,8 +173,9 @@ export class VoltCrownRenderer {
         }
         ctx.restore();
       } else if (trap.type === 'CRUSHER') {
+        const isWarning = !trap.active && (trap.period - trap.timer) <= 0.75;
         // Hydraulic Crusher
-        ctx.fillStyle = trap.active ? '#DC2626' : '#71717A';
+        ctx.fillStyle = trap.active ? '#DC2626' : (isWarning ? '#E11D48' : '#71717A');
         this.roundRect(ctx, trap.x, trap.y, trap.w, trap.h, 6);
         ctx.fill();
         ctx.lineWidth = 2.8;
@@ -183,11 +184,22 @@ export class VoltCrownRenderer {
         ctx.stroke();
 
         // Caution Stripes on Crusher
-        ctx.fillStyle = '#FEF08A';
+        ctx.fillStyle = isWarning ? '#FDE047' : '#FEF08A';
         ctx.fillRect(trap.x + 6, trap.y + 6, trap.w - 12, 10);
         ctx.fillStyle = '#18181B';
         for (let sx = trap.x + 8; sx < trap.x + trap.w - 14; sx += 14) {
           ctx.fillRect(sx, trap.y + 6, 7, 10);
+        }
+
+        // Telegraph hazard alert 0.75s before slamming down
+        if (isWarning) {
+          ctx.save();
+          ctx.font = '800 11px "JetBrains Mono", monospace';
+          ctx.textAlign = 'center';
+          const blink = Math.sin(nowSec * 22) > 0;
+          ctx.fillStyle = blink ? '#EF4444' : '#F59E0B';
+          ctx.fillText('⚠️ ¡PELIGRO!', trap.x + trap.w * 0.5, trap.y + trap.h * 0.5 + 4);
+          ctx.restore();
         }
       } else if (trap.type === 'LASER_GATE') {
         // Laser Gate Emitters
@@ -290,6 +302,8 @@ export class VoltCrownRenderer {
       ctx.save();
       ctx.translate(part.x, part.y);
       ctx.rotate(part.rot);
+      const alpha = typeof part.life === 'number' ? Math.max(0, Math.min(1, part.life / 0.8)) : 1;
+      ctx.globalAlpha = alpha;
       ctx.fillStyle = part.color;
       ctx.strokeStyle = '#18181B';
       ctx.lineWidth = 1.8;
@@ -412,12 +426,49 @@ export class VoltCrownRenderer {
     ctx.fillStyle = 'rgba(24, 24, 27, 0.28)';
     ctx.fill();
 
+    // Radar Sonar Ping expanding rings across arena!
+    const cycle = (nowSec * 1.25) % 1.0;
+    const radarRadius = 26 + cycle * 75;
+    const radarAlpha = Math.max(0, 0.7 * (1 - cycle));
+    ctx.beginPath();
+    ctx.arc(0, 0, radarRadius, 0, Math.PI * 2);
+    ctx.strokeStyle = `rgba(245, 158, 11, ${radarAlpha})`;
+    ctx.lineWidth = 2.5;
+    ctx.stroke();
+
     // Pulsing radiant halo
     const halo = 24 + Math.sin(nowSec * 14) * 4;
     ctx.beginPath();
     ctx.arc(0, 0, halo, 0, Math.PI * 2);
     ctx.fillStyle = 'rgba(245, 158, 11, 0.25)';
     ctx.fill();
+
+    // Floating Holographic Beacon Badge above Crown
+    const bob = Math.sin(nowSec * 6) * 4;
+    ctx.save();
+    ctx.translate(0, -34 + bob);
+    ctx.font = '900 10px "JetBrains Mono", monospace';
+    ctx.textAlign = 'center';
+    const tag = '👑 ¡CORONA LIBRE!';
+    const tw = ctx.measureText(tag).width + 12;
+    ctx.fillStyle = '#FEF08A';
+    this.roundRect(ctx, -tw * 0.5, -9, tw, 18, 4);
+    ctx.fill();
+    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = '#18181B';
+    this.roundRect(ctx, -tw * 0.5, -9, tw, 18, 4);
+    ctx.stroke();
+    ctx.fillStyle = '#18181B';
+    ctx.fillText(tag, 0, 4);
+    // Downward arrow pip
+    ctx.beginPath();
+    ctx.moveTo(-4, 9);
+    ctx.lineTo(4, 9);
+    ctx.lineTo(0, 14);
+    ctx.closePath();
+    ctx.fillStyle = '#18181B';
+    ctx.fill();
+    ctx.restore();
 
     // Golden Crown Icon
     this.renderCrownJewel(ctx, 0, 0);
@@ -546,6 +597,18 @@ export class VoltCrownRenderer {
       ctx.beginPath();
       ctx.arc(0, -26, 10, nowSec * 10, nowSec * 10 + Math.PI * 1.4);
       ctx.stroke();
+    }
+
+    // Hazard grace period immunity field
+    if (p.trapImmunityTimer && p.trapImmunityTimer > 0) {
+      ctx.save();
+      ctx.strokeStyle = '#38BDF8';
+      ctx.lineWidth = 1.8;
+      ctx.setLineDash([4, 4]);
+      ctx.beginPath();
+      ctx.arc(0, 0, p.radius + 6, nowSec * 4, nowSec * 4 + Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
     }
 
     // Battery / Score bar above head

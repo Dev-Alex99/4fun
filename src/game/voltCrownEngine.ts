@@ -25,50 +25,62 @@ export const VOLT_CROWN_ARENAS: VoltCrownArenaDef[] = [
   {
     title: 'SECTOR 01 // PISTONES TRITURADORES',
     bumpers: [
-      { x: 340, y: 258, radius: 26 },
-      { x: 660, y: 258, radius: 26 }
+      { x: 310, y: 258, radius: 26 },
+      { x: 690, y: 258, radius: 26 }
     ],
     traps: [
       {
-        id: 'crush-center',
+        id: 'crush-west',
         type: 'CRUSHER',
-        x: 460,
-        y: 200,
-        w: 80,
-        h: 116,
+        x: 210,
+        y: 220,
+        w: 75,
+        h: 76,
         active: false,
         timer: 0,
         period: 3.2,
         flashAnim: 0
       },
       {
+        id: 'crush-east',
+        type: 'CRUSHER',
+        x: 715,
+        y: 220,
+        w: 75,
+        h: 76,
+        active: false,
+        timer: 1.6,
+        period: 3.2,
+        flashAnim: 0
+      },
+      {
         id: 'crush-north',
         type: 'CRUSHER',
-        x: 220,
-        y: 90,
-        w: 90,
-        h: 60,
+        x: 450,
+        y: 85,
+        w: 100,
+        h: 55,
         active: false,
-        timer: 1.5,
-        period: 3.8,
+        timer: 0.8,
+        period: 3.6,
         flashAnim: 0
       },
       {
         id: 'crush-south',
         type: 'CRUSHER',
-        x: 690,
-        y: 360,
-        w: 90,
-        h: 60,
+        x: 450,
+        y: 375,
+        w: 100,
+        h: 55,
         active: false,
-        timer: 0.8,
-        period: 3.8,
+        timer: 2.2,
+        period: 3.6,
         flashAnim: 0
       }
     ],
     plates: [
-      { id: 'plate-1', x: 480, y: 110, w: 40, h: 40, pressed: false, targetTrapId: 'crush-center' },
-      { id: 'plate-2', x: 480, y: 365, w: 40, h: 40, pressed: false, targetTrapId: 'crush-center' }
+      { id: 'plate-1', x: 480, y: 155, w: 40, h: 40, pressed: false, targetTrapId: 'crush-north' },
+      { id: 'plate-2', x: 480, y: 320, w: 40, h: 40, pressed: false, targetTrapId: 'crush-south' }
     ]
   },
   {
@@ -78,10 +90,10 @@ export const VOLT_CROWN_ARENAS: VoltCrownArenaDef[] = [
       {
         id: 'laser-vert-1',
         type: 'LASER_GATE',
-        x: 320,
-        y: 80,
+        x: 310,
+        y: 75,
         w: 16,
-        h: 160,
+        h: 155,
         active: true,
         timer: 0,
         period: 2.8,
@@ -90,24 +102,36 @@ export const VOLT_CROWN_ARENAS: VoltCrownArenaDef[] = [
       {
         id: 'laser-vert-2',
         type: 'LASER_GATE',
-        x: 680,
-        y: 270,
+        x: 690,
+        y: 285,
         w: 16,
-        h: 160,
+        h: 155,
         active: true,
         timer: 1.4,
         period: 2.8,
         flashAnim: 0
       },
       {
-        id: 'laser-horiz',
+        id: 'laser-horiz-1',
         type: 'LASER_GATE',
-        x: 360,
-        y: 250,
-        w: 280,
+        x: 375,
+        y: 165,
+        w: 250,
         h: 16,
         active: false,
         timer: 0.6,
+        period: 3.2,
+        flashAnim: 0
+      },
+      {
+        id: 'laser-horiz-2',
+        type: 'LASER_GATE',
+        x: 375,
+        y: 350,
+        w: 250,
+        h: 16,
+        active: false,
+        timer: 2.0,
         period: 3.2,
         flashAnim: 0
       }
@@ -153,21 +177,33 @@ export const VOLT_CROWN_ARENAS: VoltCrownArenaDef[] = [
         flashAnim: 0
       },
       {
-        id: 'crush-mid',
+        id: 'crush-west-c',
         type: 'CRUSHER',
-        x: 460,
+        x: 190,
         y: 220,
-        w: 80,
+        w: 75,
         h: 76,
         active: false,
         timer: 0,
         period: 3.5,
         flashAnim: 0
+      },
+      {
+        id: 'crush-east-c',
+        type: 'CRUSHER',
+        x: 735,
+        y: 220,
+        w: 75,
+        h: 76,
+        active: false,
+        timer: 1.7,
+        period: 3.5,
+        flashAnim: 0
       }
     ],
     plates: [
-      { id: 'plate-c1', x: 180, y: 240, w: 40, h: 40, pressed: false, targetTrapId: 'crush-mid' },
-      { id: 'plate-c2', x: 820, y: 240, w: 40, h: 40, pressed: false, targetTrapId: 'crush-mid' }
+      { id: 'plate-c1', x: 300, y: 240, w: 40, h: 40, pressed: false, targetTrapId: 'crush-west-c' },
+      { id: 'plate-c2', x: 700, y: 240, w: 40, h: 40, pressed: false, targetTrapId: 'crush-east-c' }
     ]
   },
   {
@@ -728,7 +764,15 @@ export class VoltCrownEngine {
       lp.vx *= Math.pow(0.92, dt * 60);
       lp.vy *= Math.pow(0.92, dt * 60);
       lp.rot += lp.vRot * dt;
+      lp.life = (lp.life ?? 3.2) - dt;
+      if (lp.life <= 0) {
+        this.looseParts.splice(i, 1);
+      }
     }
+    // Hard capacity caps to prevent any memory or particle leaks over time
+    while (this.looseParts.length > 28) this.looseParts.shift();
+    while (this.particles.length > 40) this.particles.shift();
+    while (this.explosions.length > 10) this.explosions.shift();
     for (let i = this.callouts.length - 1; i >= 0; i--) {
       const c = this.callouts[i];
       c.life -= dt;
@@ -793,6 +837,9 @@ export class VoltCrownEngine {
       if (p.taserCooldown > 0) p.taserCooldown = Math.max(0, p.taserCooldown - dt);
       if (p.stunTimer > 0) p.stunTimer = Math.max(0, p.stunTimer - dt);
       if (p.immunityTimer > 0) p.immunityTimer = Math.max(0, p.immunityTimer - dt);
+      if (p.trapImmunityTimer && p.trapImmunityTimer > 0) {
+        p.trapImmunityTimer = Math.max(0, p.trapImmunityTimer - dt);
+      }
       if (p.emoteTimer > 0) {
         p.emoteTimer -= dt;
         if (p.emoteTimer <= 0) p.emoteText = null;
@@ -804,6 +851,21 @@ export class VoltCrownEngine {
       if (isKing) {
         p.score = Math.min(WINNING_BATTERY, p.score + dt * 3.6);
         p.holdStreak += dt;
+
+        // Visual King Overdrive trail when holding crown at high charge
+        if (p.score >= 50 && Math.random() < 0.35) {
+          this.particles.push({
+            type: 'spark',
+            x: p.x + (Math.random() - 0.5) * 14,
+            y: p.y + (Math.random() - 0.5) * 14,
+            vx: -p.vx * 0.25 + (Math.random() - 0.5) * 60,
+            vy: -p.vy * 0.25 + (Math.random() - 0.5) * 60,
+            life: 0.35,
+            decay: 1.0,
+            color: '#FACC15',
+            size: 3.2
+          });
+        }
 
         // Check 15s Volt Overcharge Nova!
         if (p.holdStreak >= 15.0) {
@@ -896,6 +958,7 @@ export class VoltCrownEngine {
       // Check Active Hazards (Laser Gates, Crushers, Plasma Grates)
       for (const trap of this.traps) {
         if (!trap.active) continue;
+        if (p.trapImmunityTimer && p.trapImmunityTimer > 0) continue;
         if (
           p.x >= trap.x - p.radius &&
           p.x <= trap.x + trap.w + p.radius &&
@@ -903,12 +966,33 @@ export class VoltCrownEngine {
           p.y <= trap.y + trap.h + p.radius
         ) {
           // Trap hit player!
-          p.stunTimer = 0.85;
+          p.stunTimer = 0.45;
+          p.trapImmunityTimer = 1.1; // 1.1s grace period so player is never locked
           p.lastStunnedAt = performance.now();
+
+          // Outward ejection impulse away from trap center so player escapes instantly
+          const trapCenterX = trap.x + trap.w * 0.5;
+          const trapCenterY = trap.y + trap.h * 0.5;
+          let edx = p.x - trapCenterX;
+          let edy = p.y - trapCenterY;
+          let elen = Math.hypot(edx, edy);
+          if (elen < 0.001) {
+            edx = 0;
+            edy = -1;
+            elen = 1;
+          }
+          edx /= elen;
+          edy /= elen;
+          p.vx = edx * 620;
+          p.vy = edy * 620;
+          p.x += edx * (p.radius + 8);
+          p.y += edy * (p.radius + 8);
+
           if (isKing) {
-            this.dropCrown(p, -p.vx || (Math.random() - 0.5) * 400, -p.vy || -350);
+            this.dropCrown(p, -edx * 380, -edy * 380);
           }
           this.spawnDebris(p.x, p.y, p.bodyColor);
+          this.screenShake = 10;
           sfx.playPinballBumper();
         }
       }
@@ -1305,7 +1389,7 @@ export class VoltCrownEngine {
   }
 
   private spawnDebris(x: number, y: number, color: string): void {
-    for (let i = 0; i < 5; i++) {
+    for (let i = 0; i < 4; i++) {
       this.looseParts.push({
         x,
         y,
@@ -1313,8 +1397,13 @@ export class VoltCrownEngine {
         vy: (Math.random() - 0.5) * 260,
         rot: Math.random() * Math.PI * 2,
         vRot: (Math.random() - 0.5) * 12,
-        color
+        color,
+        life: 3.2,
+        maxLife: 3.2
       });
+    }
+    while (this.looseParts.length > 28) {
+      this.looseParts.shift();
     }
   }
 }

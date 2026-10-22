@@ -470,6 +470,7 @@ describe('VoltCrownEngine (05 // VOLT-CROWN)', () => {
     const engine = new VoltCrownEngine();
     const king = engine.players[0];
     const hunter = engine.players[1];
+    hunter.isBot = false;
 
     engine.crown.holderId = 0;
     king.x = 340;
@@ -496,6 +497,7 @@ describe('VoltCrownEngine (05 // VOLT-CROWN)', () => {
     const engine = new VoltCrownEngine();
     const king = engine.players[0];
     const hunter = engine.players[1];
+    hunter.isBot = false;
 
     engine.crown.holderId = 0;
     king.x = 320;
@@ -514,6 +516,51 @@ describe('VoltCrownEngine (05 // VOLT-CROWN)', () => {
     expect(king.shieldTimer).toBeGreaterThan(0);
     expect(proj.isReflected).toBe(true);
     expect(proj.vx).toBeLessThan(0); // reflected back towards hunter!
+  });
+
+  it('ejects player and grants trapImmunityTimer when hitting active hazard so player never gets trapped', () => {
+    const engine = new VoltCrownEngine();
+    const p0 = engine.players[0];
+    const crusher = engine.traps.find((t) => t.type === 'CRUSHER')!;
+    expect(crusher).toBeDefined();
+
+    // Activate crusher and place player inside it
+    crusher.active = true;
+    p0.x = crusher.x + crusher.w * 0.5;
+    p0.y = crusher.y + crusher.h * 0.5;
+    p0.trapImmunityTimer = 0;
+
+    engine.step(0.016, dummyInput);
+
+    // Player should have been stunned, given immunity, and ejected
+    expect(p0.stunTimer).toBeGreaterThan(0);
+    expect(p0.trapImmunityTimer).toBeGreaterThan(0.9);
+    // Position or velocity should have shifted outward
+    expect(Math.hypot(p0.vx, p0.vy)).toBeGreaterThan(200);
+
+    // On next frame, player with immunity should NOT trigger another collision or spawn more debris
+    const partsCount = engine.looseParts.length;
+    engine.step(0.016, dummyInput);
+    expect(engine.looseParts.length).toBe(partsCount); // No new debris while immune!
+  });
+
+  it('decays loose parts over time and enforces maximum capacity to prevent memory leaks', () => {
+    const engine = new VoltCrownEngine();
+    // Disable bots so they don't walk into crushers during simulation
+    engine.players.forEach((p) => (p.isBot = false));
+
+    // Simulate multiple hits generating debris
+    for (let i = 0; i < 40; i++) {
+      (engine as unknown as { spawnDebris: (x: number, y: number, c: string) => void }).spawnDebris(200, 200, '#FF4F00');
+    }
+    // Strict cap must prevent array from blowing up
+    expect(engine.looseParts.length).toBeLessThanOrEqual(28);
+
+    // Step engine 4 seconds - all looseParts should decay and be removed
+    for (let s = 0; s < 250; s++) {
+      engine.step(0.02, dummyInput);
+    }
+    expect(engine.looseParts.length).toBe(0);
   });
 });
 

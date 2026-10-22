@@ -517,7 +517,14 @@ export class HotCoreEngine {
       lp.vx *= Math.pow(0.92, dt * 60);
       lp.vy *= Math.pow(0.92, dt * 60);
       lp.rot += lp.vRot * dt;
+      lp.life = (lp.life ?? 3.2) - dt;
+      if (lp.life <= 0) {
+        this.looseParts.splice(i, 1);
+      }
     }
+    while (this.looseParts.length > 28) this.looseParts.shift();
+    while (this.particles.length > 40) this.particles.shift();
+    while (this.explosions.length > 10) this.explosions.shift();
     for (let i = this.callouts.length - 1; i >= 0; i--) {
       const c = this.callouts[i];
       c.y -= 28 * dt;
@@ -1056,8 +1063,8 @@ export class HotCoreEngine {
   }
 
   public spawnDebris(x: number, y: number, bodyColor: string): void {
-    this.spawnDust(x, y, 12);
-    for (let i = 0; i < 8; i++) {
+    this.spawnDust(x, y, 10);
+    for (let i = 0; i < 5; i++) {
       const ang = Math.random() * Math.PI * 2;
       const spd = 70 + Math.random() * 140;
       this.looseParts.push({
@@ -1067,8 +1074,13 @@ export class HotCoreEngine {
         vy: Math.sin(ang) * spd,
         rot: Math.random() * Math.PI * 2,
         vRot: (Math.random() - 0.5) * 12,
-        color: i % 2 === 0 ? bodyColor : '#71717A'
+        color: i % 2 === 0 ? bodyColor : '#71717A',
+        life: 3.2,
+        maxLife: 3.2
       });
+    }
+    while (this.looseParts.length > 28) {
+      this.looseParts.shift();
     }
   }
 

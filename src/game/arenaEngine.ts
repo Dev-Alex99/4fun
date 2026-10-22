@@ -459,14 +459,21 @@ export class ArenaEngine {
       c.life -= 1.35 * dt;
       if (c.life <= 0) this.callouts.splice(i, 1);
     }
-    this.looseParts.forEach((part) => {
+    for (let i = this.looseParts.length - 1; i >= 0; i--) {
+      const part = this.looseParts[i];
       part.x += part.vx * dt;
       part.y += part.vy * dt;
       part.vx *= Math.pow(0.88, dt * 60);
       part.vy *= Math.pow(0.88, dt * 60);
       part.rot += part.vRot * dt;
       part.vRot *= Math.pow(0.88, dt * 60);
-    });
+      part.life = (part.life ?? 3.2) - dt;
+      if (part.life <= 0) {
+        this.looseParts.splice(i, 1);
+      }
+    }
+    while (this.looseParts.length > 28) this.looseParts.shift();
+    while (this.particles.length > 40) this.particles.shift();
     this.bumpers.forEach((b) => {
       if (b.hitAnim > 0) b.hitAnim = Math.max(0, b.hitAnim - dt * 5);
     });
@@ -1024,8 +1031,8 @@ export class ArenaEngine {
   }
 
   public spawnKOMechanicalParts(x: number, y: number, bodyColor: string): void {
-    this.spawnDust(x, y, 12);
-    for (let i = 0; i < 9; i++) {
+    this.spawnDust(x, y, 10);
+    for (let i = 0; i < 5; i++) {
       const ang = Math.random() * Math.PI * 2;
       const spd = 65 + Math.random() * 150;
       this.looseParts.push({
@@ -1035,8 +1042,13 @@ export class ArenaEngine {
         vy: Math.sin(ang) * spd,
         rot: Math.random() * Math.PI * 2,
         vRot: (Math.random() - 0.5) * 12,
-        color: i % 2 === 0 ? bodyColor : '#71717A'
+        color: i % 2 === 0 ? bodyColor : '#71717A',
+        life: 3.2,
+        maxLife: 3.2
       });
+    }
+    while (this.looseParts.length > 28) {
+      this.looseParts.shift();
     }
   }
 

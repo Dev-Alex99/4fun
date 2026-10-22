@@ -95,6 +95,8 @@ export interface LoosePart {
   rot: number;
   vRot: number;
   color: string;
+  life?: number;
+  maxLife?: number;
 }
 
 export interface ParticleEffect {
@@ -436,6 +438,7 @@ export interface VoltCrownPlayer {
   taserCooldown: number;
   stunTimer: number;
   immunityTimer: number; // after dropping crown or getting hit
+  trapImmunityTimer?: number; // grace period after being hit by a hazard so player doesn't get re-hit every frame
   lastStunnedAt?: number;
   emoteText: string | null;
   emoteTimer: number;
