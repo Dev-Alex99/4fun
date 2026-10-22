@@ -1301,3 +1301,203 @@ body {
     right: 6px;
   }
 }
+
+/* ======================================================== */
+/* ROBOT WORKSHOP / GARAGE MODAL                            */
+/* ======================================================== */
+.workshop-modal-box {
+  max-width: 780px !important;
+  width: 95% !important;
+}
+
+.workshop-layout {
+  display: flex;
+  gap: 20px;
+  align-items: flex-start;
+  margin: 16px 0;
+}
+
+@media (max-width: 700px) {
+  .workshop-layout {
+    flex-direction: column;
+    align-items: center;
+  }
+}
+
+.workshop-stage {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.stage-casing {
+  background: #18181b;
+  border: 3px solid var(--ink);
+  border-radius: 16px;
+  padding: 8px;
+  box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.8), 0 4px 10px rgba(0, 0, 0, 0.2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.stage-casing canvas {
+  display: block;
+}
+
+.stage-caption {
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 800;
+  color: #71717a;
+  letter-spacing: 0.04em;
+}
+
+.workshop-selectors {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  max-height: 380px;
+  overflow-y: auto;
+  padding-right: 6px;
+}
+
+.workshop-sec {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sec-label {
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 800;
+  color: var(--ink);
+  letter-spacing: 0.02em;
+}
+
+.cosmetic-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+  gap: 6px;
+}
+
+.cosmetic-btn {
+  background: var(--panel);
+  border: 2px solid var(--ink);
+  border-radius: 8px;
+  padding: 8px 6px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  box-shadow: 0 3px 0 var(--ink);
+  transition: transform 0.05s ease, background 0.1s ease;
+  outline: none;
+}
+
+.cosmetic-btn:active {
+  transform: translateY(2px);
+  box-shadow: 0 1px 0 var(--ink);
+}
+
+.cosmetic-btn.active-cosmetic {
+  background: #fef08a !important;
+  border-color: #ca8a04 !important;
+  box-shadow: 0 3px 0 #854d0e, inset 0 0 0 1px #ca8a04;
+}
+
+.cosmetic-btn-icon {
+  font-size: 20px;
+}
+
+.cosmetic-btn-title {
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 800;
+  text-align: center;
+  line-height: 1.1;
+}
+
+.visor-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.visor-pill-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  background: var(--panel);
+  border: 2px solid var(--ink);
+  border-radius: 20px;
+  cursor: pointer;
+  box-shadow: 0 2px 0 var(--ink);
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 800;
+  outline: none;
+}
+
+.visor-pill-btn.active-cosmetic {
+  background: #18181b;
+  color: #ffffff;
+  border-color: #18181b;
+}
+
+.visor-color-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 1.5px solid var(--ink);
+}
+
+.skins-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+  gap: 8px;
+}
+
+.skin-card-btn {
+  background: var(--panel);
+  border: 2px solid var(--ink);
+  border-radius: 8px;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  cursor: pointer;
+  box-shadow: 0 2px 0 var(--ink);
+  outline: none;
+}
+
+.skin-card-btn.active-cosmetic {
+  background: #fef08a !important;
+  border-color: #ca8a04 !important;
+  box-shadow: 0 3px 0 #854d0e;
+}
+
+.skin-title {
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.skin-desc {
+  font-size: 10px;
+  color: #52525b;
+  line-height: 1.2;
+}
+
+.workshop-footer {
+  display: flex;
+  justify-content: flex-end;
+  border-top: 2px solid var(--ink);
+  padding-top: 14px;
+}

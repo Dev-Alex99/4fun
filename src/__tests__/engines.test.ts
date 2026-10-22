@@ -9,6 +9,7 @@ import { PUTT_HOLES, PuttWarEngine } from '../game/puttWarEngine';
 import { MultiplayerRoomManager } from '../net/multiplayerRoom';
 import { ProceduralChiptuneEngine } from '../audio/chiptuneBgm';
 import { TouchGamepad } from '../input/touchGamepad';
+import { RobotWorkshopManager, ROBOT_HATS, ROBOT_VISORS, ROBOT_SKINS } from '../game/robotWorkshop';
 import { ClientInputPacket } from '../types';
 
 const dummyInput: ClientInputPacket = {
@@ -836,6 +837,35 @@ describe('TouchGamepad (Virtual Mobile Controller)', () => {
 
     pad.callbacks.onPressB?.();
     expect(pressedB).toBe(true);
+  });
+});
+
+describe('RobotWorkshopManager (Cosmetics & Garage)', () => {
+  it('contains valid catalog configurations for hats, visors, and skins', () => {
+    expect(ROBOT_HATS.length).toBeGreaterThanOrEqual(6);
+    expect(ROBOT_VISORS.length).toBeGreaterThanOrEqual(6);
+    expect(ROBOT_SKINS.length).toBeGreaterThanOrEqual(4);
+
+    expect(ROBOT_HATS.some((h) => h.id === 'CROWN')).toBe(true);
+    expect(ROBOT_VISORS.some((v) => v.id === 'CYAN')).toBe(true);
+    expect(ROBOT_SKINS.some((s) => s.id === 'STEALTH')).toBe(true);
+  });
+
+  it('updates and persists cosmetics cleanly', () => {
+    const workshop = new RobotWorkshopManager();
+    expect(workshop.cosmetics).toBeDefined();
+
+    workshop.saveCosmetics({ hat: 'CROWN', visor: 'MAGENTA', skin: 'STEALTH' });
+    expect(workshop.cosmetics.hat).toBe('CROWN');
+    expect(workshop.cosmetics.visor).toBe('MAGENTA');
+    expect(workshop.cosmetics.skin).toBe('STEALTH');
+
+    const color = workshop.getVisorColor('MAGENTA');
+    expect(color).toBe('#ff007f');
+
+    const skinColors = workshop.getSkinColors('STEALTH', '#ffffff', '#aaaaaa');
+    expect(skinColors.body).toBe('#27272a');
+    expect(skinColors.shade).toBe('#18181b');
   });
 });
 

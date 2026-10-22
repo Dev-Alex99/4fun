@@ -8,6 +8,7 @@ import {
   COURT_WIDTH
 } from '../game/arenaEngine';
 import { GyroBallState, PinballBumper, PlayerState } from '../types';
+import { robotWorkshop } from '../game/robotWorkshop';
 
 export class CourtRenderer {
   private canvas: HTMLCanvasElement;
@@ -414,8 +415,11 @@ export class CourtRenderer {
     ctx.translate(0, -bobY);
     ctx.rotate(p.tiltX);
 
+    const cosmetics = p.cosmetics || (isLocal ? robotWorkshop.cosmetics : undefined);
+    const skinColors = robotWorkshop.getSkinColors(cosmetics?.skin, p.bodyColor, p.shadeColor);
+
     // Lower shade bevel
-    ctx.fillStyle = p.shadeColor;
+    ctx.fillStyle = skinColors.shade;
     ctx.strokeStyle = '#18181B';
     ctx.lineWidth = 2.6;
     ctx.beginPath();
@@ -424,25 +428,44 @@ export class CourtRenderer {
     ctx.stroke();
 
     // Upper matte shell
-    ctx.fillStyle = p.bodyColor;
+    ctx.fillStyle = skinColors.body;
     ctx.beginPath();
     ctx.roundRect(-16, -21, 32, 24, 9);
     ctx.fill();
     ctx.stroke();
 
-    // Antenna with inertia
-    const antTipX = -p.vx * 0.025;
-    ctx.beginPath();
-    ctx.moveTo(0, -21);
-    ctx.lineTo(antTipX, -30);
-    ctx.strokeStyle = '#18181B';
-    ctx.lineWidth = 2.6;
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.arc(antTipX, -31, 4, 0, Math.PI * 2);
-    ctx.fillStyle = p.feintPrimed ? '#1B4DFF' : isTargeted ? '#FF4F00' : '#F4F0E8';
-    ctx.fill();
-    ctx.stroke();
+    // Hazard stripes if WARNING skin
+    if (cosmetics?.skin === 'WARNING') {
+      ctx.save();
+      ctx.beginPath();
+      ctx.roundRect(-16, -21, 32, 24, 9);
+      ctx.clip();
+      ctx.strokeStyle = '#18181B';
+      ctx.lineWidth = 3.5;
+      for (let x = -26; x < 26; x += 8) {
+        ctx.beginPath();
+        ctx.moveTo(x, -24);
+        ctx.lineTo(x + 9, 6);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+
+    // Antenna with inertia (only if not wearing an obstructing hat)
+    if (!cosmetics?.hat || cosmetics.hat === 'NONE') {
+      const antTipX = -p.vx * 0.025;
+      ctx.beginPath();
+      ctx.moveTo(0, -21);
+      ctx.lineTo(antTipX, -30);
+      ctx.strokeStyle = '#18181B';
+      ctx.lineWidth = 2.6;
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(antTipX, -31, 4, 0, Math.PI * 2);
+      ctx.fillStyle = p.feintPrimed ? '#1B4DFF' : isTargeted ? '#FF4F00' : '#F4F0E8';
+      ctx.fill();
+      ctx.stroke();
+    }
 
     // Dark Glass Visor
     const lookX = Math.cos(p.aimAngle) * 3.5;
@@ -453,9 +476,10 @@ export class CourtRenderer {
     ctx.fill();
 
     // Expressive LED Eyes
-    ctx.fillStyle = '#F4F0E8';
+    const visorColor = robotWorkshop.getVisorColor(cosmetics?.visor);
+    ctx.fillStyle = visorColor;
     if (p.parryTimer > 0) {
-      ctx.strokeStyle = '#F59E0B';
+      ctx.strokeStyle = visorColor;
       ctx.lineWidth = 2.2;
       ctx.beginPath();
       ctx.moveTo(-6.5, -12);
@@ -477,6 +501,11 @@ export class CourtRenderer {
       ctx.arc(-5 + lookX * 0.6, -9 + lookY * 0.4, 2.4, 0, Math.PI * 2);
       ctx.arc(5 + lookX * 0.6, -9 + lookY * 0.4, 2.4, 0, Math.PI * 2);
       ctx.fill();
+    }
+
+    // Render Equipped Hat on Top
+    if (cosmetics?.hat && cosmetics.hat !== 'NONE') {
+      robotWorkshop.drawHat(ctx, cosmetics.hat, 0, -21, performance.now() * 0.001);
     }
 
     // 6. Physical Bat Paddle

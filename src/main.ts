@@ -17,6 +17,7 @@ import { generateRoomCode, MultiplayerRoomManager } from './net/multiplayerRoom'
 import { sfx } from './audio/mechanicalSfx';
 import { bgm } from './audio/chiptuneBgm';
 import { touchGamepad } from './input/touchGamepad';
+import { robotWorkshop, ROBOT_HATS, ROBOT_VISORS, ROBOT_SKINS } from './game/robotWorkshop';
 import { ActiveGameId, BotDifficulty, CHAOS_MUTATORS, ClientInputPacket } from './types';
 
 // 1. Constants & Lookup Tables (Must be at top before any function calls!)
@@ -98,6 +99,17 @@ const tourneyPodiumView = document.getElementById('tourneyPodiumView') as HTMLDi
 const tourneyChampName = document.getElementById('tourneyChampName') as HTMLHeadingElement;
 const tourneyRestartBtn = document.getElementById('tourneyRestartBtn') as HTMLButtonElement;
 const tourneyExitHubBtn = document.getElementById('tourneyExitHubBtn') as HTMLButtonElement;
+
+// Robot Workshop Elements
+const workshopOverlay = document.getElementById('workshopOverlay') as HTMLDivElement;
+const closeWorkshopBtn = document.getElementById('closeWorkshopBtn') as HTMLButtonElement;
+const hubOpenWorkshopBtn = document.getElementById('hubOpenWorkshopBtn') as HTMLButtonElement | null;
+const hudWorkshopBtn = document.getElementById('hudWorkshopBtn') as HTMLButtonElement | null;
+const applyWorkshopBtn = document.getElementById('applyWorkshopBtn') as HTMLButtonElement;
+const workshopPreviewCanvas = document.getElementById('workshopPreviewCanvas') as HTMLCanvasElement;
+const workshopHatsGrid = document.getElementById('workshopHatsGrid') as HTMLDivElement;
+const workshopVisorsRow = document.getElementById('workshopVisorsRow') as HTMLDivElement;
+const workshopSkinsRow = document.getElementById('workshopSkinsRow') as HTMLDivElement;
 
 // 3. Input & Session State (All declared before engines/network start)
 const keys: Record<string, boolean> = {};
@@ -741,6 +753,7 @@ function flushImmediateClientAction(): void {
   net.sendClientInput({
     slotId: net.localSlotId,
     name: playerNameInput.value.toUpperCase() || 'ALEX',
+    cosmetics: robotWorkshop.cosmetics,
     moveX: 0,
     moveY: 0,
     aimAngle,
@@ -1264,6 +1277,7 @@ function stepGameFrame(dt: number): void {
   const inputPacket: ClientInputPacket = {
     slotId: net.localSlotId,
     name: playerNameInput.value.toUpperCase() || 'ALEX',
+    cosmetics: robotWorkshop.cosmetics,
     moveX,
     moveY,
     aimAngle,
@@ -1485,7 +1499,101 @@ function animate(now: number): void {
     rpmBadge.style.background = mut.color;
   }
 
+  if (workshopOverlay && !workshopOverlay.classList.contains('hidden') && workshopPreviewCanvas) {
+    robotWorkshop.renderPreview(workshopPreviewCanvas, robotWorkshop.cosmetics, now * 0.001);
+  }
+
   requestAnimationFrame(animate);
 }
 
+function initWorkshopUI(): void {
+  if (!workshopOverlay || !workshopHatsGrid || !workshopVisorsRow || !workshopSkinsRow) return;
+
+  const myPlayer = arenaEngine.players[net.localSlotId] || arenaEngine.players[0];
+  if (myPlayer) {
+    myPlayer.cosmetics = robotWorkshop.cosmetics;
+    net.syncEnginesRoster();
+  }
+
+  function renderSelectors(): void {
+    workshopHatsGrid.innerHTML = '';
+    ROBOT_HATS.forEach((h) => {
+      const btn = document.createElement('button');
+      btn.className = `cosmetic-btn ${robotWorkshop.cosmetics.hat === h.id ? 'active-cosmetic' : ''}`;
+      btn.innerHTML = `
+        <span class="cosmetic-btn-icon">${h.icon || '🎩'}</span>
+        <span class="cosmetic-btn-title">${h.label}</span>
+      `;
+      btn.addEventListener('click', () => {
+        sfx.playCartridgeClick();
+        robotWorkshop.saveCosmetics({ hat: h.id });
+        renderSelectors();
+      });
+      workshopHatsGrid.appendChild(btn);
+    });
+
+    workshopVisorsRow.innerHTML = '';
+    ROBOT_VISORS.forEach((v) => {
+      const btn = document.createElement('button');
+      btn.className = `visor-pill-btn ${robotWorkshop.cosmetics.visor === v.id ? 'active-cosmetic' : ''}`;
+      btn.innerHTML = `
+        <span class="visor-color-dot" style="background-color: ${v.color};"></span>
+        <span>${v.label}</span>
+      `;
+      btn.addEventListener('click', () => {
+        sfx.playCartridgeClick();
+        robotWorkshop.saveCosmetics({ visor: v.id });
+        renderSelectors();
+      });
+      workshopVisorsRow.appendChild(btn);
+    });
+
+    workshopSkinsRow.innerHTML = '';
+    ROBOT_SKINS.forEach((s) => {
+      const btn = document.createElement('button');
+      btn.className = `skin-card-btn ${robotWorkshop.cosmetics.skin === s.id ? 'active-cosmetic' : ''}`;
+      btn.innerHTML = `
+        <span class="skin-title">${s.label}</span>
+        <span class="skin-desc">${s.desc || ''}</span>
+      `;
+      btn.addEventListener('click', () => {
+        sfx.playCartridgeClick();
+        robotWorkshop.saveCosmetics({ skin: s.id });
+        renderSelectors();
+      });
+      workshopSkinsRow.appendChild(btn);
+    });
+  }
+
+  renderSelectors();
+
+  const openWorkshop = () => {
+    sfx.unlock();
+    sfx.playCartridgeClick();
+    renderSelectors();
+    workshopOverlay.classList.remove('hidden');
+  };
+
+  const closeWorkshop = () => {
+    sfx.playCartridgeClick();
+    workshopOverlay.classList.add('hidden');
+    const p = arenaEngine.players[net.localSlotId] || arenaEngine.players[0];
+    if (p) {
+      p.cosmetics = robotWorkshop.cosmetics;
+      net.syncEnginesRoster();
+      if (net.isHost) {
+        net.broadcastHostSnapshot(true);
+      } else {
+        flushImmediateClientAction();
+      }
+    }
+  };
+
+  hubOpenWorkshopBtn?.addEventListener('click', openWorkshop);
+  hudWorkshopBtn?.addEventListener('click', openWorkshop);
+  closeWorkshopBtn?.addEventListener('click', closeWorkshop);
+  applyWorkshopBtn?.addEventListener('click', closeWorkshop);
+}
+
+initWorkshopUI();
 requestAnimationFrame(animate);

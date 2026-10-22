@@ -121,6 +121,9 @@
             <button id="chainModeBtn" class="keycap-btn keycap-sm hidden">
               MODO: CO-OP
             </button>
+            <button id="hudWorkshopBtn" class="keycap-btn keycap-sm" title="Personalizar sombreros, visores y skins">
+              🧰 TALLER
+            </button>
             <div class="rpm-meter" id="rpmBadge">RPM 100</div>
           </div>
 
@@ -200,6 +203,9 @@
                   </button>
                   <button id="hubNewRoomBtn" class="keycap-btn">
                     👑 CREAR SALA (HOST)
+                  </button>
+                  <button id="hubOpenWorkshopBtn" class="keycap-btn keycap-yellow" title="Personalizar sombreros, visores y skins de tu robot">
+                    🧰 TALLER DE ROBOTS
                   </button>
                   <button id="hubLeaveRoomBtn" class="keycap-btn hidden">
                     🚪 SALIR A MI SALA
@@ -474,7 +480,57 @@
             </div>
           </div>
 
-          <!-- First-Time Pilot Callsign Onboarding Modal -->
+          <!-- ======================================================== -->
+          <!-- ROBOT WORKSHOP / GARAGE MODAL OVERLAY                    -->
+          <!-- ======================================================== -->
+          <div id="workshopOverlay" class="draft-overlay hidden">
+            <div class="draft-card-box workshop-modal-box">
+              <div class="draft-header">
+                <div>
+                  <div class="draft-eyebrow">TP-SYSTEM // CHASSIS MODDING LAB</div>
+                  <h2 class="draft-title">🧰 TALLER DE ROBOTS Y ACCESORIOS</h2>
+                </div>
+                <button id="closeWorkshopBtn" class="keycap-btn keycap-sm">✕ CERRAR</button>
+              </div>
+
+              <div class="workshop-layout">
+                <!-- Left: Interactive Live Preview Stage -->
+                <div class="workshop-stage">
+                  <div class="stage-casing">
+                    <canvas id="workshopPreviewCanvas" width="220" height="220"></canvas>
+                  </div>
+                  <div class="stage-caption" id="workshopPreviewCaption">MODELO TP-04 // LIVE</div>
+                </div>
+
+                <!-- Right: Customization Selectors -->
+                <div class="workshop-selectors">
+                  <!-- Section 1: Sombreros / Headgear -->
+                  <div class="workshop-sec">
+                    <div class="sec-label">👑 SOMBRERO / ACCESORIO CABEZA:</div>
+                    <div class="cosmetic-grid" id="workshopHatsGrid"></div>
+                  </div>
+
+                  <!-- Section 2: Visor LED (Eyes) -->
+                  <div class="workshop-sec">
+                    <div class="sec-label">👁️ COLOR VISOR LED:</div>
+                    <div class="visor-grid" id="workshopVisorsRow"></div>
+                  </div>
+
+                  <!-- Section 3: Chassis Skin -->
+                  <div class="workshop-sec">
+                    <div class="sec-label">🎨 PINTURA DE CHASIS:</div>
+                    <div class="skins-grid" id="workshopSkinsRow"></div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="workshop-footer">
+                <button id="applyWorkshopBtn" class="keycap-btn keycap-orange keycap-lg">
+                  ✓ APLICAR AL ROBOT Y GUARDAR
+                </button>
+              </div>
+            </div>
+          </div>
           <div id="pilotOnboardingModal" class="draft-overlay hidden">
             <div class="draft-card-box onboarding-box">
               <div class="draft-header">

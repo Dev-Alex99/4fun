@@ -465,7 +465,11 @@ export class MultiplayerRoomManager {
         p.alive = false;
       }
     });
-    const roster = this.arenaEngine.players.map((p) => ({ name: p.name, isBot: p.isBot }));
+    const roster = this.arenaEngine.players.map((p) => ({
+      name: p.name,
+      isBot: p.isBot,
+      cosmetics: p.cosmetics
+    }));
     this.chainEngine.syncPlayerIdentities(roster, botsActive);
     this.puttEngine?.syncPlayerIdentities(roster, botsActive);
     this.hotCoreEngine?.syncPlayerIdentities(roster, botsActive);
@@ -1100,7 +1104,11 @@ export class MultiplayerRoomManager {
       if (this.bannedPeerIds.has(env.sender)) return;
       this.peerLastSeen.set(env.sender, performance.now());
       const inp = env.payload as ClientInputPacket;
-      const prevName = this.arenaEngine.players[inp.slotId]?.name;
+      const targetPlayer = this.arenaEngine.players[inp.slotId];
+      const prevName = targetPlayer?.name;
+      if (targetPlayer && inp.cosmetics) {
+        targetPlayer.cosmetics = inp.cosmetics;
+      }
       this.arenaEngine.applyRemoteInput(inp);
       this.chainEngine.applyRemoteInput(inp);
       this.puttEngine?.applyRemoteInput(inp);

@@ -237,7 +237,7 @@ export class ChainPanicEngine {
   }
 
   public syncPlayerIdentities(
-    roster: Array<{ name: string; isBot: boolean }>,
+    roster: Array<{ name: string; isBot: boolean; cosmetics?: import('../types').RobotCosmetics }>,
     botsEnabled = true
   ): void {
     this.botsEnabled = botsEnabled;
@@ -245,6 +245,7 @@ export class ChainPanicEngine {
       if (this.players[idx]) {
         this.players[idx].name = r.name;
         this.players[idx].isBot = r.isBot;
+        if (r.cosmetics) this.players[idx].cosmetics = r.cosmetics;
       }
     });
   }

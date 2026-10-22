@@ -109,6 +109,16 @@ export interface PinballBumper {
   hitAnim: number;
 }
 
+export type RobotHatId = 'NONE' | 'CROWN' | 'CONE' | 'RADAR' | 'PROP' | 'VIKING' | 'HEADPHONES';
+export type RobotVisorId = 'CYAN' | 'AMBER' | 'EMERALD' | 'MAGENTA' | 'RED' | 'WHITE';
+export type RobotSkinId = 'STOCK' | 'STEALTH' | 'WARNING' | 'VAPOR';
+
+export interface RobotCosmetics {
+  hat: RobotHatId;
+  visor: RobotVisorId;
+  skin: RobotSkinId;
+}
+
 export interface PlayerState {
   id: number;
   peerId: string | null;
@@ -116,6 +126,7 @@ export interface PlayerState {
   bodyColor: string;
   shadeColor: string;
   batColor: string;
+  cosmetics?: RobotCosmetics;
   isBot: boolean;
   score: number;
   x: number;
@@ -215,6 +226,7 @@ export interface ChainPlayerState {
   name: string;
   bodyColor: string;
   shadeColor: string;
+  cosmetics?: RobotCosmetics;
   isBot: boolean;
   isSaboteur: boolean;
   x: number;
@@ -316,6 +328,7 @@ export interface PuttBallPlayer {
   name: string;
   bodyColor: string;
   shadeColor: string;
+  cosmetics?: RobotCosmetics;
   isBot: boolean;
   x: number;
   y: number;
@@ -433,6 +446,7 @@ export interface HotCorePlayer {
   name: string;
   bodyColor: string;
   shadeColor: string;
+  cosmetics?: RobotCosmetics;
   isBot: boolean;
   alive: boolean;
   score: number;
@@ -504,6 +518,7 @@ export interface VoltCrownPlayer {
   name: string;
   bodyColor: string;
   shadeColor: string;
+  cosmetics?: RobotCosmetics;
   isBot: boolean;
   alive: boolean;
   score: number; // percentage (0..100)
@@ -619,6 +634,7 @@ export interface HexCrushPlayer {
   name: string;
   bodyColor: string;
   shadeColor: string;
+  cosmetics?: RobotCosmetics;
   isBot: boolean;
   alive: boolean;
   score: number; // rounds won (first to 3)
@@ -673,6 +689,7 @@ export interface HexCrushSnapshot {
 export interface ClientInputPacket {
   slotId: number;
   name: string;
+  cosmetics?: RobotCosmetics;
   actionSeq?: number; // Monotonic action ID for 3-packet redundant burst deduplication
   moveX: number;
   moveY: number;
