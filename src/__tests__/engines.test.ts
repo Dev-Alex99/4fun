@@ -7,6 +7,7 @@ import { HEX_CRUSH_ARENAS, HexCrushEngine } from '../game/hexCrushEngine';
 import { TournamentManager } from '../game/tournamentManager';
 import { PUTT_HOLES, PuttWarEngine } from '../game/puttWarEngine';
 import { MultiplayerRoomManager } from '../net/multiplayerRoom';
+import { ProceduralChiptuneEngine } from '../audio/chiptuneBgm';
 import { ClientInputPacket } from '../types';
 
 const dummyInput: ClientInputPacket = {
@@ -768,6 +769,29 @@ describe('TournamentManager (Party Tournament Mode & Chaos Mutators)', () => {
     expect(client.state.active).toBe(true);
     expect(client.state.scores[1]).toBe(3);
     expect(client.state.gameSequence).toEqual(host.state.gameSequence);
+  });
+});
+
+describe('ProceduralChiptuneEngine (Web Audio BGM)', () => {
+  it('initializes in HUB mode and toggles state cleanly without crashing in non-audio environments', () => {
+    const bgmEngine = new ProceduralChiptuneEngine();
+    expect(bgmEngine.currentTrack).toBe('HUB');
+    
+    // Toggle on
+    const enabled = bgmEngine.toggle();
+    expect(bgmEngine.enabled).toBe(enabled);
+
+    // Switch track to BATTLE
+    bgmEngine.setTrack('BATTLE');
+    expect(bgmEngine.currentTrack).toBe('BATTLE');
+
+    // Switch track back to HUB
+    bgmEngine.setTrack('HUB');
+    expect(bgmEngine.currentTrack).toBe('HUB');
+
+    // Toggle off
+    bgmEngine.toggle();
+    expect(bgmEngine.enabled).toBe(false);
   });
 });
 

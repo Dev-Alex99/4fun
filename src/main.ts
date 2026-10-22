@@ -15,6 +15,7 @@ import { HexCrushRenderer } from './render/hexCrushRenderer';
 import { PuttWarRenderer } from './render/puttWarRenderer';
 import { generateRoomCode, MultiplayerRoomManager } from './net/multiplayerRoom';
 import { sfx } from './audio/mechanicalSfx';
+import { bgm } from './audio/chiptuneBgm';
 import { ActiveGameId, BotDifficulty, CHAOS_MUTATORS, ClientInputPacket } from './types';
 
 // 1. Constants & Lookup Tables (Must be at top before any function calls!)
@@ -38,6 +39,7 @@ const createNewRoomBtn = document.getElementById('createNewRoomBtn') as HTMLButt
 const copyInviteBtn = document.getElementById('copyInviteBtn') as HTMLButtonElement;
 const topBotsToggleBtn = document.getElementById('topBotsToggleBtn') as HTMLButtonElement;
 const soundToggleBtn = document.getElementById('soundToggleBtn') as HTMLButtonElement;
+const bgmToggleBtn = document.getElementById('bgmToggleBtn') as HTMLButtonElement | null;
 const resetMatchBtn = document.getElementById('resetMatchBtn') as HTMLButtonElement;
 const playerNameInput = document.getElementById('playerNameInput') as HTMLInputElement;
 const toggleBotsBtn = document.getElementById('toggleBotsBtn') as HTMLButtonElement;
@@ -263,6 +265,10 @@ function syncOverlaysAndHUD(): void {
     hubOverlay.classList.remove('hidden');
   } else {
     hubOverlay.classList.add('hidden');
+  }
+
+  if (bgm.enabled) {
+    bgm.setTrack(net.activeGame === 'HUB' ? 'HUB' : 'BATTLE');
   }
 
   if (net.activeGame === 'CHAIN_PANIC') {
@@ -968,6 +974,28 @@ soundToggleBtn.addEventListener('click', () => {
   sfx.enabled = !sfx.enabled;
   soundToggleBtn.textContent = sfx.enabled ? 'SFX: ON' : 'SFX: OFF';
 });
+
+if (bgmToggleBtn) {
+  bgmToggleBtn.textContent = bgm.enabled ? 'BGM: ON' : 'BGM: OFF';
+  bgmToggleBtn.addEventListener('click', () => {
+    const isNowOn = bgm.toggle();
+    bgmToggleBtn.textContent = isNowOn ? 'BGM: ON' : 'BGM: OFF';
+    if (isNowOn) {
+      bgm.setTrack(net.activeGame === 'HUB' ? 'HUB' : 'BATTLE');
+    }
+  });
+}
+
+const unlockBgmOnFirstGesture = () => {
+  if (bgm.enabled) {
+    bgm.setTrack(net.activeGame === 'HUB' ? 'HUB' : 'BATTLE');
+    bgm.start();
+  }
+  window.removeEventListener('pointerdown', unlockBgmOnFirstGesture);
+  window.removeEventListener('keydown', unlockBgmOnFirstGesture);
+};
+window.addEventListener('pointerdown', unlockBgmOnFirstGesture, { passive: true });
+window.addEventListener('keydown', unlockBgmOnFirstGesture, { passive: true });
 
 resetMatchBtn.addEventListener('click', () => {
   sfx.playCartridgeClick();
