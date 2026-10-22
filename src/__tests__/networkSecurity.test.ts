@@ -7,7 +7,7 @@ import { VoltCrownEngine } from '../game/voltCrownEngine';
 import { HexCrushEngine } from '../game/hexCrushEngine';
 import { RicochetEngine } from '../game/ricochetEngine';
 import { TournamentManager } from '../game/tournamentManager';
-import { MultiplayerRoomManager, type NetEnvelope } from '../net/multiplayerRoom';
+import { MultiplayerRoomManager, type NetEnvelope, type RoomNetworkOptions } from '../net/multiplayerRoom';
 import type { ClientInputPacket } from '../types';
 
 const rtc = vi.hoisted(() => {
@@ -43,8 +43,10 @@ const rtc = vi.hoisted(() => {
     destroyed = false;
     disconnected = false;
     pairs: [Connection, Connection][] = [];
+    connectOptions?: unknown;
     constructor(public id: string, public options: unknown) { super(); peers.set(id, this); }
-    connect(id: string) {
+    connect(id: string, options?: unknown) {
+      this.connectOptions = options;
       const client = new Connection(id), server = new Connection(this.id);
       client.other = server; server.other = client;
       this.pairs.push([client, server]);
@@ -64,10 +66,10 @@ const rtc = vi.hoisted(() => {
 vi.mock('peerjs', () => ({ default: rtc.FakePeer }));
 
 const all: MultiplayerRoomManager[] = [];
-function manager() {
+function manager(options?: RoomNetworkOptions) {
   const arena = new ArenaEngine(), chain = new ChainPanicEngine(), putt = new PuttWarEngine();
   const hot = new HotCoreEngine(), volt = new VoltCrownEngine(), hex = new HexCrushEngine(), rico = new RicochetEngine(), tournament = new TournamentManager();
-  const net = new MultiplayerRoomManager(arena, chain, () => {}, putt, hot, volt, hex, tournament, rico);
+  const net = new MultiplayerRoomManager(arena, chain, () => {}, putt, hot, volt, hex, tournament, rico, options);
   all.push(net);
   return { net, arena, chain, putt, hot, volt, hex, rico, tournament };
 }
@@ -252,7 +254,7 @@ describe('ordering, reconnection and bounded latency', () => {
     const h = host(), c = join(); h.net.switchGame('BASH_BOT');
     const apply = vi.spyOn(h.arena, 'applyRemoteInput');
     sendRaw(c.net, 'CLIENT_INPUT', input(c.net, { inputSeq: 5, actionSeq: 3, moveX: 1, moveY: 1, dashPressed: true }));
-    sendRaw(c.net, 'CLIENT_INPUT', input(c.net, { inputSeq: 4, actionSeq: 2, moveX: -1, dashPressed: true }));
+    sendRaw(c.net, 'CLIENT_INPUT', input(c.net, { inputSeq: 4, actionSeq: 3, moveX: -1, dashPressed: true }));
     sendRaw(c.net, 'CLIENT_INPUT', input(c.net, { inputSeq: 5, actionSeq: 3, moveX: -1, dashPressed: true }));
     expect(apply).toHaveBeenCalledTimes(1);
     expect(Math.hypot(apply.mock.calls[0][0].moveX, apply.mock.calls[0][0].moveY)).toBeCloseTo(1);
