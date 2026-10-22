@@ -87,6 +87,9 @@
             <button id="bgmToggleBtn" class="keycap-btn" title="Música retro chiptune procedural 8-bit FM">
               BGM: OFF
             </button>
+            <button id="touchToggleBtn" class="keycap-btn" title="Activar/Desactivar mando táctil en pantalla">
+              📱 TOUCH
+            </button>
             <button id="resetMatchBtn" class="keycap-btn" title="Reiniciar partida o sector">
               RESET
             </button>
@@ -138,6 +141,42 @@
               SIN CARTUCHOS INSTALADOS
             </div>
           </footer>
+
+          <!-- Virtual Mobile Touch Gamepad -->
+          <div id="virtualGamepad" class="virtual-gamepad hidden">
+            <!-- Left: Analog Joystick Stick Zone -->
+            <div id="touchJoystickZone" class="touch-joystick-zone">
+              <div id="touchJoystickBase" class="touch-joystick-base">
+                <div id="touchJoystickThumb" class="touch-joystick-thumb"></div>
+                <div class="touch-joystick-cross">
+                  <span class="cross-dir cross-up">▲</span>
+                  <span class="cross-dir cross-down">▼</span>
+                  <span class="cross-dir cross-left">◀</span>
+                  <span class="cross-dir cross-right">▶</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Right: Arcade Action Buttons Cluster -->
+            <div class="touch-action-cluster">
+              <div class="touch-top-row">
+                <button id="touchBtnE" class="touch-btn touch-btn-e" title="Habilidad / Amago / Tirón">
+                  <span class="touch-btn-key">E</span>
+                  <span class="touch-btn-sub">SKILL</span>
+                </button>
+              </div>
+              <div class="touch-primary-row">
+                <button id="touchBtnB" class="touch-btn touch-btn-b" title="Turbo Dash / Ancla">
+                  <span class="touch-btn-key">B</span>
+                  <span class="touch-btn-sub">DASH</span>
+                </button>
+                <button id="touchBtnA" class="touch-btn touch-btn-a" title="Golpe / Parry / Saque">
+                  <span class="touch-btn-key">A</span>
+                  <span class="touch-btn-sub">HIT</span>
+                </button>
+              </div>
+            </div>
+          </div>
 
           <!-- ======================================================== -->
           <!-- LANDING / CONSOLE HUB OVERLAY (SELECT GAME CARTRIDGE)    -->

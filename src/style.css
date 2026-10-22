@@ -1060,3 +1060,244 @@ body {
   display: flex;
   gap: 12px;
 }
+
+/* ======================================================== */
+/* VIRTUAL TOUCH GAMEPAD FOR MOBILE                         */
+/* ======================================================== */
+.virtual-gamepad {
+  position: absolute;
+  bottom: 12px;
+  left: 12px;
+  right: 12px;
+  height: 170px;
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  pointer-events: none;
+  z-index: 85;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: none;
+}
+
+.virtual-gamepad.hidden {
+  display: none !important;
+}
+
+/* Left: Joystick Zone */
+.touch-joystick-zone {
+  width: 170px;
+  height: 170px;
+  pointer-events: auto;
+  touch-action: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.touch-joystick-base {
+  width: 128px;
+  height: 128px;
+  border-radius: 50%;
+  background: rgba(24, 24, 27, 0.45);
+  border: 2.5px solid rgba(255, 255, 255, 0.25);
+  backdrop-filter: blur(4px);
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: inset 0 3px 10px rgba(0, 0, 0, 0.45), 0 4px 12px rgba(0, 0, 0, 0.25);
+}
+
+.touch-joystick-cross {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.cross-dir {
+  position: absolute;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.35);
+  font-family: var(--mono);
+}
+
+.cross-up { top: 6px; }
+.cross-down { bottom: 6px; }
+.cross-left { left: 8px; }
+.cross-right { right: 8px; }
+
+.touch-joystick-thumb {
+  width: 58px;
+  height: 58px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 35%, #ffffff 0%, #dcd6cb 65%, #a8a29e 100%);
+  border: 3px solid #18181b;
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.5), inset 0 2px 4px rgba(255, 255, 255, 0.8);
+  pointer-events: none;
+  will-change: transform;
+  transition: transform 0.05s ease-out;
+}
+
+/* Right: Action Buttons Cluster */
+.touch-action-cluster {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 12px;
+  pointer-events: auto;
+  touch-action: none;
+}
+
+.touch-top-row {
+  display: flex;
+  justify-content: flex-end;
+  padding-right: 28px;
+}
+
+.touch-primary-row {
+  display: flex;
+  gap: 14px;
+}
+
+.touch-btn {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  border: 3px solid var(--ink);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--sans);
+  cursor: pointer;
+  pointer-events: auto;
+  touch-action: none;
+  box-shadow: 0 5px 0 var(--ink), 0 8px 15px rgba(0, 0, 0, 0.25);
+  transition: transform 0.06s ease, box-shadow 0.06s ease;
+  outline: none;
+}
+
+.touch-btn:active,
+.touch-btn-pressed {
+  transform: translateY(4px) scale(0.96) !important;
+  box-shadow: 0 1px 0 var(--ink), 0 2px 6px rgba(0, 0, 0, 0.3) !important;
+}
+
+.touch-btn-key {
+  font-weight: 800;
+  font-size: 20px;
+  line-height: 1;
+}
+
+.touch-btn-sub {
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  opacity: 0.85;
+}
+
+/* Color Styles for Touch Buttons */
+.touch-btn-a {
+  background: var(--orange);
+  color: #ffffff;
+}
+
+.touch-btn-b {
+  background: var(--cobalt);
+  color: #ffffff;
+}
+
+.touch-btn-e {
+  width: 52px;
+  height: 52px;
+  background: var(--ochre);
+  color: var(--ink);
+}
+
+.touch-btn-e .touch-btn-key {
+  font-size: 16px;
+}
+
+.touch-btn-e .touch-btn-sub {
+  font-size: 8px;
+}
+
+/* ======================================================== */
+/* RESPONSIVE DESIGN FOR SMALLER SCREENS & MOBILE           */
+/* ======================================================== */
+@media (max-width: 900px) {
+  #app {
+    padding: 4px;
+  }
+
+  .hardware-chassis {
+    padding: 6px;
+    border-radius: 14px;
+    gap: 6px;
+  }
+
+  .control-deck {
+    padding: 6px 8px;
+    gap: 6px;
+  }
+
+  .brand-title {
+    font-size: 13px;
+  }
+
+  .cartridge-tabs {
+    overflow-x: auto;
+    max-width: 100%;
+    padding-bottom: 2px;
+    flex-wrap: nowrap;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .tab-btn {
+    white-space: nowrap;
+    font-size: 11px;
+    padding: 4px 8px;
+  }
+
+  .deck-actions {
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+
+  .room-pill {
+    padding: 2px 6px;
+  }
+
+  .room-input {
+    width: 60px;
+    font-size: 11px;
+  }
+
+  .keycap-btn {
+    font-size: 11px;
+    padding: 5px 8px;
+  }
+
+  .hud-top-bar {
+    top: 6px;
+    left: 6px;
+    gap: 4px;
+    transform: scale(0.9);
+    transform-origin: top left;
+  }
+
+  .hud-bottom-bar {
+    display: none;
+  }
+
+  .virtual-gamepad {
+    bottom: 6px;
+    left: 6px;
+    right: 6px;
+  }
+}

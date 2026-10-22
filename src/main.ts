@@ -16,6 +16,7 @@ import { PuttWarRenderer } from './render/puttWarRenderer';
 import { generateRoomCode, MultiplayerRoomManager } from './net/multiplayerRoom';
 import { sfx } from './audio/mechanicalSfx';
 import { bgm } from './audio/chiptuneBgm';
+import { touchGamepad } from './input/touchGamepad';
 import { ActiveGameId, BotDifficulty, CHAOS_MUTATORS, ClientInputPacket } from './types';
 
 // 1. Constants & Lookup Tables (Must be at top before any function calls!)
@@ -40,6 +41,7 @@ const copyInviteBtn = document.getElementById('copyInviteBtn') as HTMLButtonElem
 const topBotsToggleBtn = document.getElementById('topBotsToggleBtn') as HTMLButtonElement;
 const soundToggleBtn = document.getElementById('soundToggleBtn') as HTMLButtonElement;
 const bgmToggleBtn = document.getElementById('bgmToggleBtn') as HTMLButtonElement | null;
+const touchToggleBtn = document.getElementById('touchToggleBtn') as HTMLButtonElement | null;
 const resetMatchBtn = document.getElementById('resetMatchBtn') as HTMLButtonElement;
 const playerNameInput = document.getElementById('playerNameInput') as HTMLInputElement;
 const toggleBotsBtn = document.getElementById('toggleBotsBtn') as HTMLButtonElement;
@@ -742,12 +744,12 @@ function flushImmediateClientAction(): void {
     moveX: 0,
     moveY: 0,
     aimAngle,
-    parryPressed: pendingParry,
-    chargingParry,
+    parryPressed: pendingParry || touchGamepad.isHoldingA,
+    chargingParry: chargingParry || touchGamepad.isHoldingA,
     feintPrimed: myArenaPlayer.feintPrimed,
-    dashPressed: pendingDash,
-    yankPressed: pendingYank,
-    anchorHeld,
+    dashPressed: pendingDash || touchGamepad.isHoldingB,
+    yankPressed: pendingYank || touchGamepad.isHoldingE,
+    anchorHeld: anchorHeld || touchGamepad.isHoldingB,
     emotePressed: pendingEmote,
     clientBallDist,
     clientX:
@@ -997,6 +999,55 @@ const unlockBgmOnFirstGesture = () => {
 window.addEventListener('pointerdown', unlockBgmOnFirstGesture, { passive: true });
 window.addEventListener('keydown', unlockBgmOnFirstGesture, { passive: true });
 
+touchGamepad.init('virtualGamepad', {
+  onPressA: () => {
+    sfx.unlock();
+    pendingParry = true;
+    chargingParry = true;
+    flushImmediateClientAction();
+  },
+  onReleaseA: () => {
+    chargingParry = false;
+    if (net.activeGame === 'TURBO_PUTT') {
+      flushImmediateClientAction();
+    }
+  },
+  onPressB: () => {
+    sfx.unlock();
+    pendingDash = true;
+    anchorHeld = true;
+    flushImmediateClientAction();
+  },
+  onReleaseB: () => {
+    anchorHeld = false;
+  },
+  onPressE: () => {
+    sfx.unlock();
+    if (
+      net.activeGame === 'CHAIN_PANIC' ||
+      net.activeGame === 'TURBO_PUTT' ||
+      net.activeGame === 'HOT_CORE' ||
+      net.activeGame === 'VOLT_CROWN'
+    ) {
+      pendingYank = true;
+    } else {
+      const myPlayer = arenaEngine.players[net.localSlotId] || arenaEngine.players[0];
+      myPlayer.feintPrimed = true;
+      pendingParry = true;
+    }
+    flushImmediateClientAction();
+  }
+});
+
+if (touchToggleBtn) {
+  touchToggleBtn.textContent = touchGamepad.enabled ? '📱 TOUCH: ON' : '📱 TOUCH: OFF';
+  touchToggleBtn.addEventListener('click', () => {
+    const isNowOn = touchGamepad.toggle();
+    touchToggleBtn.textContent = isNowOn ? '📱 TOUCH: ON' : '📱 TOUCH: OFF';
+    sfx.playCartridgeClick();
+  });
+}
+
 resetMatchBtn.addEventListener('click', () => {
   sfx.playCartridgeClick();
   net.sendOrApplyRoomAction({ kind: 'RESET_MATCH' });
@@ -1160,6 +1211,11 @@ function stepGameFrame(dt: number): void {
   if (keys['KeyA'] || keys['ArrowLeft']) moveX -= 1;
   if (keys['KeyD'] || keys['ArrowRight']) moveX += 1;
 
+  if (touchGamepad.enabled && (Math.abs(touchGamepad.moveX) > 0.05 || Math.abs(touchGamepad.moveY) > 0.05)) {
+    moveX = touchGamepad.moveX;
+    moveY = touchGamepad.moveY;
+  }
+
   if (
     tournament.state.active &&
     tournament.state.currentMutator === 'SUPER_SPEED' &&
@@ -1189,7 +1245,10 @@ function stepGameFrame(dt: number): void {
           : net.activeGame === 'HEX_CRUSH'
             ? myHexPlayer.y
             : myArenaPlayer.y;
-  const aimAngle = Math.atan2(mouseCourtPos.y - refY, mouseCourtPos.x - refX);
+  let aimAngle = Math.atan2(mouseCourtPos.y - refY, mouseCourtPos.x - refX);
+  if (touchGamepad.enabled && (Math.abs(touchGamepad.moveX) > 0.1 || Math.abs(touchGamepad.moveY) > 0.1)) {
+    aimAngle = Math.atan2(touchGamepad.moveY, touchGamepad.moveX);
+  }
 
   const primaryBall = arenaEngine.balls[0];
   const clientBallDist = primaryBall
@@ -1208,13 +1267,13 @@ function stepGameFrame(dt: number): void {
     moveX,
     moveY,
     aimAngle,
-    parryPressed: pendingParry,
-    chargingParry,
+    parryPressed: pendingParry || touchGamepad.isHoldingA,
+    chargingParry: chargingParry || touchGamepad.isHoldingA,
     feintPrimed: myArenaPlayer.feintPrimed,
     shotReleasedPower: quickClickPutt,
-    dashPressed: pendingDash,
-    yankPressed: pendingYank,
-    anchorHeld,
+    dashPressed: pendingDash || touchGamepad.isHoldingB,
+    yankPressed: pendingYank || touchGamepad.isHoldingE,
+    anchorHeld: anchorHeld || touchGamepad.isHoldingB,
     emotePressed: pendingEmote,
     clientBallDist,
     clientX:

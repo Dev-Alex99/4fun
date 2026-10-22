@@ -8,6 +8,7 @@ import { TournamentManager } from '../game/tournamentManager';
 import { PUTT_HOLES, PuttWarEngine } from '../game/puttWarEngine';
 import { MultiplayerRoomManager } from '../net/multiplayerRoom';
 import { ProceduralChiptuneEngine } from '../audio/chiptuneBgm';
+import { TouchGamepad } from '../input/touchGamepad';
 import { ClientInputPacket } from '../types';
 
 const dummyInput: ClientInputPacket = {
@@ -792,6 +793,49 @@ describe('ProceduralChiptuneEngine (Web Audio BGM)', () => {
     // Toggle off
     bgmEngine.toggle();
     expect(bgmEngine.enabled).toBe(false);
+  });
+});
+
+describe('TouchGamepad (Virtual Mobile Controller)', () => {
+  it('manages enabled state and resets coordinates correctly', () => {
+    const pad = new TouchGamepad();
+    expect(pad.moveX).toBe(0);
+    expect(pad.moveY).toBe(0);
+    expect(pad.isHoldingA).toBe(false);
+
+    pad.show();
+    expect(pad.enabled).toBe(true);
+
+    pad.hide();
+    expect(pad.enabled).toBe(false);
+    expect(pad.moveX).toBe(0);
+    expect(pad.moveY).toBe(0);
+
+    const toggled = pad.toggle();
+    expect(toggled).toBe(true);
+    expect(pad.enabled).toBe(true);
+  });
+
+  it('triggers registered action button callbacks', () => {
+    const pad = new TouchGamepad();
+    let pressedA = false;
+    let releasedA = false;
+    let pressedB = false;
+
+    pad.callbacks = {
+      onPressA: () => { pressedA = true; },
+      onReleaseA: () => { releasedA = true; },
+      onPressB: () => { pressedB = true; }
+    };
+
+    pad.callbacks.onPressA?.();
+    expect(pressedA).toBe(true);
+
+    pad.callbacks.onReleaseA?.();
+    expect(releasedA).toBe(true);
+
+    pad.callbacks.onPressB?.();
+    expect(pressedB).toBe(true);
   });
 });
 
