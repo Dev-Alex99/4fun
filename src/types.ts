@@ -1,4 +1,10 @@
-export type ActiveGameId = 'HUB' | 'BASH_BOT' | 'CHAIN_PANIC' | 'TURBO_PUTT' | 'HOT_CORE';
+export type ActiveGameId =
+  | 'HUB'
+  | 'BASH_BOT'
+  | 'CHAIN_PANIC'
+  | 'TURBO_PUTT'
+  | 'HOT_CORE'
+  | 'VOLT_CROWN';
 export type RoundPhase = 'PLAYING' | 'CARD_DRAFT' | 'MATCH_OVER';
 export type BotDifficulty = 'CHILL' | 'NORMAL' | 'PRO' | 'OFF';
 export type CourtLayout = 'CLASSIC' | 'PINBALL' | 'CORE';
@@ -407,6 +413,97 @@ export interface HotCoreSnapshot {
   explosions: PuttExplosion[];
 }
 
+export interface VoltCrownPlayer {
+  id: number;
+  name: string;
+  bodyColor: string;
+  shadeColor: string;
+  isBot: boolean;
+  alive: boolean;
+  score: number; // percentage (0..100)
+  holdStreak: number; // seconds holding current crown without interruption
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  radius: number;
+  aimAngle: number;
+  walkCycle: number;
+  shieldTimer: number; // 0.35s magnetic deflect window
+  shieldCooldown: number;
+  dashTimer: number;
+  dashCooldown: number;
+  taserCooldown: number;
+  stunTimer: number;
+  immunityTimer: number; // after dropping crown or getting hit
+  lastStunnedAt?: number;
+  emoteText: string | null;
+  emoteTimer: number;
+}
+
+export interface VoltCrownDevice {
+  holderId: number | null; // null if bouncing freely on the floor
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  radius: number;
+  bounceCount: number;
+  idleTimer: number;
+  overchargeReady: boolean;
+}
+
+export interface VoltProjectile {
+  id: number;
+  ownerId: number;
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  life: number;
+  isReflected: boolean;
+}
+
+export interface VoltTrap {
+  id: string;
+  type: 'CRUSHER' | 'LASER_GATE' | 'CONVEYOR' | 'PLASMA_GRATE';
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  active: boolean;
+  timer: number;
+  period: number;
+  dirX?: number;
+  dirY?: number;
+  flashAnim?: number;
+}
+
+export interface VoltPressurePlate {
+  id: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  pressed: boolean;
+  targetTrapId: string;
+}
+
+export interface VoltCrownSnapshot {
+  arenaIndex: number;
+  arenaTitle: string;
+  status: 'PLAYING' | 'ROUND_OVER' | 'MATCH_OVER';
+  statusTimer: number;
+  lastWinnerId: number | null;
+  players: VoltCrownPlayer[];
+  crown: VoltCrownDevice;
+  projectiles: VoltProjectile[];
+  traps: VoltTrap[];
+  plates: VoltPressurePlate[];
+  bumpers: PinballBumper[];
+  explosions: PuttExplosion[];
+}
+
 export interface ClientInputPacket {
   slotId: number;
   name: string;
@@ -448,5 +545,6 @@ export interface WorldSnapshotPacket {
   chainState?: ChainPanicSnapshot;
   puttState?: PuttWarSnapshot;
   hotCoreState?: HotCoreSnapshot;
+  voltCrownState?: VoltCrownSnapshot;
   hostSentAtMs?: number;
 }

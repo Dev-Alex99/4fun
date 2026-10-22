@@ -2,11 +2,13 @@ import './style.css';
 import { ArenaEngine } from './game/arenaEngine';
 import { CHAIN_LEVELS, ChainPanicEngine } from './game/chainPanicEngine';
 import { HOT_CORE_ARENAS, HotCoreEngine } from './game/hotCoreEngine';
+import { VOLT_CROWN_ARENAS, VoltCrownEngine } from './game/voltCrownEngine';
 import { PUTT_HOLES, PuttWarEngine } from './game/puttWarEngine';
 import { HARDWARE_MODS } from './game/hardwareMods';
 import { CourtRenderer } from './render/courtRenderer';
 import { ChainPanicRenderer } from './render/chainPanicRenderer';
 import { HotCoreRenderer } from './render/hotCoreRenderer';
+import { VoltCrownRenderer } from './render/voltCrownRenderer';
 import { PuttWarRenderer } from './render/puttWarRenderer';
 import { generateRoomCode, MultiplayerRoomManager } from './net/multiplayerRoom';
 import { sfx } from './audio/mechanicalSfx';
@@ -130,16 +132,19 @@ const arenaEngine = new ArenaEngine(syncOverlaysAndHUD);
 const chainEngine = new ChainPanicEngine();
 const puttEngine = new PuttWarEngine();
 const hotCoreEngine = new HotCoreEngine();
+const voltCrownEngine = new VoltCrownEngine();
 const courtRenderer = new CourtRenderer(canvas);
 const chainRenderer = new ChainPanicRenderer(canvas);
 const puttRenderer = new PuttWarRenderer(canvas);
 const hotCoreRenderer = new HotCoreRenderer(canvas);
+const voltCrownRenderer = new VoltCrownRenderer(canvas);
 const net = new MultiplayerRoomManager(
   arenaEngine,
   chainEngine,
   syncOverlaysAndHUD,
   puttEngine,
-  hotCoreEngine
+  hotCoreEngine,
+  voltCrownEngine
 );
 
 // 5. UI & HUD Synchronization Function
@@ -303,6 +308,31 @@ function syncOverlaysAndHUD(): void {
     installedModsStrip.textContent = `CÁMARA ${hotCoreEngine.arenaIndex + 1}/${
       HOT_CORE_ARENAS.length
     } • PASES: ${hotCoreEngine.core.passCount} • VICTORIAS: ${localHot?.score ?? 0}/5`;
+  } else if (net.activeGame === 'VOLT_CROWN') {
+    prevSectorBtn.classList.remove('hidden');
+    nextSectorBtn.classList.remove('hidden');
+    prevSectorBtn.textContent = '◀ SECTOR';
+    nextSectorBtn.textContent = 'SECTOR ▶';
+    chainModeBtn.classList.add('hidden');
+
+    controlsLegendStrip.innerHTML = `
+      <span><strong>[WASD]</strong> MOVER / PERSEGUIR</span>
+      <span class="sep">•</span>
+      <span><strong>[CLIC IZQ / ESPACIO]</strong> TÁSER / ESCUDO REY</span>
+      <span class="sep">•</span>
+      <span><strong>[E]</strong> ACTIVAR TRAMPA / PULSO ESTÁTICO</span>
+      <span class="sep">•</span>
+      <span><strong>[SHIFT / CLIC DER]</strong> DASH</span>
+      <span class="sep">•</span>
+      <span><strong>[1-4]</strong> BURLA</span>
+    `;
+    const localVolt = voltCrownEngine.players[net.localSlotId] || voltCrownEngine.players[0];
+    const isLocalKing = voltCrownEngine.crown.holderId === localVolt?.id;
+    installedModsStrip.textContent = `SECTOR ${voltCrownEngine.arenaIndex + 1}/${
+      VOLT_CROWN_ARENAS.length
+    } • ${isLocalKing ? '👑 ERES EL REY (CARGANDO)' : '🎯 CAZADOR'} • BATERÍA: ${Math.floor(
+      localVolt?.score ?? 0
+    )}% / 100%`;
   } else {
     prevSectorBtn.classList.add('hidden');
     nextSectorBtn.classList.add('hidden');
@@ -335,6 +365,8 @@ function syncOverlaysAndHUD(): void {
     .map((p) => {
       const puttP = puttEngine.players[p.id];
       const hotP = hotCoreEngine.players[p.id];
+      const voltP = voltCrownEngine.players[p.id];
+      const isKing = voltCrownEngine.crown.holderId === p.id;
       const scoreBadge =
         net.activeGame === 'CHAIN_PANIC'
           ? `S${chainEngine.levelIndex + 1}`
@@ -342,7 +374,9 @@ function syncOverlaysAndHUD(): void {
             ? `${puttP ? puttP.totalPoints : 0}P`
             : net.activeGame === 'HOT_CORE'
               ? `${hotP ? hotP.score : 0}★`
-              : `${p.score}`;
+              : net.activeGame === 'VOLT_CROWN'
+                ? `${isKing ? '👑' : '⚡'}${Math.floor(voltP ? voltP.score : 0)}%`
+                : `${p.score}`;
       const canKick = net.isHost && p.id > 0 && !p.isBot;
       return `
       <div class="player-slot" style="background:${p.bodyColor}">
@@ -486,6 +520,7 @@ function flushImmediateClientAction(): void {
   const myChainPlayer = chainEngine.players[net.localSlotId] || chainEngine.players[0];
   const myPuttPlayer = puttEngine.players[net.localSlotId] || puttEngine.players[0];
   const myHotPlayer = hotCoreEngine.players[net.localSlotId] || hotCoreEngine.players[0];
+  const myVoltPlayer = voltCrownEngine.players[net.localSlotId] || voltCrownEngine.players[0];
 
   // Trigger immediate local visual feedback (0ms input lag!)
   if (net.activeGame === 'BASH_BOT') {
@@ -508,6 +543,15 @@ function flushImmediateClientAction(): void {
         Math.sin(myHotPlayer.aimAngle)
       );
     }
+  } else if (net.activeGame === 'VOLT_CROWN') {
+    if (pendingParry) voltCrownEngine.triggerTaserOrDefend(myVoltPlayer);
+    if (pendingDash) {
+      voltCrownEngine.triggerDash(
+        myVoltPlayer,
+        Math.cos(myVoltPlayer.aimAngle),
+        Math.sin(myVoltPlayer.aimAngle)
+      );
+    }
   }
 
   const refX =
@@ -515,13 +559,17 @@ function flushImmediateClientAction(): void {
       ? myPuttPlayer.x
       : net.activeGame === 'HOT_CORE'
         ? myHotPlayer.x
-        : myArenaPlayer.x;
+        : net.activeGame === 'VOLT_CROWN'
+          ? myVoltPlayer.x
+          : myArenaPlayer.x;
   const refY =
     net.activeGame === 'TURBO_PUTT'
       ? myPuttPlayer.y
       : net.activeGame === 'HOT_CORE'
         ? myHotPlayer.y
-        : myArenaPlayer.y;
+        : net.activeGame === 'VOLT_CROWN'
+          ? myVoltPlayer.y
+          : myArenaPlayer.y;
   const aimAngle = Math.atan2(mouseCourtPos.y - refY, mouseCourtPos.x - refX);
   const primaryBall = arenaEngine.balls[0];
   const clientBallDist = primaryBall
@@ -547,13 +595,17 @@ function flushImmediateClientAction(): void {
         ? myChainPlayer.x
         : net.activeGame === 'HOT_CORE'
           ? myHotPlayer.x
-          : myArenaPlayer.x,
+          : net.activeGame === 'VOLT_CROWN'
+            ? myVoltPlayer.x
+            : myArenaPlayer.x,
     clientY:
       net.activeGame === 'CHAIN_PANIC'
         ? myChainPlayer.y
         : net.activeGame === 'HOT_CORE'
           ? myHotPlayer.y
-          : myArenaPlayer.y,
+          : net.activeGame === 'VOLT_CROWN'
+            ? myVoltPlayer.y
+            : myArenaPlayer.y,
     clientZ: myChainPlayer.z,
     sentAtMs: performance.now()
   });
@@ -593,7 +645,8 @@ window.addEventListener('keydown', (e) => {
     if (
       net.activeGame === 'CHAIN_PANIC' ||
       net.activeGame === 'TURBO_PUTT' ||
-      net.activeGame === 'HOT_CORE'
+      net.activeGame === 'HOT_CORE' ||
+      net.activeGame === 'VOLT_CROWN'
     ) {
       pendingYank = true;
     } else {
@@ -775,6 +828,11 @@ prevSectorBtn.addEventListener('click', () => {
       kind: 'LOAD_STAGE',
       arenaIndex: hotCoreEngine.arenaIndex - 1
     });
+  } else if (net.activeGame === 'VOLT_CROWN') {
+    net.sendOrApplyRoomAction({
+      kind: 'LOAD_STAGE',
+      arenaIndex: voltCrownEngine.arenaIndex - 1
+    });
   } else {
     net.sendOrApplyRoomAction({
       kind: 'LOAD_STAGE',
@@ -794,6 +852,11 @@ nextSectorBtn.addEventListener('click', () => {
     net.sendOrApplyRoomAction({
       kind: 'LOAD_STAGE',
       arenaIndex: hotCoreEngine.arenaIndex + 1
+    });
+  } else if (net.activeGame === 'VOLT_CROWN') {
+    net.sendOrApplyRoomAction({
+      kind: 'LOAD_STAGE',
+      arenaIndex: voltCrownEngine.arenaIndex + 1
     });
   } else {
     net.sendOrApplyRoomAction({
@@ -892,6 +955,7 @@ function stepGameFrame(dt: number): void {
   const myArenaPlayer = arenaEngine.players[net.localSlotId] || arenaEngine.players[0];
   const myPuttPlayer = puttEngine.players[net.localSlotId] || puttEngine.players[0];
   const myHotPlayer = hotCoreEngine.players[net.localSlotId] || hotCoreEngine.players[0];
+  const myVoltPlayer = voltCrownEngine.players[net.localSlotId] || voltCrownEngine.players[0];
   let moveX = 0;
   let moveY = 0;
   if (keys['KeyW'] || keys['ArrowUp']) moveY -= 1;
@@ -904,13 +968,17 @@ function stepGameFrame(dt: number): void {
       ? myPuttPlayer.x
       : net.activeGame === 'HOT_CORE'
         ? myHotPlayer.x
-        : myArenaPlayer.x;
+        : net.activeGame === 'VOLT_CROWN'
+          ? myVoltPlayer.x
+          : myArenaPlayer.x;
   const refY =
     net.activeGame === 'TURBO_PUTT'
       ? myPuttPlayer.y
       : net.activeGame === 'HOT_CORE'
         ? myHotPlayer.y
-        : myArenaPlayer.y;
+        : net.activeGame === 'VOLT_CROWN'
+          ? myVoltPlayer.y
+          : myArenaPlayer.y;
   const aimAngle = Math.atan2(mouseCourtPos.y - refY, mouseCourtPos.x - refX);
 
   const primaryBall = arenaEngine.balls[0];
@@ -944,13 +1012,17 @@ function stepGameFrame(dt: number): void {
         ? myChainPlayer.x
         : net.activeGame === 'HOT_CORE'
           ? myHotPlayer.x
-          : myArenaPlayer.x,
+          : net.activeGame === 'VOLT_CROWN'
+            ? myVoltPlayer.x
+            : myArenaPlayer.x,
     clientY:
       net.activeGame === 'CHAIN_PANIC'
         ? myChainPlayer.y
         : net.activeGame === 'HOT_CORE'
           ? myHotPlayer.y
-          : myArenaPlayer.y,
+          : net.activeGame === 'VOLT_CROWN'
+            ? myVoltPlayer.y
+            : myArenaPlayer.y,
     clientZ: myChainPlayer.z,
     sentAtMs: performance.now()
   };
@@ -981,6 +1053,18 @@ function stepGameFrame(dt: number): void {
         );
       }
       hotCoreEngine.step(dt, inputPacket);
+    } else if (net.activeGame === 'VOLT_CROWN') {
+      if (pendingEmote > 0) voltCrownEngine.triggerEmote(myVoltPlayer, pendingEmote);
+      if (pendingParry) voltCrownEngine.triggerTaserOrDefend(myVoltPlayer, aimAngle);
+      if (pendingYank) voltCrownEngine.triggerTrapOrPulse(myVoltPlayer);
+      if (pendingDash) {
+        voltCrownEngine.triggerDash(
+          myVoltPlayer,
+          moveX || Math.cos(aimAngle),
+          moveY || Math.sin(aimAngle)
+        );
+      }
+      voltCrownEngine.step(dt, inputPacket);
     } else if (net.activeGame === 'BASH_BOT') {
       if (pendingEmote > 0) arenaEngine.triggerEmote(myArenaPlayer, pendingEmote);
       if (pendingParry) arenaEngine.triggerParry(myArenaPlayer);
@@ -995,7 +1079,7 @@ function stepGameFrame(dt: number): void {
     }
     net.broadcastHostSnapshot();
   } else {
-    // Client-side prediction & dead-reckoning across all 4 games at 60/144fps for 0ms input lag!
+    // Client-side prediction & dead-reckoning across all 5 games at 60/144fps for 0ms input lag!
     if (net.activeGame === 'BASH_BOT') {
       arenaEngine.stepClientPrediction(dt, net.localSlotId, inputPacket);
     } else if (net.activeGame === 'CHAIN_PANIC') {
@@ -1007,6 +1091,8 @@ function stepGameFrame(dt: number): void {
       }
     } else if (net.activeGame === 'HOT_CORE') {
       hotCoreEngine.stepClientPrediction(dt, net.localSlotId, inputPacket);
+    } else if (net.activeGame === 'VOLT_CROWN') {
+      voltCrownEngine.stepClientPrediction(dt, net.localSlotId, inputPacket);
     }
     net.sendClientInput(inputPacket);
   }
@@ -1054,6 +1140,14 @@ function animate(now: number): void {
     rpmBadge.textContent = `💣 ${hotCoreEngine.core.fuseTimer.toFixed(1)}s • C0${hotCoreEngine.arenaIndex + 1}`;
     rpmBadge.style.background = hotCoreEngine.core.fuseTimer < 3.0 ? '#FF4F00' : '#F59E0B';
     hotCoreRenderer.render(hotCoreEngine, net.localSlotId);
+  } else if (net.activeGame === 'VOLT_CROWN') {
+    const myVolt = voltCrownEngine.players[net.localSlotId] || voltCrownEngine.players[0];
+    const isKing = voltCrownEngine.crown.holderId === myVolt.id;
+    rpmBadge.textContent = isKing
+      ? `👑 REY: ${Math.floor(myVolt.score)}% (${myVolt.holdStreak.toFixed(1)}s)`
+      : `⚡ BATERÍA: ${Math.floor(myVolt.score)}%`;
+    rpmBadge.style.background = isKing ? '#F59E0B' : '#18181B';
+    voltCrownRenderer.render(voltCrownEngine, net.localSlotId);
   } else {
     if (primaryBall) {
       const rpm = Math.round((primaryBall.speed / primaryBall.baseSpeed) * 100);

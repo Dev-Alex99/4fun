@@ -264,6 +264,15 @@ body {
   background: #fbbf24;
 }
 
+.keycap-yellow {
+  background: #eab308;
+  color: var(--ink);
+}
+
+.keycap-yellow:hover {
+  background: #facc15;
+}
+
 /* Cartridge Switcher Tabs in Top Header */
 .cartridge-tabs {
   display: flex;
@@ -304,12 +313,12 @@ body {
 
 .hub-container {
   width: 100%;
-  max-width: 1120px;
+  max-width: 1220px;
   background: var(--panel);
   border: 3px solid var(--ink);
   border-bottom-width: 7px;
   border-radius: 18px;
-  padding: 20px;
+  padding: 18px 20px;
   box-shadow: 0 20px 44px rgba(24, 24, 27, 0.25);
 }
 
@@ -344,8 +353,8 @@ body {
 
 .hub-grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 12px;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 10px;
 }
 
 .game-cartridge {
@@ -353,11 +362,11 @@ body {
   border: 2.5px solid var(--ink);
   border-bottom-width: 5px;
   border-radius: 14px;
-  padding: 13px;
+  padding: 12px;
   display: flex;
   flex-direction: column;
   justify-content: space-between;
-  gap: 12px;
+  gap: 10px;
 }
 
 .cart-slot-empty {

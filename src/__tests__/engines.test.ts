@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { ArenaEngine, COURT_CENTER_X, COURT_RX } from '../game/arenaEngine';
 import { CHAIN_LEVELS, ChainPanicEngine } from '../game/chainPanicEngine';
 import { HOT_CORE_ARENAS, HotCoreEngine } from '../game/hotCoreEngine';
+import { VOLT_CROWN_ARENAS, VoltCrownEngine } from '../game/voltCrownEngine';
 import { PUTT_HOLES, PuttWarEngine } from '../game/puttWarEngine';
 import { MultiplayerRoomManager } from '../net/multiplayerRoom';
 import { ClientInputPacket } from '../types';
@@ -433,6 +434,86 @@ describe('HotCoreEngine (04 // HOT-CORE)', () => {
     engine.core.fuseTimer = 0.01;
     engine.step(0.05, dummyInput);
     expect(p1.alive).toBe(false);
+  });
+});
+
+describe('VoltCrownEngine (05 // VOLT-CROWN)', () => {
+  it('accumulates battery charge while holding the crown and triggers Volt Overcharge at 15s', () => {
+    const engine = new VoltCrownEngine();
+    expect(VOLT_CROWN_ARENAS.length).toBeGreaterThanOrEqual(4);
+
+    const p0 = engine.players[0];
+    p0.x = 500;
+    p0.y = 258;
+    p0.immunityTimer = 0;
+
+    // Step near crown to claim it
+    engine.crown.x = 500;
+    engine.crown.y = 258;
+    engine.step(0.04, dummyInput);
+    expect(engine.crown.holderId).toBe(0);
+
+    // Charge over time
+    const initialScore = p0.score;
+    engine.step(1.0, dummyInput);
+    expect(p0.score).toBeGreaterThan(initialScore);
+
+    // Fast-forward holdStreak to trigger 15s Volt Overcharge
+    p0.holdStreak = 14.98;
+    const scoreBeforeNova = p0.score;
+    engine.step(0.05, dummyInput);
+    expect(p0.score).toBeGreaterThanOrEqual(scoreBeforeNova + 14);
+    expect(p0.holdStreak).toBeLessThan(1.0); // Reset after nova!
+  });
+
+  it('drops the crown when hunter shoots King with Shock Taser Bolt', () => {
+    const engine = new VoltCrownEngine();
+    const king = engine.players[0];
+    const hunter = engine.players[1];
+
+    engine.crown.holderId = 0;
+    king.x = 340;
+    king.y = 120;
+    hunter.x = 220;
+    hunter.y = 120;
+    hunter.aimAngle = 0; // aimed directly right at King
+
+    // Hunter shoots taser bolt
+    engine.triggerTaserOrDefend(hunter, 0);
+    expect(engine.projectiles.length).toBe(1);
+
+    // Step until projectile reaches king
+    for (let i = 0; i < 6; i++) {
+      engine.step(0.04, dummyInput);
+    }
+
+    // King must have dropped the crown and entered stun
+    expect(engine.crown.holderId).toBeNull();
+    expect(king.stunTimer).toBeGreaterThan(0);
+  });
+
+  it('reflects incoming taser bolt when King activates Magnetic Deflect Shield', () => {
+    const engine = new VoltCrownEngine();
+    const king = engine.players[0];
+    const hunter = engine.players[1];
+
+    engine.crown.holderId = 0;
+    king.x = 320;
+    king.y = 120;
+    hunter.x = 240;
+    hunter.y = 120;
+    hunter.aimAngle = 0;
+
+    // Hunter fires
+    engine.triggerTaserOrDefend(hunter, 0);
+    const proj = engine.projectiles[0];
+    expect(proj).toBeDefined();
+
+    // King activates Deflect Shield right as bolt arrives
+    engine.triggerTaserOrDefend(king);
+    expect(king.shieldTimer).toBeGreaterThan(0);
+    expect(proj.isReflected).toBe(true);
+    expect(proj.vx).toBeLessThan(0); // reflected back towards hunter!
   });
 });
 
