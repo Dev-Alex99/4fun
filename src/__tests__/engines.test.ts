@@ -4,6 +4,7 @@ import { CHAIN_LEVELS, ChainPanicEngine } from '../game/chainPanicEngine';
 import { HOT_CORE_ARENAS, HotCoreEngine } from '../game/hotCoreEngine';
 import { VOLT_CROWN_ARENAS, VoltCrownEngine } from '../game/voltCrownEngine';
 import { HEX_CRUSH_ARENAS, HexCrushEngine } from '../game/hexCrushEngine';
+import { TournamentManager } from '../game/tournamentManager';
 import { PUTT_HOLES, PuttWarEngine } from '../game/puttWarEngine';
 import { MultiplayerRoomManager } from '../net/multiplayerRoom';
 import { ClientInputPacket } from '../types';
@@ -677,6 +678,96 @@ describe('HexCrushEngine (06 // HEX-CRUSH)', () => {
     expect(engine.status).toBe('ROUND_OVER');
     expect(engine.roundWinnerId).toBe(0);
     expect(engine.players[0].score).toBe(1);
+  });
+});
+
+describe('TournamentManager (Party Tournament Mode & Chaos Mutators)', () => {
+  it('generates a 5-round playlist with mutators and spins roulette', () => {
+    const tm = new TournamentManager();
+    const switchedGames: string[] = [];
+
+    tm.startTournament((g) => switchedGames.push(g));
+
+    expect(tm.state.active).toBe(true);
+    expect(tm.state.roundIndex).toBe(0);
+    expect(tm.state.totalRounds).toBe(5);
+    expect(tm.state.gameSequence.length).toBe(5);
+    expect(tm.state.mutators.length).toBe(5);
+    expect(tm.state.rouletteSpinning).toBe(true);
+    expect(switchedGames.length).toBe(1);
+
+    // Step through the roulette animation
+    for (let i = 0; i < 30; i++) {
+      tm.step(0.1, (g) => switchedGames.push(g));
+    }
+
+    // Roulette should finish and lock on active mutator
+    expect(tm.state.rouletteSpinning).toBe(false);
+    expect(tm.state.rouletteDisplayId).toBe(tm.state.currentMutator);
+    expect(tm.getCurrentMutatorDef()).toBeDefined();
+  });
+
+  it('accumulates scores across rounds and crowns the Grand Champion after 5 rounds', () => {
+    const tm = new TournamentManager();
+    const switched: string[] = [];
+    tm.startTournament((g) => switched.push(g));
+
+    // Fast-forward roulette
+    for (let i = 0; i < 30; i++) tm.step(0.1, (g) => switched.push(g));
+
+    // Player 0 wins Round 1
+    tm.recordRoundWinner(0);
+    expect(tm.state.scores[0]).toBe(3);
+
+    // Fast-forward intermission to Round 2
+    for (let i = 0; i < 40; i++) tm.step(0.1, (g) => switched.push(g));
+    expect(tm.state.roundIndex).toBe(1);
+
+    // Player 1 wins Round 2
+    tm.recordRoundWinner(1);
+    expect(tm.state.scores[1]).toBe(3);
+
+    // Fast-forward intermission to Round 3
+    for (let i = 0; i < 40; i++) tm.step(0.1, (g) => switched.push(g));
+    expect(tm.state.roundIndex).toBe(2);
+
+    // Player 0 wins Round 3
+    tm.recordRoundWinner(0);
+    expect(tm.state.scores[0]).toBe(6);
+
+    // Fast-forward to Round 4
+    for (let i = 0; i < 40; i++) tm.step(0.1, (g) => switched.push(g));
+    expect(tm.state.roundIndex).toBe(3);
+
+    // Player 2 wins Round 4
+    tm.recordRoundWinner(2);
+
+    // Fast-forward to Round 5 (Final)
+    for (let i = 0; i < 40; i++) tm.step(0.1, (g) => switched.push(g));
+    expect(tm.state.roundIndex).toBe(4);
+
+    // Player 0 wins Round 5
+    tm.recordRoundWinner(0);
+    expect(tm.state.scores[0]).toBe(9);
+
+    // Tournament should be finished and Player 0 crowned Champion!
+    expect(tm.state.isFinished).toBe(true);
+    expect(tm.state.champId).toBe(0);
+  });
+
+  it('handles snapshot synchronization between host and client', () => {
+    const host = new TournamentManager();
+    const client = new TournamentManager();
+
+    host.startTournament(() => {});
+    host.recordRoundWinner(1);
+
+    const snap = host.getSnapshot();
+    client.applySnapshot(snap);
+
+    expect(client.state.active).toBe(true);
+    expect(client.state.scores[1]).toBe(3);
+    expect(client.state.gameSequence).toEqual(host.state.gameSequence);
   });
 });
 

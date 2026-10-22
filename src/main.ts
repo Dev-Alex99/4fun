@@ -4,6 +4,7 @@ import { CHAIN_LEVELS, ChainPanicEngine } from './game/chainPanicEngine';
 import { HOT_CORE_ARENAS, HotCoreEngine } from './game/hotCoreEngine';
 import { VOLT_CROWN_ARENAS, VoltCrownEngine } from './game/voltCrownEngine';
 import { HEX_CRUSH_ARENAS, HexCrushEngine } from './game/hexCrushEngine';
+import { TournamentManager } from './game/tournamentManager';
 import { PUTT_HOLES, PuttWarEngine } from './game/puttWarEngine';
 import { HARDWARE_MODS } from './game/hardwareMods';
 import { CourtRenderer } from './render/courtRenderer';
@@ -14,7 +15,7 @@ import { HexCrushRenderer } from './render/hexCrushRenderer';
 import { PuttWarRenderer } from './render/puttWarRenderer';
 import { generateRoomCode, MultiplayerRoomManager } from './net/multiplayerRoom';
 import { sfx } from './audio/mechanicalSfx';
-import { ActiveGameId, BotDifficulty, ClientInputPacket } from './types';
+import { ActiveGameId, BotDifficulty, CHAOS_MUTATORS, ClientInputPacket } from './types';
 
 // 1. Constants & Lookup Tables (Must be at top before any function calls!)
 const DIFFICULTY_CYCLE: BotDifficulty[] = ['NORMAL', 'CHILL', 'OFF', 'PRO'];
@@ -76,6 +77,24 @@ const championOverlay = document.getElementById('championOverlay') as HTMLDivEle
 const championNameTitle = document.getElementById('championNameTitle') as HTMLHeadingElement;
 const newChampionshipBtn = document.getElementById('newChampionshipBtn') as HTMLButtonElement;
 
+// Tournament Mode Elements
+const tabTournamentBtn = document.getElementById('tabTournamentBtn') as HTMLButtonElement | null;
+const hubStartTournamentBtn = document.getElementById('hubStartTournamentBtn') as HTMLButtonElement | null;
+const tournamentOverlay = document.getElementById('tournamentOverlay') as HTMLDivElement;
+const tourneyModalEyebrow = document.getElementById('tourneyModalEyebrow') as HTMLDivElement;
+const tourneyModalTitle = document.getElementById('tourneyModalTitle') as HTMLHeadingElement;
+const tourneyRouletteView = document.getElementById('tourneyRouletteView') as HTMLDivElement;
+const rouletteIcon = document.getElementById('rouletteIcon') as HTMLDivElement;
+const rouletteName = document.getElementById('rouletteName') as HTMLDivElement;
+const rouletteDesc = document.getElementById('rouletteDesc') as HTMLParagraphElement;
+const tourneyStandingsView = document.getElementById('tourneyStandingsView') as HTMLDivElement;
+const tourneyLeaderboard = document.getElementById('tourneyLeaderboard') as HTMLDivElement;
+const tourneyIntermissionText = document.getElementById('tourneyIntermissionText') as HTMLDivElement;
+const tourneyPodiumView = document.getElementById('tourneyPodiumView') as HTMLDivElement;
+const tourneyChampName = document.getElementById('tourneyChampName') as HTMLHeadingElement;
+const tourneyRestartBtn = document.getElementById('tourneyRestartBtn') as HTMLButtonElement;
+const tourneyExitHubBtn = document.getElementById('tourneyExitHubBtn') as HTMLButtonElement;
+
 // 3. Input & Session State (All declared before engines/network start)
 const keys: Record<string, boolean> = {};
 let mouseCourtPos = { x: 500, y: 258 };
@@ -136,6 +155,7 @@ const puttEngine = new PuttWarEngine();
 const hotCoreEngine = new HotCoreEngine();
 const voltCrownEngine = new VoltCrownEngine();
 const hexCrushEngine = new HexCrushEngine();
+const tournament = new TournamentManager();
 const courtRenderer = new CourtRenderer(canvas);
 const chainRenderer = new ChainPanicRenderer(canvas);
 const puttRenderer = new PuttWarRenderer(canvas);
@@ -149,7 +169,8 @@ const net = new MultiplayerRoomManager(
   puttEngine,
   hotCoreEngine,
   voltCrownEngine,
-  hexCrushEngine
+  hexCrushEngine,
+  tournament
 );
 
 // 5. UI & HUD Synchronization Function
@@ -507,6 +528,77 @@ function syncOverlaysAndHUD(): void {
   } else {
     championOverlay.classList.add('hidden');
   }
+
+  // Tournament Overlay Synchronization
+  if (tournament.state.active) {
+    if (tournament.state.rouletteSpinning) {
+      tournamentOverlay.classList.remove('hidden');
+      tourneyRouletteView.classList.remove('hidden');
+      tourneyStandingsView.classList.add('hidden');
+      tourneyPodiumView.classList.add('hidden');
+
+      const mutDef =
+        CHAOS_MUTATORS[tournament.state.rouletteDisplayId] || CHAOS_MUTATORS['NONE'];
+      tourneyModalEyebrow.textContent = `TORNEO DEL CAOS // RONDA ${
+        tournament.state.roundIndex + 1
+      } DE ${tournament.state.totalRounds}`;
+      tourneyModalTitle.textContent = 'RULETA DE MUTADORES';
+      rouletteIcon.textContent = mutDef.icon;
+      rouletteName.textContent = mutDef.name;
+      rouletteDesc.textContent = mutDef.desc;
+    } else if (tournament.state.isFinished) {
+      tournamentOverlay.classList.remove('hidden');
+      tourneyRouletteView.classList.add('hidden');
+      tourneyStandingsView.classList.add('hidden');
+      tourneyPodiumView.classList.remove('hidden');
+
+      const champ = arenaEngine.players[tournament.state.champId ?? 0];
+      tourneyModalEyebrow.textContent = 'TORNEO FINALIZADO // 5 RONDAS';
+      tourneyModalTitle.textContent = '🏆 GRAN CAMPEÓN DEL CAOS';
+      tourneyChampName.textContent = champ
+        ? `¡${champ.name} ES EL GRAN CAMPEÓN!`
+        : '¡VICTORIA!';
+    } else if (
+      (tournament as any).pendingNextRound ||
+      tournament.state.scores.some((sc) => sc > 0)
+    ) {
+      // Show standings if pending next round
+      if ((tournament as any).pendingNextRound) {
+        tournamentOverlay.classList.remove('hidden');
+        tourneyRouletteView.classList.add('hidden');
+        tourneyStandingsView.classList.remove('hidden');
+        tourneyPodiumView.classList.add('hidden');
+
+        tourneyModalEyebrow.textContent = `FIN DE LA RONDA ${
+          tournament.state.roundIndex + 1
+        } DE ${tournament.state.totalRounds}`;
+        tourneyModalTitle.textContent = 'TABLA DE POSICIONES';
+        const sorted = [...arenaEngine.players].sort(
+          (a, b) =>
+            (tournament.state.scores[b.id] || 0) -
+            (tournament.state.scores[a.id] || 0)
+        );
+        const medals = ['🥇', '🥈', '🥉', '4°'];
+        tourneyLeaderboard.innerHTML = sorted
+          .map(
+            (p, idx) => `
+          <div class="leaderboard-row" style="background: ${p.bodyColor}">
+            <span>${medals[idx]} ${p.name}</span>
+            <span>${tournament.state.scores[p.id] || 0} PUNTOS</span>
+          </div>
+        `
+          )
+          .join('');
+        tourneyIntermissionText.textContent = `Siguiente juego en camino...`;
+      } else {
+        tournamentOverlay.classList.add('hidden');
+      }
+    } else {
+      tournamentOverlay.classList.add('hidden');
+    }
+  } else {
+    tournamentOverlay.classList.add('hidden');
+  }
 }
 
 // 6. Event Listeners
@@ -532,6 +624,28 @@ launchGameButtons.forEach((btn) => {
     const target = btn.dataset.launch as ActiveGameId;
     if (target) requestGameSwitch(target);
   });
+});
+
+tabTournamentBtn?.addEventListener('click', () => {
+  sfx.playCartridgeClick();
+  requestGameSwitch('HUB');
+  const hero = document.querySelector('.tournament-hero-card');
+  hero?.scrollIntoView({ behavior: 'smooth' });
+});
+
+hubStartTournamentBtn?.addEventListener('click', () => {
+  sfx.playCartridgeClick();
+  net.sendOrApplyRoomAction({ kind: 'START_TOURNAMENT' });
+});
+
+tourneyRestartBtn?.addEventListener('click', () => {
+  sfx.playCartridgeClick();
+  net.sendOrApplyRoomAction({ kind: 'START_TOURNAMENT' });
+});
+
+tourneyExitHubBtn?.addEventListener('click', () => {
+  sfx.playCartridgeClick();
+  net.sendOrApplyRoomAction({ kind: 'STOP_TOURNAMENT' });
 });
 
 function isTypingInInput(): boolean {
@@ -1018,6 +1132,15 @@ function stepGameFrame(dt: number): void {
   if (keys['KeyA'] || keys['ArrowLeft']) moveX -= 1;
   if (keys['KeyD'] || keys['ArrowRight']) moveX += 1;
 
+  if (
+    tournament.state.active &&
+    tournament.state.currentMutator === 'SUPER_SPEED' &&
+    !tournament.state.rouletteSpinning
+  ) {
+    moveX *= 1.45;
+    moveY *= 1.45;
+  }
+
   const refX =
     net.activeGame === 'TURBO_PUTT'
       ? myPuttPlayer.x
@@ -1146,6 +1269,40 @@ function stepGameFrame(dt: number): void {
       }
       arenaEngine.step(dt, inputPacket);
     }
+
+    // Chaotic Party Tournament Step & Game Winner Recording (Host-authoritative)
+    if (tournament.state.active) {
+      tournament.step(dt, (nextGame) => net.switchGame(nextGame));
+
+      if (net.activeGame === 'BASH_BOT' && arenaEngine.phase === 'MATCH_OVER') {
+        tournament.recordRoundWinner(arenaEngine.lastRoundWinnerId);
+      } else if (net.activeGame === 'HOT_CORE' && hotCoreEngine.status === 'MATCH_OVER') {
+        tournament.recordRoundWinner(hotCoreEngine.lastWinnerId);
+      } else if (net.activeGame === 'VOLT_CROWN' && voltCrownEngine.status === 'MATCH_OVER') {
+        tournament.recordRoundWinner(voltCrownEngine.lastWinnerId);
+      } else if (net.activeGame === 'HEX_CRUSH' && hexCrushEngine.status === 'MATCH_OVER') {
+        tournament.recordRoundWinner(hexCrushEngine.matchWinnerId);
+      }
+
+      // Chaos Mutator: Periodic Dynamite Bomb Rain
+      if (
+        tournament.state.currentMutator === 'BOMB_RAIN' &&
+        !tournament.state.rouletteSpinning &&
+        Math.random() < 0.008
+      ) {
+        const bx = 220 + Math.random() * 560;
+        const by = 130 + Math.random() * 240;
+        if (net.activeGame === 'HEX_CRUSH') {
+          hexCrushEngine.damageTileAt(bx, by, 1);
+          hexCrushEngine.screenShake = 10;
+          sfx.playPinballBumper();
+        } else if (net.activeGame === 'BASH_BOT') {
+          arenaEngine.screenShake = 10;
+          sfx.playPinballBumper();
+        }
+      }
+    }
+
     net.broadcastHostSnapshot();
   } else {
     // Client-side prediction & dead-reckoning across all 5 games at 60/144fps for 0ms input lag!
@@ -1232,6 +1389,13 @@ function animate(now: number): void {
         rpm > 210 || arenaEngine.multiballActive ? '#FF4F00' : '#18181B';
     }
     courtRenderer.render(arenaEngine, net.localSlotId);
+  }
+
+  // Override top RPM badge if Tournament Fiesta is in progress
+  if (tournament.state.active) {
+    const mut = tournament.getCurrentMutatorDef();
+    rpmBadge.textContent = `🏆 R0${tournament.state.roundIndex + 1}/05 • ${mut.icon} ${mut.name}`;
+    rpmBadge.style.background = mut.color;
   }
 
   requestAnimationFrame(animate);

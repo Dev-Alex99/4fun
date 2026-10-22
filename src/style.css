@@ -886,3 +886,177 @@ body {
 .room-toast.tone-warn {
   background: #ff4f00;
 }
+
+/* ========================================================= */
+/* CHAOTIC PARTY TOURNAMENT STYLES                          */
+/* ========================================================= */
+
+.tournament-hero-card {
+  background: linear-gradient(135deg, #fef08a 0%, #fde047 100%);
+  border: 3px solid var(--ink);
+  border-radius: 14px;
+  padding: 16px 20px;
+  margin-bottom: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  box-shadow: 0 6px 0 var(--ink), 0 12px 24px rgba(24, 24, 27, 0.15);
+}
+
+.tourney-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 6px;
+}
+
+.tourney-tag {
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 900;
+  background: #18181b;
+  color: #fef08a;
+  padding: 3px 8px;
+  border-radius: 4px;
+}
+
+.tourney-players {
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 800;
+  color: #713f12;
+}
+
+.tourney-title {
+  font-family: var(--display);
+  font-size: 19px;
+  font-weight: 900;
+  color: #18181b;
+  margin: 0 0 6px 0;
+  letter-spacing: -0.5px;
+}
+
+.tourney-desc {
+  font-size: 13px;
+  color: #451a03;
+  margin: 0;
+  line-height: 1.45;
+  max-width: 680px;
+}
+
+.tourney-actions {
+  flex-shrink: 0;
+}
+
+/* Tournament Modal & Roulette View */
+.tournament-modal-box {
+  max-width: 580px;
+  text-align: center;
+}
+
+.tourney-roulette-view {
+  padding: 24px 10px;
+}
+
+.slot-reel-box {
+  background: #18181b;
+  border: 3px solid #facc15;
+  border-radius: 12px;
+  padding: 24px 20px;
+  box-shadow: inset 0 4px 12px rgba(0, 0, 0, 0.6), 0 0 24px rgba(250, 204, 21, 0.3);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.slot-reel-icon {
+  font-size: 54px;
+  margin-bottom: 12px;
+  animation: reelPulse 0.3s infinite alternate;
+}
+
+@keyframes reelPulse {
+  0% { transform: scale(0.95); }
+  100% { transform: scale(1.05); }
+}
+
+.slot-reel-title {
+  font-family: var(--mono);
+  font-size: 20px;
+  font-weight: 900;
+  color: #fef08a;
+  margin-bottom: 6px;
+  letter-spacing: 0.5px;
+}
+
+.slot-reel-desc {
+  font-size: 13.5px;
+  color: #94a3b8;
+  margin: 0;
+}
+
+/* Standings Leaderboard */
+.tourney-standings-view {
+  padding: 14px 10px;
+}
+
+.tourney-leaderboard {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 18px;
+}
+
+.leaderboard-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  border-radius: 8px;
+  border: 2px solid var(--ink);
+  color: #ffffff;
+  font-family: var(--mono);
+  font-weight: 800;
+  font-size: 13px;
+  box-shadow: 0 3px 0 var(--ink);
+}
+
+.tourney-intermission-timer {
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 900;
+  color: #71717a;
+}
+
+/* Final Trophy Podium */
+.tourney-podium-view {
+  padding: 20px 10px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.podium-trophy {
+  font-size: 64px;
+  margin-bottom: 12px;
+}
+
+.podium-champ-name {
+  font-family: var(--mono);
+  font-size: 22px;
+  font-weight: 900;
+  color: #f59e0b;
+  margin: 0 0 8px 0;
+}
+
+.podium-champ-desc {
+  font-size: 13px;
+  color: #52525b;
+  margin: 0 0 20px 0;
+}
+
+.podium-actions {
+  display: flex;
+  gap: 12px;
+}

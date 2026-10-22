@@ -6,6 +6,89 @@ export type ActiveGameId =
   | 'HOT_CORE'
   | 'VOLT_CROWN'
   | 'HEX_CRUSH';
+
+export type ChaosMutatorId =
+  | 'NONE'
+  | 'MOON_GRAVITY'
+  | 'SUPER_SPEED'
+  | 'BOUNCY_BUMPERS'
+  | 'BOMB_RAIN'
+  | 'GHOST_PULSE';
+
+export interface ChaosMutatorDef {
+  id: ChaosMutatorId;
+  name: string;
+  tag: string;
+  desc: string;
+  icon: string;
+  color: string;
+}
+
+export const CHAOS_MUTATORS: Record<ChaosMutatorId, ChaosMutatorDef> = {
+  NONE: {
+    id: 'NONE',
+    name: 'CAOS ESTÁNDAR',
+    tag: 'NORMAL',
+    desc: 'Física pura estándar de competición sin mutadores.',
+    icon: '🛡️',
+    color: '#71717A'
+  },
+  MOON_GRAVITY: {
+    id: 'MOON_GRAVITY',
+    name: 'GRAVEDAD LUNAR',
+    tag: 'FLOTANTE',
+    desc: 'Gravedad al 50%. Saltos altos y flotación prolongada.',
+    icon: '🌀',
+    color: '#818CF8'
+  },
+  SUPER_SPEED: {
+    id: 'SUPER_SPEED',
+    name: 'TURBO OVERCLOCK',
+    tag: 'VELOCIDAD',
+    desc: 'Motores y bolas a 145% de velocidad. Reflejos al límite.',
+    icon: '⚡',
+    color: '#F59E0B'
+  },
+  BOUNCY_BUMPERS: {
+    id: 'BOUNCY_BUMPERS',
+    name: 'HIPER-REBOTE',
+    tag: 'CINÉTICA',
+    desc: 'Todos los rebotes y choques tienen 2.5x de fuerza expulsiva.',
+    icon: '🧲',
+    color: '#EC4899'
+  },
+  BOMB_RAIN: {
+    id: 'BOMB_RAIN',
+    name: 'LLUVIA DE DINAMITA',
+    tag: 'PELIGRO',
+    desc: 'Micro-bombas caen periódicamente en la pista cada 4 segundos.',
+    icon: '💣',
+    color: '#EF4444'
+  },
+  GHOST_PULSE: {
+    id: 'GHOST_PULSE',
+    name: 'PULSO FANTASMA',
+    tag: 'SIGILO',
+    desc: 'Camuflaje óptico: todos los robots se vuelven invisibles cada 5s.',
+    icon: '👻',
+    color: '#14B8A6'
+  }
+};
+
+export interface TournamentMatchState {
+  active: boolean;
+  roundIndex: number; // 0..4
+  totalRounds: number;
+  gameSequence: ActiveGameId[];
+  mutators: ChaosMutatorId[];
+  currentMutator: ChaosMutatorId;
+  scores: number[]; // [p0, p1, p2, p3]
+  rouletteSpinning: boolean;
+  rouletteDisplayId: ChaosMutatorId;
+  rouletteTimer: number;
+  isFinished: boolean;
+  champId: number | null;
+}
 export type RoundPhase = 'PLAYING' | 'CARD_DRAFT' | 'MATCH_OVER';
 export type BotDifficulty = 'CHILL' | 'NORMAL' | 'PRO' | 'OFF';
 export type CourtLayout = 'CLASSIC' | 'PINBALL' | 'CORE';
@@ -630,5 +713,6 @@ export interface WorldSnapshotPacket {
   hotCoreState?: HotCoreSnapshot;
   voltCrownState?: VoltCrownSnapshot;
   hexCrushState?: HexCrushSnapshot;
+  tournamentState?: TournamentMatchState;
   hostSentAtMs?: number;
 }

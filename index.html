@@ -48,6 +48,9 @@
             <button data-game="HEX_CRUSH" class="keycap-btn tab-btn">
               06 // HEX-CRUSH
             </button>
+            <button id="tabTournamentBtn" class="keycap-btn tab-btn keycap-yellow" style="color: #18181b">
+              🏆 TORNEO FIESTA
+            </button>
           </nav>
 
           <!-- 4 Player Mechanical Flip-Score Slots -->
@@ -209,6 +212,23 @@
                 </div>
               </div>
 
+              <!-- Special Game Mode: CHAOTIC PARTY TOURNAMENT HERO BANNER -->
+              <div class="tournament-hero-card">
+                <div>
+                  <div class="tourney-header">
+                    <span class="tourney-tag">MODO FIESTA // 5 RONDAS</span>
+                    <span class="tourney-players">4 PILOTOS SIMULTÁNEOS</span>
+                  </div>
+                  <h2 class="tourney-title">🏆 TORNEO DEL CAOS (PLAYLIST MULTIJUEGO)</h2>
+                  <p class="tourney-desc">
+                    Compite en una seguidilla de <strong>5 minijuegos aleatorios</strong> con la <strong>Ruleta de Mutadores Sísmicos</strong> girando antes de cada ronda: Gravedad Lunar 🌀, Turbo Overclock ⚡, Lluvia de Dinamita 💣, Hiper-Rebote 🧲 y Pulso Fantasma 👻. ¡El piloto con más puntos acumulados alza la Gran Copa de Oro!
+                  </p>
+                </div>
+                <button id="hubStartTournamentBtn" class="keycap-btn keycap-yellow keycap-lg">
+                  🏆 INICIAR TORNEO FIESTA →
+                </button>
+              </div>
+
               <div class="hub-grid">
                 <!-- Cartridge 01: BASH-BOT -->
                 <div class="game-cartridge">
@@ -366,6 +386,49 @@
               <button id="newChampionshipBtn" class="keycap-btn keycap-orange keycap-lg">
                 JUGAR REVANCHA →
               </button>
+            </div>
+          </div>
+
+          <!-- Tournament Roulette & Championship Podium Overlay -->
+          <div id="tournamentOverlay" class="draft-overlay hidden">
+            <div class="draft-card-box tournament-modal-box">
+              <div class="draft-header">
+                <div>
+                  <div class="draft-eyebrow" id="tourneyModalEyebrow">TORNEO DEL CAOS // RONDA 1 DE 5</div>
+                  <h2 class="draft-title" id="tourneyModalTitle">RULETA DE MUTADORES</h2>
+                </div>
+                <div class="hazard-badge"></div>
+              </div>
+
+              <!-- Slot Machine Roulette View -->
+              <div id="tourneyRouletteView" class="tourney-roulette-view">
+                <div class="slot-reel-box">
+                  <div class="slot-reel-icon" id="rouletteIcon">🎰</div>
+                  <div class="slot-reel-title" id="rouletteName">GIRANDO RULETA...</div>
+                  <p class="slot-reel-desc" id="rouletteDesc">Sorteando mutador sísmico para esta ronda...</p>
+                </div>
+              </div>
+
+              <!-- Intermission & Podium Standings View -->
+              <div id="tourneyStandingsView" class="tourney-standings-view hidden">
+                <div class="tourney-leaderboard" id="tourneyLeaderboard"></div>
+                <div class="tourney-intermission-timer" id="tourneyIntermissionText">Siguiente juego en 3...</div>
+              </div>
+
+              <!-- Final Trophy Podium View -->
+              <div id="tourneyPodiumView" class="tourney-podium-view hidden">
+                <div class="podium-trophy">🏆</div>
+                <h3 class="podium-champ-name" id="tourneyChampName">¡ALEX ES EL GRAN CAMPEÓN!</h3>
+                <p class="podium-champ-desc">Dominó la playlist de 5 minijuegos con la mayor cantidad de puntos de copa.</p>
+                <div class="podium-actions">
+                  <button id="tourneyRestartBtn" class="keycap-btn keycap-yellow keycap-lg">
+                    🔄 REPETIR TORNEO
+                  </button>
+                  <button id="tourneyExitHubBtn" class="keycap-btn keycap-lg">
+                    ⊞ VOLVER AL HUB
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
 
