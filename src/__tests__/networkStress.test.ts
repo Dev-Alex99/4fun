@@ -310,7 +310,7 @@ describe('four-player deterministic network stress', () => {
     if ((globalThis as unknown as { process?: { env: Record<string, string | undefined> } }).process?.env.NET_STRESS_REPORT) {
       console.info('NETWORK_LOCAL_FEEL', JSON.stringify(report));
     }
-  });
+  }, 30000);
 
   it('recovers from 500 ms and 3 s stalls, keeps three identities and preserves authoritative KO/lives/scores', () => {
     const { host, clients } = room();

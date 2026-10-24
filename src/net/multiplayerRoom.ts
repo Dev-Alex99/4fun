@@ -48,6 +48,11 @@ const TRACK_HISTORY_MS = 3000;
 /** A client that hears nothing at all from the host (snapshots or ping replies) for this long reconnects. */
 const HOST_SILENCE_RECONNECT_MS = 6000;
 const RECONNECT_DELAYS_MS = [900, 1500, 2500, 4000, 6000, 8000];
+/**
+ * Concurrent deflate/inflate jobs per room. A device that cannot keep up drops snapshots (they are
+ * superseded 46 ms later anyway) instead of queuing stale work and memory.
+ */
+const MAX_FRAME_JOBS = 4;
 const uniqueId = (): string => globalThis.crypto?.randomUUID?.() ?? `P-${Math.random().toString(36).slice(2)}-${Date.now()}`;
 /** PeerJS signaling failures. Established WebRTC data channels keep working without the signaling socket. */
 const SIGNALING_ERRORS = ['network', 'server-error', 'socket-error', 'socket-closed', 'disconnected', 'unavailable-id'];
@@ -121,6 +126,8 @@ export class MultiplayerRoomManager {
   private hostSignalingAttempts = 0;
   private hostSignalingRetryPending = false;
   private hostRegistered = false;
+  /** Compression or decompression work still running; also lets tests wait until the room is idle. */
+  private frameJobs = 0;
   // Acknowledged-input reconciliation: the local trajectory without snapshot corrections, sampled per step.
   private localTrack: { t: number; x: number; y: number; z: number }[] = [];
   private trackCorrection = { x: 0, y: 0, z: 0 };
@@ -272,13 +279,14 @@ export class MultiplayerRoomManager {
       if (this.compressionEnabled && text.length >= COMPRESS_MIN_CHARS && this.peerCaps.get(id)?.deflate) deflated.push(conn);
       else this.sendFrame(conn, text, true);
     });
-    if (!deflated.length) return;
+    if (!deflated.length || this.frameJobs >= MAX_FRAME_JOBS) return;
     const generation = this.generation;
     const deliver = (frame: string | Uint8Array) => {
       if (this.disposed || generation !== this.generation) return;
       for (const conn of deflated) if (this.clientConns.get(conn.peer) === conn) this.sendFrame(conn, frame, true);
     };
-    encodeDeflateFrame(text).then(deliver, () => deliver(text));
+    this.frameJobs++;
+    encodeDeflateFrame(text).then(deliver, () => deliver(text)).finally(() => { this.frameJobs--; });
   }
 
   private allowMessage(source: DataConnection, now: number): boolean {
@@ -293,10 +301,12 @@ export class MultiplayerRoomManager {
     if (!bytes) { this.handleEnvelope(raw, reply, source); return; }
     // Count the frame before any decompression work so a flood cannot buy CPU time.
     if (this.isHost || !decompressionSupported() || !this.allowMessage(source, performance.now())) return;
+    if (this.frameJobs >= MAX_FRAME_JOBS) return;
     const generation = this.generation;
+    this.frameJobs++;
     void decodeDeflateFrame(bytes, MAX_MESSAGE_CHARS * 3).then(text => {
       if (text !== null && !this.disposed && generation === this.generation) this.handleEnvelope(text, reply, source, true);
-    });
+    }).finally(() => { this.frameJobs--; });
   }
 
   private sendToAllClients(env: NetEnvelope): void { this.clientConns.forEach(c => this.sendOverConn(c, env)); }

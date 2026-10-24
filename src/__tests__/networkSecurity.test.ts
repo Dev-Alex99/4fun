@@ -561,13 +561,42 @@ describe('ordering, reconnection and bounded latency', () => {
 
 describe('high-latency and unstable-link resilience', () => {
   const HOST_PEER = 'tp04-deck-room-v4-TEST';
-  /** Lets real async work (native deflate streams) finish while protocol timers stay frozen. */
-  // setImmediate is not faked, so native stream callbacks get event-loop turns.
+  // setImmediate is not faked, so native zlib callbacks (run on libuv's thread pool) get event-loop turns.
   const nextTurn = () => new Promise<void>(resolve => (globalThis as unknown as { setImmediate: (callback: () => void) => void }).setImmediate(resolve));
-  async function settle(done: () => boolean = () => false, turns = 400) {
-    for (let i = 0; i < turns && !done(); i++) await nextTurn();
+  const busy = (...rooms: { net: MultiplayerRoomManager }[]) => rooms.some(room => (room.net as unknown as { frameJobs: number }).frameJobs > 0);
+  /**
+   * Waits until no compression work is running in the given rooms and the condition holds. The protocol
+   * clock stays frozen; the deadline is real time, so slow CI machines wait longer instead of failing.
+   * It stays below the 30 s test timeout so a real hang reports which precondition never held.
+   */
+  async function settle(rooms: { net: MultiplayerRoomManager }[], done: () => boolean = () => true, timeoutMs = 20000): Promise<boolean> {
+    const deadline = vi.getRealSystemTime() + timeoutMs;
+    while (vi.getRealSystemTime() < deadline) {
+      if (!busy(...rooms) && done()) return true;
+      await nextTurn();
+    }
+    return false;
   }
   function deliverPending() { for (const packet of rtc.pending.splice(0)) packet.target.emit('data', packet.raw); }
+  /** Simulates a slow or overloaded machine: every compressed or inflated chunk arrives many turns late. */
+  function slowZlib(turns = 600): () => void {
+    type StreamClass = new (format: CompressionFormat) => { readable: ReadableStream; writable: WritableStream };
+    const scope = globalThis as unknown as { CompressionStream: StreamClass; DecompressionStream: StreamClass };
+    const real = { compress: scope.CompressionStream, decompress: scope.DecompressionStream };
+    const slow = (Base: StreamClass): StreamClass => class {
+      readable: ReadableStream; writable: WritableStream;
+      constructor(format: CompressionFormat) {
+        const inner = new Base(format);
+        this.writable = inner.writable;
+        this.readable = inner.readable.pipeThrough(new TransformStream({
+          async transform(chunk, controller) { for (let i = 0; i < turns; i++) await nextTurn(); controller.enqueue(chunk); }
+        }));
+      }
+    };
+    scope.CompressionStream = slow(real.compress); scope.DecompressionStream = slow(real.decompress);
+    return () => { scope.CompressionStream = real.compress; scope.DecompressionStream = real.decompress; };
+  }
+
   /** Runs heartbeat ping challenges through a link with the given round-trip time. */
   function measureLink(h: ReturnType<typeof host>, rttMs: number, rounds = 6) {
     rtc.setHold(true);
@@ -580,48 +609,63 @@ describe('high-latency and unstable-link resilience', () => {
     rtc.setHold(false);
   }
 
-  it('deflates snapshots for capable clients, keeps text for others and never inflates client uploads', async () => {
-    const h = manager({ compression: true }); h.net.hostRoom('TEST', 'ALEX');
-    const zip = manager({ compression: true }); zip.net.joinRoomAsClient('TEST', 'ZIP'); open(zip.net);
-    const txt = manager({ compression: false }); txt.net.joinRoomAsClient('TEST', 'TXT'); open(txt.net);
-    expect(JSON.parse(transport(zip.net).client.sent[0]).payload.caps).toEqual({ deflate: true });
-    h.net.switchGame('HEX_CRUSH');
-    const zipFrames = transport(zip.net).server.sent as unknown[], txtFrames = transport(txt.net).server.sent as unknown[];
-    await settle(() => zipFrames.some(frame => frame instanceof Uint8Array) && zip.net.activeGame === 'HEX_CRUSH' && zip.net.isSynchronized);
-    const binary = zipFrames.filter((frame): frame is Uint8Array => frame instanceof Uint8Array);
-    const text = txtFrames.filter((frame): frame is string => typeof frame === 'string' && frame.includes('"WORLD_SNAP"'));
-    expect(binary.length).toBeGreaterThan(0); expect(txtFrames.every(frame => typeof frame === 'string')).toBe(true);
-    expect(binary.at(-1)!.byteLength).toBeLessThan(text.at(-1)!.length / 3);
-    expect(zip.net.activeGame).toBe('HEX_CRUSH'); expect(zip.net.isSynchronized).toBe(true);
-    expect(zip.hex.tiles).toHaveLength(h.hex.tiles.length); expect(txt.hex.tiles).toHaveLength(h.hex.tiles.length);
-    // Hosts accept only text from guests, so a guest cannot make the host inflate anything.
-    const apply = vi.spyOn(h.hex, 'applyRemoteInput');
-    transport(zip.net).server.emit('data', binary.at(-1)); await settle();
-    expect(apply).not.toHaveBeenCalled(); expect(h.net.connectedPeersCount).toBe(2);
-  });
+  for (const slow of [false, true]) it(`deflates snapshots for capable clients, keeps text for others and never inflates client uploads${slow ? ' (slow zlib)' : ''}`, async () => {
+    const restore = slow ? slowZlib() : () => undefined;
+    try {
+      const h = manager({ compression: true }); h.net.hostRoom('TEST', 'ALEX');
+      const zip = manager({ compression: true }); zip.net.joinRoomAsClient('TEST', 'ZIP'); open(zip.net);
+      const txt = manager({ compression: false }); txt.net.joinRoomAsClient('TEST', 'TXT'); open(txt.net);
+      expect(JSON.parse(transport(zip.net).client.sent[0]).payload.caps).toEqual({ deflate: true });
+      h.net.switchGame('HEX_CRUSH');
+      const zipFrames = transport(zip.net).server.sent as unknown[], txtFrames = transport(txt.net).server.sent as unknown[];
+      expect(await settle([h, zip], () => zipFrames.some(frame => frame instanceof Uint8Array) && zip.net.activeGame === 'HEX_CRUSH' && zip.net.isSynchronized)).toBe(true);
+      const binary = zipFrames.filter((frame): frame is Uint8Array => frame instanceof Uint8Array);
+      const text = txtFrames.filter((frame): frame is string => typeof frame === 'string' && frame.includes('"WORLD_SNAP"'));
+      expect(binary.length).toBeGreaterThan(0); expect(txtFrames.every(frame => typeof frame === 'string')).toBe(true);
+      expect(binary.at(-1)!.byteLength).toBeLessThan(text.at(-1)!.length / 3);
+      expect(zip.net.activeGame).toBe('HEX_CRUSH'); expect(zip.net.isSynchronized).toBe(true);
+      expect(zip.hex.tiles).toHaveLength(h.hex.tiles.length); expect(txt.hex.tiles).toHaveLength(h.hex.tiles.length);
+      // Hosts accept only text from guests, so a guest cannot make the host inflate anything.
+      const apply = vi.spyOn(h.hex, 'applyRemoteInput');
+      transport(zip.net).server.emit('data', binary.at(-1));
+      expect(await settle([h, zip])).toBe(true);
+      expect(apply).not.toHaveBeenCalled(); expect(h.net.connectedPeersCount).toBe(2);
+    } finally { restore(); }
+  }, 30000);
 
-  it('drops corrupt or oversized compressed frames and a stale result after the session changed', async () => {
-    const h = manager({ compression: true }); h.net.hostRoom('TEST', 'ALEX');
-    const c = manager({ compression: true }); c.net.joinRoomAsClient('TEST', 'ZIP'); open(c.net);
-    h.net.switchGame('VOLT_CROWN');
-    await settle(() => c.net.activeGame === 'VOLT_CROWN' && c.net.isSynchronized);
-    const seq = () => (c.net as unknown as { lastSnapshotSeq: number }).lastSnapshotSeq, before = seq();
-    const { client } = transport(c.net);
-    for (const frame of [new Uint8Array([1]), new Uint8Array([9, 1, 2, 3]), new Uint8Array([1, 0xff, 0xff, 0xff, 0xff]), new Uint8Array(200 * 1024).fill(1)]) {
-      expect(() => client.emit('data', frame)).not.toThrow();
-    }
-    await settle();
-    expect(seq()).toBe(before); expect(c.net.connectionState).toBe('CONNECTED_CLIENT');
-    // A fresh frame still inflating when the client leaves the room must not touch the new session.
-    rtc.setHold(true); h.net.broadcastHostSnapshot(true);
-    await settle(() => rtc.pending.some(packet => (packet.raw as unknown) instanceof Uint8Array));
-    const held = rtc.pending.find(packet => (packet.raw as unknown) instanceof Uint8Array)!;
-    rtc.pending.length = 0; rtc.setHold(false);
-    held.target.emit('data', held.raw);
-    c.net.joinRoomAsClient('OTHER', 'ZIP');
-    await settle();
-    expect(c.net.activeGame).toBe('HUB'); expect(seq()).toBe(0);
-  });
+  for (const slow of [false, true]) it(`drops corrupt or oversized compressed frames and a stale result after the session changed${slow ? ' (slow zlib)' : ''}`, async () => {
+    const restore = slow ? slowZlib() : () => undefined;
+    try {
+      const h = manager({ compression: true }); h.net.hostRoom('TEST', 'ALEX');
+      const c = manager({ compression: true }); c.net.joinRoomAsClient('TEST', 'ZIP'); open(c.net);
+      h.net.switchGame('VOLT_CROWN');
+      const seq = () => (c.net as unknown as { lastSnapshotSeq: number }).lastSnapshotSeq;
+      const hostSeq = () => (h.net as unknown as { snapshotSeq: number }).snapshotSeq;
+      // Precondition: every legitimate snapshot is decoded and applied, so nothing pending can move the sequence.
+      expect(await settle([h, c], () => c.net.activeGame === 'VOLT_CROWN' && c.net.isSynchronized && seq() === hostSeq())).toBe(true);
+      const before = seq();
+      const { client } = transport(c.net);
+      for (const frame of [new Uint8Array([1]), new Uint8Array([9, 1, 2, 3]), new Uint8Array([1, 0xff, 0xff, 0xff, 0xff]), new Uint8Array(200 * 1024).fill(1)]) {
+        expect(() => client.emit('data', frame)).not.toThrow();
+      }
+      expect(await settle([h, c])).toBe(true);
+      expect(seq()).toBe(before); expect(c.net.connectionState).toBe('CONNECTED_CLIENT');
+      // The guest still decodes the next genuine snapshot after the garbage.
+      h.net.broadcastHostSnapshot(true);
+      expect(await settle([h, c], () => seq() === hostSeq())).toBe(true);
+      expect(seq()).toBeGreaterThan(before);
+      // A fresh frame still inflating when the client leaves the room must not touch the new session.
+      rtc.setHold(true); h.net.broadcastHostSnapshot(true);
+      expect(await settle([h, c], () => rtc.pending.some(packet => (packet.raw as unknown) instanceof Uint8Array))).toBe(true);
+      const held = rtc.pending.find(packet => (packet.raw as unknown) instanceof Uint8Array)!;
+      rtc.pending.length = 0; rtc.setHold(false);
+      held.target.emit('data', held.raw);
+      c.net.joinRoomAsClient('OTHER', 'ZIP');
+      expect(busy(c)).toBe(true);
+      expect(await settle([h, c])).toBe(true);
+      expect(c.net.activeGame).toBe('HUB'); expect(seq()).toBe(0);
+    } finally { restore(); }
+  }, 30000);
 
   it('keeps an established guest playing through PeerJS signaling errors', () => {
     const h = host(), c = join(); h.net.switchGame('BASH_BOT');
