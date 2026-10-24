@@ -836,4 +836,11 @@ export interface WorldSnapshotPacket extends SimulationSnapshotMetadata {
   ricochetState?: RicochetSnapshot;
   tournamentState?: TournamentMatchState;
   hostSentAtMs?: number;
+  /**
+   * Per slot: [newest inputSeq the host applied, ms it has been applied for], or null for host/bots.
+   * Lets each client re-add only the movement still in flight instead of guessing from its ping.
+   */
+  inputAcks?: (InputAck | null)[];
 }
+
+export type InputAck = [inputSeq: number, appliedForMs: number];

@@ -1,4 +1,4 @@
-import { reconcilePlayer } from './reconciliation';
+import { reconcilePlayer, type PredictionHint } from './reconciliation';
 import { ChaosPhysics } from './chaosPhysics';
 import { sfx } from '../audio/mechanicalSfx';
 import {
@@ -1211,7 +1211,7 @@ export class PuttWarEngine extends ChaosPhysics {
     return releasedPower;
   }
 
-  public applySnapshot(snap: PuttWarSnapshot, localSlotId?: number, predictionLeadSeconds = 0): void {
+  public applySnapshot(snap: PuttWarSnapshot, localSlotId?: number, prediction: PredictionHint = 0): void {
     const reset = this.holeIndex !== snap.holeIndex || this.status !== snap.status || (snap.roundEpoch !== undefined && snap.roundEpoch !== this.roundEpoch);
     if (this.holeIndex !== snap.holeIndex) {
       this.loadHole(snap.holeIndex);
@@ -1229,7 +1229,7 @@ export class PuttWarEngine extends ChaosPhysics {
       const previous = this.players[sp.id];
       const teleport = previous && sp.strokes > previous.strokes && Math.hypot(sp.vx, sp.vy) < 1;
       const result = reconcilePlayer(previous, sp, sp.id === localSlotId,
-        reset || previous?.sunkInCup !== sp.sunkInCup || Boolean(teleport) || snap.status !== 'PLAYING', predictionLeadSeconds);
+        reset || previous?.sunkInCup !== sp.sunkInCup || Boolean(teleport) || snap.status !== 'PLAYING', prediction);
       if (!reset && previous && sp.id === localSlotId && !sp.sunkInCup) {
         result.aimAngle = previous.aimAngle;
         result.isCharging = previous.isCharging;

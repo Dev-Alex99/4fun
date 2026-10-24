@@ -75,6 +75,8 @@ export function validSnapshot(v: unknown): boolean {
       !entityArray(v.balls, 'id x y z vx vy speed baseSpeed radius rotation targetId ownerId passId curveSpin') ||
       !entityArray(v.bumpers, 'x y radius hitAnim') || !validPlayers(v.players, 'base') ||
       !(v.lastRoundWinnerId === null || integer(v.lastRoundWinnerId, 0, 3))) return false;
+  if (v.inputAcks !== undefined && !(Array.isArray(v.inputAcks) && v.inputAcks.length === 4 && v.inputAcks.every(ack => ack === null ||
+      (Array.isArray(ack) && ack.length === 2 && integer(ack[0], 1) && integer(ack[1], 0, 600000))))) return false;
   for (const k of ['chainState', 'puttState', 'hotCoreState', 'voltCrownState', 'hexCrushState', 'ricochetState']) {
     if (v[k] !== undefined && (!record(v[k]) || !validPlayers(v[k].players, k))) return false;
   }

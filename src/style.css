@@ -836,6 +836,20 @@ body {
   gap: 10px;
 }
 
+.cartridge-card.is-picked {
+  background: #ffffff;
+  outline: 3px solid var(--orange);
+  outline-offset: 2px;
+}
+
+.cartridge-card:disabled {
+  cursor: default;
+}
+
+.cartridge-card:disabled:not(.is-picked) {
+  opacity: 0.5;
+}
+
 .cartridge-top {
   display: flex;
   align-items: center;

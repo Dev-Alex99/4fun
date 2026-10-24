@@ -463,7 +463,8 @@ describe('ordering, reconnection and bounded latency', () => {
     rtc.setHold(false); h.net.broadcastHostSnapshot(true);
     const apply = vi.spyOn(h.arena, 'applyRemoteInput');
     sendRaw(c.net, 'CLIENT_INPUT', input(c.net, { lagCompensationMs: 99999 }));
-    expect(apply.mock.calls.at(-1)?.[0].lagCompensationMs).toBe(120);
+    // Smoothed host RTT (RFC 6298): the 0 ms join challenge, then this 160 ms one -> SRTT 20 ms -> 20 / 2 + 40.
+    expect(apply.mock.calls.at(-1)?.[0].lagCompensationMs).toBe(50);
   });
 
   it('rejects old-round input and queued actions when the same cartridge starts another round', () => {
@@ -518,8 +519,15 @@ describe('ordering, reconnection and bounded latency', () => {
     }
     expect(Math.abs(c.arena.players[1].x - h.arena.players[1].x)).toBeLessThan(20);
     expect(c.net.connectionState).toBe('CONNECTED_CLIENT');
-    expect(applied.mock.calls.some(call => call[2] === 0.1)).toBe(true);
-    expect(applied.mock.calls.every(call => call[2] !== undefined && call[2] >= 0 && call[2] <= 0.12)).toBe(true);
+    // Before the first acknowledgement the legacy lead (half the 200 ms ping) applies; afterwards every hint is the
+    // bounded displacement of local steps the host had not applied yet.
+    const hints = applied.mock.calls.map(call => call[2]);
+    expect(hints.some(hint => hint === 0.1)).toBe(true);
+    const offsets = hints.filter((hint): hint is { dx: number; dy: number } => typeof hint === 'object' && hint !== null);
+    expect(offsets.length).toBeGreaterThan(8);
+    expect(offsets.every(hint => Number.isFinite(hint.dx) && Number.isFinite(hint.dy) && Math.hypot(hint.dx, hint.dy) < 120)).toBe(true);
+    expect(offsets.some(hint => hint.dx > 1)).toBe(true);
+    expect(hints.every(hint => typeof hint === 'object' || (hint !== undefined && hint >= 0 && hint <= 0.12))).toBe(true);
   });
 
   it('retains the latest pilot name when reconnecting after a name change', () => {
@@ -548,5 +556,182 @@ describe('ordering, reconnection and bounded latency', () => {
     old.server.emit('data', old.client.sent[0]); old.client.emit('close');
     vi.advanceTimersByTime(30000);
     expect(apply).not.toHaveBeenCalled(); expect(rtc.peers.size).toBe(0); expect(vi.getTimerCount()).toBe(0);
+  });
+});
+
+describe('high-latency and unstable-link resilience', () => {
+  const HOST_PEER = 'tp04-deck-room-v4-TEST';
+  /** Lets real async work (native deflate streams) finish while protocol timers stay frozen. */
+  // setImmediate is not faked, so native stream callbacks get event-loop turns.
+  const nextTurn = () => new Promise<void>(resolve => (globalThis as unknown as { setImmediate: (callback: () => void) => void }).setImmediate(resolve));
+  async function settle(done: () => boolean = () => false, turns = 400) {
+    for (let i = 0; i < turns && !done(); i++) await nextTurn();
+  }
+  function deliverPending() { for (const packet of rtc.pending.splice(0)) packet.target.emit('data', packet.raw); }
+  /** Runs heartbeat ping challenges through a link with the given round-trip time. */
+  function measureLink(h: ReturnType<typeof host>, rttMs: number, rounds = 6) {
+    rtc.setHold(true);
+    for (let i = 0; i < rounds; i++) {
+      vi.advanceTimersByTime(1400);
+      vi.advanceTimersByTime(rttMs / 2); deliverPending();
+      vi.advanceTimersByTime(rttMs / 2); deliverPending();
+      h.net.broadcastHostSnapshot(true); deliverPending();
+    }
+    rtc.setHold(false);
+  }
+
+  it('deflates snapshots for capable clients, keeps text for others and never inflates client uploads', async () => {
+    const h = manager({ compression: true }); h.net.hostRoom('TEST', 'ALEX');
+    const zip = manager({ compression: true }); zip.net.joinRoomAsClient('TEST', 'ZIP'); open(zip.net);
+    const txt = manager({ compression: false }); txt.net.joinRoomAsClient('TEST', 'TXT'); open(txt.net);
+    expect(JSON.parse(transport(zip.net).client.sent[0]).payload.caps).toEqual({ deflate: true });
+    h.net.switchGame('HEX_CRUSH');
+    const zipFrames = transport(zip.net).server.sent as unknown[], txtFrames = transport(txt.net).server.sent as unknown[];
+    await settle(() => zipFrames.some(frame => frame instanceof Uint8Array) && zip.net.activeGame === 'HEX_CRUSH' && zip.net.isSynchronized);
+    const binary = zipFrames.filter((frame): frame is Uint8Array => frame instanceof Uint8Array);
+    const text = txtFrames.filter((frame): frame is string => typeof frame === 'string' && frame.includes('"WORLD_SNAP"'));
+    expect(binary.length).toBeGreaterThan(0); expect(txtFrames.every(frame => typeof frame === 'string')).toBe(true);
+    expect(binary.at(-1)!.byteLength).toBeLessThan(text.at(-1)!.length / 3);
+    expect(zip.net.activeGame).toBe('HEX_CRUSH'); expect(zip.net.isSynchronized).toBe(true);
+    expect(zip.hex.tiles).toHaveLength(h.hex.tiles.length); expect(txt.hex.tiles).toHaveLength(h.hex.tiles.length);
+    // Hosts accept only text from guests, so a guest cannot make the host inflate anything.
+    const apply = vi.spyOn(h.hex, 'applyRemoteInput');
+    transport(zip.net).server.emit('data', binary.at(-1)); await settle();
+    expect(apply).not.toHaveBeenCalled(); expect(h.net.connectedPeersCount).toBe(2);
+  });
+
+  it('drops corrupt or oversized compressed frames and a stale result after the session changed', async () => {
+    const h = manager({ compression: true }); h.net.hostRoom('TEST', 'ALEX');
+    const c = manager({ compression: true }); c.net.joinRoomAsClient('TEST', 'ZIP'); open(c.net);
+    h.net.switchGame('VOLT_CROWN');
+    await settle(() => c.net.activeGame === 'VOLT_CROWN' && c.net.isSynchronized);
+    const seq = () => (c.net as unknown as { lastSnapshotSeq: number }).lastSnapshotSeq, before = seq();
+    const { client } = transport(c.net);
+    for (const frame of [new Uint8Array([1]), new Uint8Array([9, 1, 2, 3]), new Uint8Array([1, 0xff, 0xff, 0xff, 0xff]), new Uint8Array(200 * 1024).fill(1)]) {
+      expect(() => client.emit('data', frame)).not.toThrow();
+    }
+    await settle();
+    expect(seq()).toBe(before); expect(c.net.connectionState).toBe('CONNECTED_CLIENT');
+    // A fresh frame still inflating when the client leaves the room must not touch the new session.
+    rtc.setHold(true); h.net.broadcastHostSnapshot(true);
+    await settle(() => rtc.pending.some(packet => (packet.raw as unknown) instanceof Uint8Array));
+    const held = rtc.pending.find(packet => (packet.raw as unknown) instanceof Uint8Array)!;
+    rtc.pending.length = 0; rtc.setHold(false);
+    held.target.emit('data', held.raw);
+    c.net.joinRoomAsClient('OTHER', 'ZIP');
+    await settle();
+    expect(c.net.activeGame).toBe('HUB'); expect(seq()).toBe(0);
+  });
+
+  it('keeps an established guest playing through PeerJS signaling errors', () => {
+    const h = host(), c = join(); h.net.switchGame('BASH_BOT');
+    const peer = rtc.peers.get(c.net.localPeerId)!;
+    for (const type of ['network', 'socket-error', 'socket-closed', 'server-error', 'disconnected']) peer.emit('error', { type });
+    vi.advanceTimersByTime(1000);
+    expect(c.net.connectionState).toBe('CONNECTED_CLIENT'); expect(peer.destroyed).toBe(false);
+    expect(rtc.peers.get(c.net.localPeerId)).toBe(peer);
+    h.net.switchGame('HOT_CORE'); expect(c.net.activeGame).toBe('HOT_CORE');
+    // Errors that concern the game connection itself still trigger a reconnection.
+    peer.emit('error', { type: 'peer-unavailable' }); expect(c.net.connectionState).toBe('RECONNECTING');
+  });
+
+  it('keeps hosting after a stale "ID taken" signaling reconnect and retries with backoff', () => {
+    const h = host(); const peer = rtc.peers.get(HOST_PEER)!; peer.emit('open');
+    const c = join(); const reconnect = vi.spyOn(peer, 'reconnect');
+    peer.disconnected = true; peer.emit('disconnected'); peer.emit('error', { type: 'unavailable-id' });
+    expect(h.net.isHost).toBe(true); expect(h.net.connectedPeersCount).toBe(1);
+    vi.advanceTimersByTime(999); expect(reconnect).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1); expect(reconnect).toHaveBeenCalledTimes(1);
+    peer.disconnected = true; peer.emit('error', { type: 'unavailable-id' }); peer.emit('disconnected');
+    vi.advanceTimersByTime(1999); expect(reconnect).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(1); expect(reconnect).toHaveBeenCalledTimes(2);
+    h.net.switchGame('RICOCHET_1'); expect(c.net.activeGame).toBe('RICOCHET_1');
+    // A code that was never registered by this tab still belongs to another host: join it instead.
+    const other = manager(); other.net.hostRoom('ELSE', 'NEW');
+    rtc.peers.get('tp04-deck-room-v4-ELSE')!.emit('error', { type: 'unavailable-id' });
+    expect(other.net.isHost).toBe(false); expect(other.net.connectionState).toBe('CONNECTING');
+  });
+
+  it('backs off repeated reconnection failures and restarts fast after a successful join', () => {
+    const c = manager(); c.net.joinRoomAsClient('TEST', 'SOLO');
+    const fail = () => rtc.peers.get(c.net.localPeerId)!.emit('error', { type: 'peer-unavailable' });
+    fail(); const first = rtc.peers.get(c.net.localPeerId);
+    vi.advanceTimersByTime(900); const second = rtc.peers.get(c.net.localPeerId);
+    expect(second).not.toBe(first);
+    fail(); vi.advanceTimersByTime(1250); expect(rtc.peers.get(c.net.localPeerId)).toBe(second);
+    vi.advanceTimersByTime(500); const third = rtc.peers.get(c.net.localPeerId); expect(third).not.toBe(second);
+    host();
+    fail(); vi.advanceTimersByTime(3000); open(c.net);
+    expect(c.net.connectionState).toBe('CONNECTED_CLIENT');
+    transport(c.net).client.close(); const dropped = rtc.peers.get(c.net.localPeerId);
+    vi.advanceTimersByTime(900); expect(rtc.peers.get(c.net.localPeerId)).not.toBe(dropped);
+  });
+
+  it('reconnects after six seconds of total silence instead of waiting twelve', () => {
+    const h = host(), c = join(); h.net.broadcastHostSnapshot(true);
+    rtc.setHold(true);
+    vi.advanceTimersByTime(5600); expect(c.net.connectionState).toBe('CONNECTED_CLIENT');
+    vi.advanceTimersByTime(1400); expect(c.net.connectionState).toBe('RECONNECTING');
+  });
+
+  it('widens freshness, expiry and sync windows for a measured slow link, within bounds', () => {
+    const h = host(), c = join(); h.net.switchGame('BASH_BOT');
+    measureLink(h, 450);
+    expect(c.net.pingMs).toBeGreaterThan(300); expect(c.net.linkStats.samples).toBeGreaterThan(3);
+    // Snapshot sync grace: a 700 ms gap no longer freezes the guest, a long outage still does.
+    h.net.broadcastHostSnapshot(true); vi.advanceTimersByTime(700);
+    expect(c.net.isSynchronized).toBe(true);
+    vi.advanceTimersByTime(900); expect(c.net.isSynchronized).toBe(false);
+    // Input that refers to a 900 ms old snapshot is still current for a ~450 ms player.
+    h.net.broadcastHostSnapshot(true);
+    const epoch = (c.net as unknown as { hostEpoch: string }).hostEpoch;
+    const late = JSON.stringify({ protocolVersion: 1, sender: c.net.localPeerId, hostEpoch: epoch, type: 'CLIENT_INPUT',
+      payload: input(c.net, { inputSeq: 900, actionSeq: 900, parryPressed: true }) });
+    vi.advanceTimersByTime(900);
+    const apply = vi.spyOn(h.arena, 'applyRemoteInput');
+    transport(c.net).server.emit('data', late);
+    expect(apply).toHaveBeenCalled();
+    // Held movement survives a 300 ms jitter gap but is neutralized well before a second passes.
+    h.net.broadcastHostSnapshot(true); apply.mockClear();
+    sendRaw(c.net, 'CLIENT_INPUT', input(c.net, { inputSeq: 950, moveX: 1 }));
+    vi.advanceTimersByTime(300); expect(apply.mock.calls.at(-1)?.[0].moveX).toBe(1);
+    vi.advanceTimersByTime(400); expect(apply.mock.calls.at(-1)?.[0]).toMatchObject({ moveX: 0, moveY: 0 });
+  });
+
+  it('acknowledges each guest\'s applied input in snapshots and rejects malformed acknowledgements', () => {
+    const h = host(), c = join(); h.net.switchGame('BASH_BOT');
+    sendRaw(c.net, 'CLIENT_INPUT', input(c.net, { inputSeq: 7, moveX: 1 }));
+    vi.advanceTimersByTime(40); h.net.broadcastHostSnapshot(true);
+    const { server, client } = transport(c.net);
+    const good = JSON.parse(server.sent.at(-1)!);
+    expect(good.payload.inputAcks).toEqual([null, [7, 40], null, null]);
+    const seq = () => (c.net as unknown as { lastSnapshotSeq: number }).lastSnapshotSeq, before = seq();
+    for (const acks of [[[7, 40]], [null, [0, 1], null, null], [null, ['7', 1], null, null], [null, [7, -1], null, null], [null, [7], null, null], 'x']) {
+      const value = structuredClone(good); value.payload.snapshotSeq += 10; value.payload.inputAcks = acks;
+      client.emit('data', JSON.stringify(value));
+    }
+    expect(seq()).toBe(before);
+  });
+});
+
+describe('host signaling recovery before the room is reachable', () => {
+  const HOST_PEER = 'tp04-deck-room-v4-TEST';
+  it('rebuilds a host peer whose first registration failed or stalled, without resetting the match', () => {
+    const h = manager(); h.net.hostRoom('TEST', 'ALEX'); h.net.switchGame('HOT_CORE');
+    const first = rtc.peers.get(HOST_PEER)!;
+    expect(h.net.hostSignalingReady).toBe(false);
+    first.emit('error', { type: 'server-error' });
+    vi.advanceTimersByTime(1000);
+    const second = rtc.peers.get(HOST_PEER)!;
+    expect(second).not.toBe(first); expect(first.destroyed).toBe(true);
+    expect(h.net.isHost).toBe(true); expect(h.net.activeGame).toBe('HOT_CORE');
+    // A registration that never answers is retried by the watchdog with a longer backoff.
+    vi.advanceTimersByTime(15000 + 2000);
+    const third = rtc.peers.get(HOST_PEER)!; expect(third).not.toBe(second);
+    third.emit('open'); expect(h.net.hostSignalingReady).toBe(true);
+    const c = join(); expect(c.net.localSlotId).toBe(1); expect(c.net.activeGame).toBe('HOT_CORE');
+    // Once guests are attached the peer is never torn down by the watchdog or late errors.
+    third.emit('error', { type: 'socket-error' }); vi.advanceTimersByTime(20000);
+    expect(rtc.peers.get(HOST_PEER)).toBe(third); expect(h.net.connectedPeersCount).toBe(1);
   });
 });

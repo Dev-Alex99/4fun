@@ -1,4 +1,4 @@
-import { reconcilePlayer } from './reconciliation';
+import { reconcilePlayer, type PredictionHint } from './reconciliation';
 import { ChaosPhysics } from './chaosPhysics';
 import { sfx } from '../audio/mechanicalSfx';
 import {
@@ -1118,7 +1118,7 @@ export class HexCrushEngine extends ChaosPhysics {
     };
   }
 
-  public applySnapshot(snap: HexCrushSnapshot, localSlotId: number, predictionLeadSeconds = 0): void {
+  public applySnapshot(snap: HexCrushSnapshot, localSlotId: number, prediction: PredictionHint = 0): void {
     const reset = this.arenaIndex !== snap.arenaIndex || this.status !== snap.status || (snap.roundEpoch !== undefined && snap.roundEpoch !== this.roundEpoch);
     if (this.arenaIndex !== snap.arenaIndex) {
       this.arenaIndex = snap.arenaIndex;
@@ -1136,7 +1136,7 @@ export class HexCrushEngine extends ChaosPhysics {
     this.players = snap.players.map((sp) => {
       const previous = this.players[sp.id];
       return reconcilePlayer(previous, sp, sp.id === localSlotId,
-        reset || previous?.alive !== sp.alive || (previous?.fallTimer === 0) !== (sp.fallTimer === 0) || snap.status !== 'PLAYING', predictionLeadSeconds);
+        reset || previous?.alive !== sp.alive || (previous?.fallTimer === 0) !== (sp.fallTimer === 0) || snap.status !== 'PLAYING', prediction);
     });
     this.roundEpoch = snap.roundEpoch ?? this.roundEpoch;
     this.simulationTime = snap.simulationTime ?? this.simulationTime;

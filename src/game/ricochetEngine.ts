@@ -18,7 +18,7 @@ import {
   RicochetSpark,
   RobotCosmetics
 } from '../types';
-import { reconcilePlayer } from './reconciliation';
+import { reconcilePlayer, type PredictionHint } from './reconciliation';
 
 export const RICOCHET_WIDTH = 1000;
 export const RICOCHET_HEIGHT = 516;
@@ -693,7 +693,7 @@ export class RicochetEngine extends ChaosPhysics {
     };
   }
 
-  public applySnapshot(snap: RicochetSnapshot, localSlotId?: number, predictionLeadSeconds = 0): void {
+  public applySnapshot(snap: RicochetSnapshot, localSlotId?: number, prediction: PredictionHint = 0): void {
     const reset = this.arenaIndex !== snap.arenaIndex || this.status !== snap.status || (snap.roundEpoch !== undefined && snap.roundEpoch !== this.roundEpoch);
     if (this.arenaIndex !== snap.arenaIndex) {
       this.loadArena(snap.arenaIndex);
@@ -706,7 +706,7 @@ export class RicochetEngine extends ChaosPhysics {
     this.players = snap.players.map((sp) => {
       const previous = this.players[sp.id];
       return reconcilePlayer(previous, sp, sp.id === localSlotId,
-        reset || previous?.alive !== sp.alive || previous?.lives !== sp.lives || snap.status !== 'PLAYING', predictionLeadSeconds);
+        reset || previous?.alive !== sp.alive || previous?.lives !== sp.lives || snap.status !== 'PLAYING', prediction);
     });
 
     this.bullets = snap.bullets.map((bullet) => {

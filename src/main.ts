@@ -229,6 +229,30 @@ const net = new MultiplayerRoomManager(
 );
 
 // 5. UI & HUD Synchronization Function
+// The HUD refreshes every 100 ms. Rewriting unchanged markup would replace buttons between mousedown and
+// mouseup (the browser then fires no click) and restart their hover/press styles, so write only on change.
+const renderedHtml = new WeakMap<Element, string>();
+function setHtmlIfChanged(element: Element, html: string): void {
+  if (renderedHtml.get(element) === html) return;
+  renderedHtml.set(element, html);
+  element.innerHTML = html;
+}
+
+/** Mod chosen locally; cards stay disabled until the host's snapshot ends the draft (may take one RTT). */
+let pendingDraftPick: string | null = null;
+let pendingDraftPickAt = 0;
+
+draftCardsGrid.addEventListener('click', (event) => {
+  const card = (event.target as HTMLElement | null)?.closest<HTMLButtonElement>('[data-mod-id]');
+  const modId = card?.dataset.modId;
+  if (!modId || pendingDraftPick) return;
+  pendingDraftPick = modId;
+  pendingDraftPickAt = performance.now();
+  net.submitDraftSelection(modId);
+  canvas.focus();
+  syncOverlaysAndHUD();
+});
+
 function syncOverlaysAndHUD(): void {
   const humanCount = arenaEngine.players.filter((p) => !p.isBot).length;
   netLed.className =
@@ -236,7 +260,9 @@ function syncOverlaysAndHUD(): void {
       ? 'status-led online'
       : 'status-led';
 
-  const pingSuffix = !net.isHost && net.pingMs > 0 ? ` • ${net.pingMs}ms` : '';
+  // Smoothed RTT plus its variation: unstable Wi-Fi/mobile shows up as a large ± even with a decent ping.
+  const jitter = net.linkStats.jitterMs;
+  const pingSuffix = !net.isHost && net.pingMs > 0 ? ` • ${net.pingMs}ms${jitter >= 15 ? ` ±${jitter}` : ''}` : '';
   if (net.networkConfigurationError) {
     netLed.className = 'status-led';
     netRoleLabel.textContent = `⚠️ ${net.networkConfigurationError}`;
@@ -255,9 +281,11 @@ function syncOverlaysAndHUD(): void {
     netRoleLabel.textContent = `🔄 RECUPERANDO SINCRONIZACIÓN DE #${net.roomCode}...`;
     if (hubConnectionBadge) hubConnectionBadge.textContent = '🔄 ESPERANDO ESTADO ACTUAL DEL ANFITRIÓN...';
   } else if (net.isHost) {
-    netRoleLabel.textContent = `👑 HOST DE SALA #${net.roomCode} (${humanCount}/4 EN LÍNEA)`;
+    // Players already in the room keep playing; only new invitations wait for the signaling server.
+    const signalingNote = net.hostSignalingReady ? '' : ' • ⚠️ REGISTRANDO SALA, NUEVOS INGRESOS EN ESPERA';
+    netRoleLabel.textContent = `👑 HOST DE SALA #${net.roomCode} (${humanCount}/4 EN LÍNEA)${signalingNote}`;
     if (hubConnectionBadge) {
-      hubConnectionBadge.textContent = `👑 ERES EL ANFITRIÓN (HOST) DE SALA #${net.roomCode} (${humanCount}/4 HUMANOS EN LÍNEA)`;
+      hubConnectionBadge.textContent = `👑 ERES EL ANFITRIÓN (HOST) DE SALA #${net.roomCode} (${humanCount}/4 HUMANOS EN LÍNEA)${signalingNote}`;
     }
   } else {
     netRoleLabel.textContent = `🎮 CLIENTE EN #${net.roomCode} (HOST: ${net.hostName}) • SLOT ${net.localSlotId + 1}${pingSuffix}`;
@@ -281,11 +309,11 @@ function syncOverlaysAndHUD(): void {
 
   // Render Live Join / Leave Toasts
   if (roomToastContainer) {
-    roomToastContainer.innerHTML = net.toasts
+    setHtmlIfChanged(roomToastContainer, net.toasts
       .map(
         (t) => `<div class="room-toast tone-${escapeHtml(t.tone)}">${escapeHtml(t.text)}</div>`
       )
-      .join('');
+      .join(''));
   }
 
   // Kick Notice Banner
@@ -350,7 +378,7 @@ function syncOverlaysAndHUD(): void {
     chainModeBtn.textContent =
       chainEngine.mode === 'SABOTAGE' ? 'MODO: TRAIDOR (3v1)' : 'MODO: CO-OP';
 
-    controlsLegendStrip.innerHTML = `
+    setHtmlIfChanged(controlsLegendStrip, `
       <span><strong>[WASD]</strong> CAMINAR</span>
       <span class="sep">•</span>
       <span><strong>[ESPACIO / CLIC IZQ]</strong> SALTAR LÁSER</span>
@@ -360,7 +388,7 @@ function syncOverlaysAndHUD(): void {
       <span><strong>[SHIFT / CLIC DER]</strong> ANCLA PESADA</span>
       <span class="sep">•</span>
       <span><strong>[1-4]</strong> GRITAR</span>
-    `;
+    `);
     installedModsStrip.textContent = `SECTOR ${chainEngine.levelIndex + 1}/${
       CHAIN_LEVELS.length
     } • SUPERADOS: ${chainEngine.completions} • CAÍDAS: ${chainEngine.wipes}`;
@@ -371,7 +399,7 @@ function syncOverlaysAndHUD(): void {
     nextSectorBtn.textContent = 'HOYO ▶';
     chainModeBtn.classList.add('hidden');
 
-    controlsLegendStrip.innerHTML = `
+    setHtmlIfChanged(controlsLegendStrip, `
       <span><strong>[MOUSE]</strong> APUNTAR</span>
       <span class="sep">•</span>
       <span><strong>[MANTENER CLIC IZQ / ESPACIO]</strong> CARGAR GOLPE</span>
@@ -381,7 +409,7 @@ function syncOverlaysAndHUD(): void {
       <span><strong>[SHIFT / CLIC DER]</strong> PULSO / POWERUP</span>
       <span class="sep">•</span>
       <span><strong>[1-4]</strong> BURLA</span>
-    `;
+    `);
     const localPutt = puttEngine.players[net.localSlotId] || puttEngine.players[0];
     installedModsStrip.textContent = `HOYO ${puttEngine.holeIndex + 1}/${
       PUTT_HOLES.length
@@ -395,7 +423,7 @@ function syncOverlaysAndHUD(): void {
     nextSectorBtn.textContent = 'CÁMARA ▶';
     chainModeBtn.classList.add('hidden');
 
-    controlsLegendStrip.innerHTML = `
+    setHtmlIfChanged(controlsLegendStrip, `
       <span><strong>[WASD]</strong> CORRER / PLACAR</span>
       <span class="sep">•</span>
       <span><strong>[CLIC IZQ / ESPACIO]</strong> LANZAR NÚCLEO / ESCUDO PARRY</span>
@@ -405,7 +433,7 @@ function syncOverlaysAndHUD(): void {
       <span><strong>[SHIFT / CLIC DER]</strong> DASH</span>
       <span class="sep">•</span>
       <span><strong>[1-4]</strong> BURLA</span>
-    `;
+    `);
     const localHot = hotCoreEngine.players[net.localSlotId] || hotCoreEngine.players[0];
     installedModsStrip.textContent = `CÁMARA ${hotCoreEngine.arenaIndex + 1}/${
       HOT_CORE_ARENAS.length
@@ -417,7 +445,7 @@ function syncOverlaysAndHUD(): void {
     nextSectorBtn.textContent = 'SECTOR ▶';
     chainModeBtn.classList.add('hidden');
 
-    controlsLegendStrip.innerHTML = `
+    setHtmlIfChanged(controlsLegendStrip, `
       <span><strong>[WASD]</strong> MOVER / PERSEGUIR</span>
       <span class="sep">•</span>
       <span><strong>[CLIC IZQ / ESPACIO]</strong> TÁSER / ESCUDO REY</span>
@@ -427,7 +455,7 @@ function syncOverlaysAndHUD(): void {
       <span><strong>[SHIFT / CLIC DER]</strong> DASH</span>
       <span class="sep">•</span>
       <span><strong>[1-4]</strong> BURLA</span>
-    `;
+    `);
     const localVolt = voltCrownEngine.players[net.localSlotId] || voltCrownEngine.players[0];
     const isLocalKing = voltCrownEngine.crown.holderId === localVolt?.id;
     installedModsStrip.textContent = `SECTOR ${voltCrownEngine.arenaIndex + 1}/${
@@ -442,7 +470,7 @@ function syncOverlaysAndHUD(): void {
     nextSectorBtn.textContent = 'SECTOR ▶';
     chainModeBtn.classList.add('hidden');
 
-    controlsLegendStrip.innerHTML = `
+    setHtmlIfChanged(controlsLegendStrip, `
       <span><strong>[WASD]</strong> MOVER</span>
       <span class="sep">•</span>
       <span><strong>[CLIC IZQ / ESPACIO]</strong> MARTILLAZO SÍSMICO</span>
@@ -452,7 +480,7 @@ function syncOverlaysAndHUD(): void {
       <span><strong>[E]</strong> NANOPUENTE</span>
       <span class="sep">•</span>
       <span><strong>[1-4]</strong> BURLA</span>
-    `;
+    `);
     const localHex = hexCrushEngine.players[net.localSlotId] || hexCrushEngine.players[0];
     const aliveCount = hexCrushEngine.players.filter((p) => p.alive && p.fallTimer <= 0).length;
     installedModsStrip.textContent = `SECTOR ${hexCrushEngine.arenaIndex + 1}/${
@@ -465,7 +493,7 @@ function syncOverlaysAndHUD(): void {
     nextSectorBtn.textContent = 'SECTOR ▶';
     chainModeBtn.classList.add('hidden');
 
-    controlsLegendStrip.innerHTML = `
+    setHtmlIfChanged(controlsLegendStrip, `
       <span><strong>[WASD]</strong> MOVER</span>
       <span class="sep">•</span>
       <span><strong>[CLIC IZQ / ESPACIO]</strong> PARRY REFLECTOR</span>
@@ -473,7 +501,7 @@ function syncOverlaysAndHUD(): void {
       <span><strong>[CLIC DER / SHIFT]</strong> BARRIDA EN PLANCHA</span>
       <span class="sep">•</span>
       <span><strong>[1-4]</strong> BOCINA</span>
-    `;
+    `);
     const localRico = ricochetEngine.players[net.localSlotId] || ricochetEngine.players[0];
     installedModsStrip.textContent = `SECTOR ${ricochetEngine.arenaIndex + 1}/${
       RICOCHET_ARENAS.length
@@ -483,7 +511,7 @@ function syncOverlaysAndHUD(): void {
     nextSectorBtn.classList.add('hidden');
     chainModeBtn.classList.add('hidden');
 
-    controlsLegendStrip.innerHTML = `
+    setHtmlIfChanged(controlsLegendStrip, `
       <span><strong>[WASD]</strong> MOVER</span>
       <span class="sep">•</span>
       <span><strong>[CLIC IZQ / ESPACIO]</strong> BATEAR</span>
@@ -493,7 +521,7 @@ function syncOverlaysAndHUD(): void {
       <span><strong>[CLIC DER / SHIFT]</strong> TURBO</span>
       <span class="sep">•</span>
       <span><strong>[1-4]</strong> BOCINA</span>
-    `;
+    `);
     const localP = arenaEngine.players[net.localSlotId];
     if (localP) {
       installedModsStrip.textContent =
@@ -506,7 +534,7 @@ function syncOverlaysAndHUD(): void {
   const botsActive = arenaEngine.botDifficulty !== 'OFF';
   const visibleRoster = arenaEngine.players.filter((p) => !p.isBot || botsActive);
 
-  playerSlotsBar.innerHTML = visibleRoster
+  setHtmlIfChanged(playerSlotsBar, visibleRoster
     .map((p) => {
       const puttP = puttEngine.players[p.id];
       const hotP = hotCoreEngine.players[p.id];
@@ -542,11 +570,11 @@ function syncOverlaysAndHUD(): void {
       </div>
     `;
     })
-    .join('');
+    .join(''));
 
   // Render Live 4-Slot Room Roster inside Hub with clear HOST / CLIENT / BOT / EMPTY badges
   if (hubRosterList) {
-    hubRosterList.innerHTML = arenaEngine.players
+    setHtmlIfChanged(hubRosterList, arenaEngine.players
       .map((p) => {
         const canKick = net.isHost && p.id > 0 && !p.isBot;
         const isEmptyBotSlot = p.isBot && !botsActive;
@@ -571,11 +599,13 @@ function syncOverlaysAndHUD(): void {
         </div>
       `;
       })
-      .join('');
+      .join(''));
   }
 
   if (net.activeGame === 'BASH_BOT' && arenaEngine.phase === 'CARD_DRAFT') {
     draftOverlay.classList.remove('hidden');
+    // A pick lost to a reconnection must not leave the cards locked: allow choosing again.
+    if (pendingDraftPick && performance.now() - pendingDraftPickAt > 2500) pendingDraftPick = null;
     const winner =
       arenaEngine.lastRoundWinnerId !== null
         ? arenaEngine.players[arenaEngine.lastRoundWinnerId]
@@ -584,35 +614,33 @@ function syncOverlaysAndHUD(): void {
       ? `🏆 ${winner.name} GANA LA RONDA (+1 PTO)`
       : 'EMPATE TÉCNICO EN LA MESA';
 
-    draftCardsGrid.innerHTML = '';
     const options =
       arenaEngine.draftOptions.length > 0
         ? arenaEngine.draftOptions
         : ['heavy_paddle', 'gyro_spin', 'pneumatic_dash'];
 
-    options.forEach((modId) => {
-      const mod = HARDWARE_MODS.find((m) => m.id === modId) || HARDWARE_MODS[0];
-      const btn = document.createElement('button');
-      btn.className = 'keycap-btn cartridge-card';
-      btn.innerHTML = `
-        <div>
-          <div class="cartridge-top">
-            <span class="cartridge-tag" style="background:${mod.color}">${mod.tag}</span>
-            <span>${mod.code}</span>
+    setHtmlIfChanged(draftCardsGrid, options
+      .map((modId) => {
+        const mod = HARDWARE_MODS.find((m) => m.id === modId) || HARDWARE_MODS[0];
+        const picked = pendingDraftPick === mod.id;
+        return `
+        <button class="keycap-btn cartridge-card${picked ? ' is-picked' : ''}" data-mod-id="${escapeHtml(mod.id)}"
+          ${pendingDraftPick ? 'disabled' : ''}>
+          <div>
+            <div class="cartridge-top">
+              <span class="cartridge-tag" style="background:${escapeHtml(mod.color)}">${escapeHtml(mod.tag)}</span>
+              <span>${escapeHtml(mod.code)}</span>
+            </div>
+            <div class="cartridge-name">${escapeHtml(mod.title)}</div>
+            <p class="cartridge-desc">${escapeHtml(mod.desc)}</p>
           </div>
-          <div class="cartridge-name">${mod.title}</div>
-          <p class="cartridge-desc">${mod.desc}</p>
-        </div>
-        <div class="cartridge-cta">[ INSTALAR CARTUCHO → ]</div>
-      `;
-      btn.addEventListener('click', () => {
-        net.submitDraftSelection(mod.id);
-        canvas.focus();
-      });
-      draftCardsGrid.appendChild(btn);
-    });
+          <div class="cartridge-cta">${picked ? '[ INSTALANDO… ]' : '[ INSTALAR CARTUCHO → ]'}</div>
+        </button>`;
+      })
+      .join(''));
   } else {
     draftOverlay.classList.add('hidden');
+    pendingDraftPick = null;
   }
 
   if (net.activeGame === 'BASH_BOT' && arenaEngine.phase === 'MATCH_OVER') {
@@ -678,7 +706,7 @@ function syncOverlaysAndHUD(): void {
             (tournament.state.scores[a.id] || 0)
         );
         const medals = ['🥇', '🥈', '🥉', '4°'];
-        tourneyLeaderboard.innerHTML = sorted
+        setHtmlIfChanged(tourneyLeaderboard, sorted
           .map(
             (p, idx) => `
           <div class="leaderboard-row" style="background: ${escapeHtml(p.bodyColor)}">
@@ -687,7 +715,7 @@ function syncOverlaysAndHUD(): void {
           </div>
         `
           )
-          .join('');
+          .join(''));
         tourneyIntermissionText.textContent = `Siguiente juego en camino...`;
       } else {
         tournamentOverlay.classList.add('hidden');
@@ -1506,9 +1534,33 @@ function stepGameFrame(dt: number): void {
 // One clock prevents foreground/background callbacks from advancing physics twice.
 const simulationClock = new FixedStepClock(60, 8);
 simulationClock.reset(performance.now());
-const backgroundPump = window.setInterval(() => {
-  if (document.hidden && net.isHost) simulationClock.advance(performance.now(), stepGameFrame);
-}, 16);
+// Hidden tabs get no animation frames and main-thread timers are throttled to about once per second,
+// which would run every guest's match at 8/60 speed. A dedicated worker's ticks are not throttled that way,
+// so a host that switches tabs keeps simulating and sending snapshots. Plain timers remain the fallback.
+function startBackgroundPump(tick: () => void): () => void {
+  if (typeof Worker === 'function' && typeof Blob === 'function' && typeof URL.createObjectURL === 'function') {
+    try {
+      const url = URL.createObjectURL(new Blob(['setInterval(() => postMessage(0), 16);'], { type: 'text/javascript' }));
+      const worker = new Worker(url);
+      let revoked = false;
+      worker.onmessage = () => {
+        if (!revoked) { URL.revokeObjectURL(url); revoked = true; }
+        tick();
+      };
+      return () => worker.terminate();
+    } catch { /* Worker blocked (CSP, privacy mode): use the main-thread timer. */ }
+  }
+  const timer = window.setInterval(tick, 16);
+  return () => window.clearInterval(timer);
+}
+const stopBackgroundPump = startBackgroundPump(() => {
+  if (!document.hidden || !net.isHost) return;
+  simulationClock.advance(performance.now(), stepGameFrame);
+  // The room's own 50 ms input-expiry timer is throttled too while hidden.
+  net.expireRemoteInputs();
+});
+// A page restored from the back/forward cache has already closed its room; start fresh.
+window.addEventListener('pageshow', (event) => { if (event.persisted) window.location.reload(); });
 
 function releaseInputState(): void {
   Object.keys(keys).forEach((key) => { keys[key] = false; });
@@ -1694,7 +1746,7 @@ initWorkshopUI();
 animationFrame = requestAnimationFrame(animate);
 
 function disposeSession(): void {
-  window.clearInterval(backgroundPump);
+  stopBackgroundPump();
   cancelAnimationFrame(animationFrame);
   net.dispose();
   touchGamepad.dispose();

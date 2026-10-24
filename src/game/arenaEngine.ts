@@ -1,4 +1,4 @@
-import { reconcilePlayer } from './reconciliation';
+import { reconcilePlayer, type PredictionHint } from './reconciliation';
 import { ChaosPhysics } from './chaosPhysics';
 import {
   BotDifficulty,
@@ -953,7 +953,7 @@ export class ArenaEngine extends ChaosPhysics {
     });
   }
 
-  public applySnapshot(snap: WorldSnapshotPacket, localSlotId?: number, predictionLeadSeconds = 0): void {
+  public applySnapshot(snap: WorldSnapshotPacket, localSlotId?: number, prediction: PredictionHint = 0): void {
     const reset = this.courtLayout !== snap.courtLayout || this.phase !== snap.phase || (snap.roundEpoch !== undefined && snap.roundEpoch !== this.roundEpoch);
     const prevPhase = this.phase;
     const prevDiff = this.botDifficulty;
@@ -977,7 +977,7 @@ export class ArenaEngine extends ChaosPhysics {
       const authoritative = { ...sp, alive: sp.isBot && !botsActive ? false : sp.alive };
       const previous = this.players[sp.id];
       return reconcilePlayer(previous, authoritative, sp.id === localSlotId,
-        reset || previous?.alive !== authoritative.alive || snap.phase !== 'PLAYING', this.hitStopTimer > 0 ? 0 : predictionLeadSeconds);
+        reset || previous?.alive !== authoritative.alive || snap.phase !== 'PLAYING', this.hitStopTimer > 0 ? 0 : prediction);
     });
 
     this.balls = snap.balls.map((sb) => {

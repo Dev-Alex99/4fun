@@ -1,4 +1,4 @@
-import { reconcilePlayer } from './reconciliation';
+import { reconcilePlayer, type PredictionHint } from './reconciliation';
 import { ChaosPhysics } from './chaosPhysics';
 import {
   ChainGameMode,
@@ -994,7 +994,7 @@ export class ChainPanicEngine extends ChaosPhysics {
     });
   }
 
-  public applySnapshot(snap: ChainPanicSnapshot, localSlotId?: number, predictionLeadSeconds = 0): void {
+  public applySnapshot(snap: ChainPanicSnapshot, localSlotId?: number, prediction: PredictionHint = 0): void {
     const reset = this.levelIndex !== snap.levelIndex || this.status !== snap.status || (snap.roundEpoch !== undefined && snap.roundEpoch !== this.roundEpoch);
     this.levelIndex = snap.levelIndex;
     this.mode = snap.mode;
@@ -1010,7 +1010,7 @@ export class ChainPanicEngine extends ChaosPhysics {
     this.players = snap.players.map((sp) => {
       const previous = this.players[sp.id];
       return reconcilePlayer(previous, sp, sp.id === localSlotId,
-        reset || previous?.isDangling !== sp.isDangling || snap.status !== 'PLAYING', predictionLeadSeconds);
+        reset || previous?.isDangling !== sp.isDangling || snap.status !== 'PLAYING', prediction);
     });
 
     this.switches = snap.switches;

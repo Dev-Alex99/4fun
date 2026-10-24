@@ -49,3 +49,43 @@ export function readRtcConfiguration(env: Record<string, string | undefined> = i
   }
   return { iceServers: servers, iceTransportPolicy: policy };
 }
+
+export interface PeerServerOptions { host?: string; port?: number; path?: string; secure?: boolean; key?: string }
+
+/**
+ * Optional self-hosted PeerJS signaling server. Without VITE_PEER_HOST the public PeerJS cloud is used;
+ * signaling only brokers connections, gameplay traffic still flows over WebRTC.
+ */
+export function readPeerServerOptions(env: Record<string, string | undefined> = import.meta.env): PeerServerOptions {
+  const read = (key: string) => env[key]?.trim() || undefined;
+  const host = read('VITE_PEER_HOST');
+  const extras = ['VITE_PEER_PORT', 'VITE_PEER_PATH', 'VITE_PEER_SECURE', 'VITE_PEER_KEY'].filter(read);
+  if (!host) {
+    if (extras.length) throw new RtcConfigurationError(`PeerJS: ${extras[0]} requiere VITE_PEER_HOST.`);
+    return {};
+  }
+  if (!/^[a-zA-Z0-9.-]{1,253}$/.test(host)) throw new RtcConfigurationError('PeerJS: VITE_PEER_HOST inválido.');
+  const options: PeerServerOptions = { host };
+  const port = read('VITE_PEER_PORT');
+  if (port !== undefined) {
+    const value = Number(port);
+    if (!Number.isInteger(value) || value < 1 || value > 65535) throw new RtcConfigurationError('PeerJS: VITE_PEER_PORT inválido.');
+    options.port = value;
+  }
+  const path = read('VITE_PEER_PATH');
+  if (path !== undefined) {
+    if (!/^\/[A-Za-z0-9._~/-]{0,200}$/.test(path)) throw new RtcConfigurationError('PeerJS: VITE_PEER_PATH inválido.');
+    options.path = path;
+  }
+  const secure = read('VITE_PEER_SECURE');
+  if (secure !== undefined) {
+    if (secure !== 'true' && secure !== 'false') throw new RtcConfigurationError('PeerJS: VITE_PEER_SECURE debe ser true o false.');
+    options.secure = secure === 'true';
+  }
+  const key = read('VITE_PEER_KEY');
+  if (key !== undefined) {
+    if (!/^[A-Za-z0-9_-]{1,64}$/.test(key)) throw new RtcConfigurationError('PeerJS: VITE_PEER_KEY inválido.');
+    options.key = key;
+  }
+  return options;
+}

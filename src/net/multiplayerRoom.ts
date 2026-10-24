@@ -1,5 +1,8 @@
 import Peer, { DataConnection, type PeerOptions } from 'peerjs';
-import { readRtcConfiguration, RtcConfigurationError } from './rtcConfiguration';
+import { readPeerServerOptions, readRtcConfiguration, RtcConfigurationError } from './rtcConfiguration';
+import { RttEstimator, inputExpiryMs, inputFreshnessMs, syncGraceMs } from './linkQuality';
+import { binaryView, COMPRESS_MIN_CHARS, compressionSupported, decodeDeflateFrame, decompressionSupported, encodeDeflateFrame } from './frameCodec';
+import type { PredictionHint } from '../game/reconciliation';
 import { ArenaEngine } from '../game/arenaEngine';
 import { ChainPanicEngine } from '../game/chainPanicEngine';
 import { PuttWarEngine } from '../game/puttWarEngine';
@@ -35,16 +38,27 @@ export interface RoomActionMsg {
 
 const HOST_ID_PREFIX = 'tp04-deck-room-v4-';
 const DEFAULT_BOT_NAMES = ['UNIT-01', 'LEO-BOT', 'MAX-BOT', 'NICO-BOT'];
-const INPUT_EXPIRY_MS = 250;
+/** Client-side lifetime of a queued discrete action that could not be sent yet. */
+const ACTION_QUEUE_MS = 250;
 const MAX_BUFFERED_BYTES = 8192;
 const ACTION_HISTORY_SIZE = 128;
+const STEP_MS = 1000 / 60;
+/** Local trajectory kept for acknowledged-input reconciliation; covers RTTs far beyond playable. */
+const TRACK_HISTORY_MS = 3000;
+/** A client that hears nothing at all from the host (snapshots or ping replies) for this long reconnects. */
+const HOST_SILENCE_RECONNECT_MS = 6000;
+const RECONNECT_DELAYS_MS = [900, 1500, 2500, 4000, 6000, 8000];
 const uniqueId = (): string => globalThis.crypto?.randomUUID?.() ?? `P-${Math.random().toString(36).slice(2)}-${Date.now()}`;
+/** PeerJS signaling failures. Established WebRTC data channels keep working without the signaling socket. */
+const SIGNALING_ERRORS = ['network', 'server-error', 'socket-error', 'socket-closed', 'disconnected', 'unavailable-id'];
 
 export interface RoomNetworkOptions {
   rtcConfig?: RTCConfiguration;
   createPeer?: (id: string, options: PeerOptions) => Peer;
   /** A/B diagnostics only. PeerJS 1.5.5 maps this to RTCDataChannel.ordered, preserving reliability. */
   ordered?: boolean;
+  /** Deflate large host snapshots for clients that support it. Defaults to on wherever WebRTC exists. */
+  compression?: boolean;
 }
 
 function serialize(env: NetEnvelope): string {
@@ -98,7 +112,22 @@ export class MultiplayerRoomManager {
   private rates = new Map<DataConnection, { since: number; count: number }>();
   private joinReplies = new Map<string, number>();
   private pendingPings = new Map<string, { nonce: string; at: number }>();
-  private peerRtt = new Map<string, number>();
+  private peerRtt = new Map<string, RttEstimator>();
+  private peerCaps = new Map<string, { deflate: boolean }>();
+  /** Client-side smoothed RTT to the host; drives adaptive sync grace and the displayed ping. */
+  private hostRtt = new RttEstimator();
+  private readonly compressionEnabled: boolean;
+  private reconnectAttempts = 0;
+  private hostSignalingAttempts = 0;
+  private hostSignalingRetryPending = false;
+  private hostRegistered = false;
+  // Acknowledged-input reconciliation: the local trajectory without snapshot corrections, sampled per step.
+  private localTrack: { t: number; x: number; y: number; z: number }[] = [];
+  private trackCorrection = { x: 0, y: 0, z: 0 };
+  private trackContext = '';
+  private inputSentAt = new Map<number, number>();
+  private lastSentMoveX = 0;
+  private lastSentMoveY = 0;
   private lastSnapshotSeq = 0;
   private snapshotSentTimes = new Map<number, number>();
   private lastWorldSnapReceivedAt = -10000;
@@ -125,13 +154,18 @@ export class MultiplayerRoomManager {
     private puttEngine?: PuttWarEngine, private hotCoreEngine?: HotCoreEngine, private voltCrownEngine?: VoltCrownEngine,
     private hexCrushEngine?: HexCrushEngine, public tournamentManager?: TournamentManager, private ricochetEngine?: RicochetEngine,
     private networkOptions: RoomNetworkOptions = {}) {
-    if (typeof window !== 'undefined') window.addEventListener('beforeunload', this.beforeUnload);
+    this.compressionEnabled = (networkOptions.compression ?? typeof RTCPeerConnection === 'function') && compressionSupported();
+    if (typeof window !== 'undefined') {
+      window.addEventListener('beforeunload', this.beforeUnload);
+      // Mobile browsers often skip beforeunload; pagehide still lets a guest free its slot immediately.
+      window.addEventListener('pagehide', this.beforeUnload);
+    }
     this.heartbeatInterval = setInterval(() => this.heartbeat(), 1400);
     this.expiryInterval = setInterval(() => this.expireRemoteInputs(), 50);
   }
 
   private createNetworkPeer(id: string): Peer {
-    const options: PeerOptions = { config: this.networkOptions.rtcConfig ?? readRtcConfiguration() };
+    const options: PeerOptions = { ...readPeerServerOptions(), debug: 0, config: this.networkOptions.rtcConfig ?? readRtcConfiguration() };
     const peer = this.networkOptions.createPeer ? this.networkOptions.createPeer(id, options) : new Peer(id, options);
     this.networkConfigurationError = null;
     return peer;
@@ -168,8 +202,15 @@ export class MultiplayerRoomManager {
   public shouldStepLocally(): boolean { return this.isHost; }
 
   public get isSynchronized(): boolean {
+    // The grace period grows with measured RTT and jitter, so a slow but steady link keeps playing
+    // instead of freezing on every late snapshot. It stays 500 ms until the link has been measured.
     return !this.disposed && (this.isHost || (this.connectionState === 'CONNECTED_CLIENT' && this.hostConn?.open === true &&
-      this.lastSnapshotSeq > 0 && performance.now() - this.lastWorldSnapReceivedAt <= 500));
+      this.lastSnapshotSeq > 0 && performance.now() - this.lastWorldSnapReceivedAt <= syncGraceMs(this.hostRtt)));
+  }
+
+  /** Smoothed client-to-host RTT and its mean deviation, for diagnostics and HUD. */
+  public get linkStats(): { rttMs: number; jitterMs: number; samples: number } {
+    return { rttMs: Math.round(this.hostRtt.srtt), jitterMs: Math.round(this.hostRtt.rttvar), samples: this.hostRtt.samples };
   }
 
   public get activeRoundEpoch(): number {
@@ -202,13 +243,60 @@ export class MultiplayerRoomManager {
     return (conn.dataChannel?.bufferedAmount ?? 0) > MAX_BUFFERED_BYTES || ((conn as unknown as { bufferSize?: number }).bufferSize ?? 0) > 0;
   }
 
-  private sendOverConn(conn: DataConnection | null | undefined, env: NetEnvelope): boolean {
+  private encode(env: NetEnvelope): string {
+    return serialize({ ...env, protocolVersion: PROTOCOL_VERSION, hostEpoch: this.hostEpoch });
+  }
+
+  /** Droppable frames (snapshots, continuous input) are skipped under congestion instead of queued stale. */
+  private sendFrame(conn: DataConnection | null | undefined, frame: string | Uint8Array, droppable: boolean): boolean {
     if (!conn?.open || this.disposed) return false;
-    if (['WORLD_SNAP', 'CLIENT_INPUT'].includes(env.type) && this.isCongested(conn)) return false;
+    if (droppable && this.isCongested(conn)) return false;
     try {
-      conn.send(serialize({ ...env, protocolVersion: PROTOCOL_VERSION, hostEpoch: this.hostEpoch }));
+      conn.send(frame);
       return true;
     } catch { return false; }
+  }
+
+  private sendOverConn(conn: DataConnection | null | undefined, env: NetEnvelope): boolean {
+    return this.sendFrame(conn, this.encode(env), env.type === 'WORLD_SNAP' || env.type === 'CLIENT_INPUT');
+  }
+
+  /**
+   * Snapshots go deflated to clients that advertised support and as text to the rest. Compression runs once
+   * per snapshot; a late result for a replaced connection or session is discarded.
+   */
+  private broadcastSnapshotFrame(env: NetEnvelope): void {
+    const text = this.encode(env);
+    const deflated: DataConnection[] = [];
+    this.clientConns.forEach((conn, id) => {
+      if (this.compressionEnabled && text.length >= COMPRESS_MIN_CHARS && this.peerCaps.get(id)?.deflate) deflated.push(conn);
+      else this.sendFrame(conn, text, true);
+    });
+    if (!deflated.length) return;
+    const generation = this.generation;
+    const deliver = (frame: string | Uint8Array) => {
+      if (this.disposed || generation !== this.generation) return;
+      for (const conn of deflated) if (this.clientConns.get(conn.peer) === conn) this.sendFrame(conn, frame, true);
+    };
+    encodeDeflateFrame(text).then(deliver, () => deliver(text));
+  }
+
+  private allowMessage(source: DataConnection, now: number): boolean {
+    const rate = this.rates.get(source);
+    if (!rate || now - rate.since > 1000) { this.rates.set(source, { since: now, count: 1 }); return true; }
+    return ++rate.count <= 160;
+  }
+
+  /** Transport entry point. Hosts accept only text; clients inflate bounded binary frames from the host. */
+  private receiveRaw(raw: unknown, source: DataConnection, reply: (env: NetEnvelope) => void): void {
+    const bytes = binaryView(raw);
+    if (!bytes) { this.handleEnvelope(raw, reply, source); return; }
+    // Count the frame before any decompression work so a flood cannot buy CPU time.
+    if (this.isHost || !decompressionSupported() || !this.allowMessage(source, performance.now())) return;
+    const generation = this.generation;
+    void decodeDeflateFrame(bytes, MAX_MESSAGE_CHARS * 3).then(text => {
+      if (text !== null && !this.disposed && generation === this.generation) this.handleEnvelope(text, reply, source, true);
+    });
   }
 
   private sendToAllClients(env: NetEnvelope): void { this.clientConns.forEach(c => this.sendOverConn(c, env)); }
@@ -227,7 +315,8 @@ export class MultiplayerRoomManager {
     if (!this.isHost || this.disposed) return;
     const now = performance.now();
     this.inputLastSeen.forEach((at, id) => {
-      if (now - at <= INPUT_EXPIRY_MS || this.staleInputs.has(id)) return;
+      // Jittery links get a longer (bounded) gap before held controls are neutralized.
+      if (now - at <= inputExpiryMs(this.peerRtt.get(id)) || this.staleInputs.has(id)) return;
       const slotId = this.peerToSlot.get(id);
       if (slotId === undefined) return;
       this.staleInputs.add(id);
@@ -373,7 +462,7 @@ export class MultiplayerRoomManager {
     this.peerToSlot.delete(id); this.peerLastSeen.delete(id); this.latestInputSeq.delete(id); this.latestActionSeq.delete(id);
     this.seenActionIds.delete(id); this.dispatchedActionSeq.delete(id); this.continuousInputs.delete(id);
     this.inputLastSeen.delete(id); this.staleInputs.delete(id);
-    this.joinReplies.delete(id); this.pendingPings.delete(id); this.peerRtt.delete(id);
+    this.joinReplies.delete(id); this.pendingPings.delete(id); this.peerRtt.delete(id); this.peerCaps.delete(id);
     if (!p) return;
     const name = p.name;
     this.clearRemoteSlot(p.id);
@@ -394,7 +483,7 @@ export class MultiplayerRoomManager {
     if (this.disposed) return;
     const now = performance.now();
     if (this.isHost) {
-      if (this.peer?.disconnected && !this.peer.destroyed) { try { this.peer.reconnect(); } catch { /* signaling retry */ } }
+      if (this.peer?.disconnected && !this.peer.destroyed) this.scheduleHostSignalingReconnect(this.peer);
       this.clientConns.forEach((conn, id) => { if (this.peerToSlot.has(id)) this.pingClient(id, conn); });
       this.peerLastSeen.forEach((at, id) => {
         if (now - at <= 25000) return;
@@ -404,8 +493,28 @@ export class MultiplayerRoomManager {
       });
     } else {
       this.sendToHost({ sender: this.localPeerId, type: 'PING_REQ', payload: now });
-      if (this.connectionState === 'CONNECTED_CLIENT' && now - this.lastWorldSnapReceivedAt > 12000) this.scheduleReconnect();
+      // A responsive ping alone never keeps a client without snapshots for long, and total silence from the
+      // host means the WebRTC path is dead even if ICE has not reported it yet.
+      if (this.connectionState === 'CONNECTED_CLIENT' && (now - this.lastWorldSnapReceivedAt > 12000 ||
+          now - this.lastHostSnapReceivedAt > HOST_SILENCE_RECONNECT_MS)) this.scheduleReconnect();
     }
+  }
+
+  /**
+   * Re-register the host ID with the signaling server with backoff. Existing guests keep playing meanwhile;
+   * only new joins wait. A server still holding the stale registration answers "ID taken" until it expires.
+   */
+  private scheduleHostSignalingReconnect(peer: Peer): void {
+    if (this.hostSignalingRetryPending || this.peer !== peer || !this.isHost || peer.destroyed) return;
+    this.hostSignalingRetryPending = true;
+    const delay = Math.min(15000, 1000 * 2 ** Math.min(this.hostSignalingAttempts, 4));
+    this.hostSignalingAttempts++;
+    this.later(() => {
+      this.hostSignalingRetryPending = false;
+      if (this.peer === peer && this.isHost && peer.disconnected && !peer.destroyed) {
+        try { peer.reconnect(); } catch { this.scheduleHostSignalingReconnect(peer); }
+      }
+    }, delay);
   }
 
   private pingClient(id: string, conn: DataConnection): void {
@@ -423,7 +532,10 @@ export class MultiplayerRoomManager {
     if (this.disposed) return;
     this.disposed = true;
     this.cleanupConnections(); clearInterval(this.heartbeatInterval); clearInterval(this.expiryInterval);
-    if (typeof window !== 'undefined') window.removeEventListener('beforeunload', this.beforeUnload);
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('beforeunload', this.beforeUnload);
+      window.removeEventListener('pagehide', this.beforeUnload);
+    }
   }
 
   private cleanupConnections(): void {
@@ -438,7 +550,10 @@ export class MultiplayerRoomManager {
     this.peerToSlot.clear(); this.peerLastSeen.clear(); this.rates.clear(); this.latestInputSeq.clear(); this.latestActionSeq.clear(); this.snapshotSentTimes.clear();
     this.seenActionIds.clear(); this.dispatchedActionSeq.clear(); this.continuousInputs.clear();
     this.inputLastSeen.clear(); this.staleInputs.clear(); this.pendingActions = [];
-    this.joinReplies.clear(); this.pendingPings.clear(); this.peerRtt.clear();
+    this.joinReplies.clear(); this.pendingPings.clear(); this.peerRtt.clear(); this.peerCaps.clear();
+    // A new connection may take a different ICE path (direct vs TURN): measure it afresh.
+    this.hostRtt.reset(); this.hostSignalingRetryPending = false; this.hostRegistered = false;
+    this.localTrack = []; this.trackContext = ''; this.inputSentAt.clear();
     for (let i = 1; i < 4; i++) this.clearRemoteSlot(i);
     for (const conn of conns) { try { conn?.close(); } catch { /* closed */ } }
     try { peer?.destroy(); } catch { /* destroyed */ }
@@ -458,19 +573,62 @@ export class MultiplayerRoomManager {
       p.name = i === 0 ? this.hostName : DEFAULT_BOT_NAMES[i]; p.alive = i === 0 || this.arenaEngine.botDifficulty !== 'OFF';
     });
     this.syncEnginesRoster();
+    this.hostSignalingAttempts = 0;
+    this.startHostPeer(playerName);
+    this.onStatusUpdate();
+  }
+
+  /** True once the room code is registered with the signaling server, so new guests can find it. */
+  public get hostSignalingReady(): boolean {
+    return !this.isHost || (this.hostRegistered && !!this.peer && !this.peer.disconnected && !this.peer.destroyed);
+  }
+
+  /** Registers the room code. Re-running it replaces only the signaling peer; the match keeps going. */
+  private startHostPeer(playerName: string): void {
+    this.hostRegistered = false;
     try {
       const peer = this.createNetworkPeer(`${HOST_ID_PREFIX}${this.roomCode}`);
       this.peer = peer;
-      peer.on('open', () => { if (this.peer === peer && this.isHost) this.onStatusUpdate(); });
-      peer.on('disconnected', () => {
-        if (this.peer === peer && this.isHost && !peer.destroyed) { try { peer.reconnect(); } catch { /* retry on heartbeat */ } }
+      let registered = false;
+      peer.on('open', () => {
+        if (this.peer !== peer || !this.isHost) return;
+        registered = true; this.hostRegistered = true; this.hostSignalingAttempts = 0; this.onStatusUpdate();
       });
-      peer.on('connection', conn => this.acceptConnection(peer, conn));
+      peer.on('disconnected', () => { if (this.peer === peer && this.isHost && registered) this.scheduleHostSignalingReconnect(peer); });
+      peer.on('connection', conn => {
+        // A guest can only find this peer through the signaling server, so the code is registered.
+        if (this.peer === peer && this.isHost) { registered = true; this.hostRegistered = true; }
+        this.acceptConnection(peer, conn);
+      });
       peer.on('error', (error: { type?: string }) => {
-        if (this.peer === peer && error.type === 'unavailable-id') this.joinRoomAsClient(this.roomCode, playerName);
+        if (this.peer !== peer || !this.isHost) return;
+        const type = String(error?.type);
+        // Only a room that never registered belongs to someone else. After a signaling blip, a reconnect can
+        // see this host's own stale registration as "taken"; abandoning the room would drop every guest.
+        if (type === 'unavailable-id' && !registered) this.joinRoomAsClient(this.roomCode, playerName);
+        else if (registered && SIGNALING_ERRORS.includes(type)) this.scheduleHostSignalingReconnect(peer);
+        else if (!registered && SIGNALING_ERRORS.includes(type)) this.scheduleHostPeerRestart(peer, playerName);
+        this.onStatusUpdate();
       });
+      // PeerJS has no registration timeout: a stalled signaling server would leave the room unreachable.
+      this.later(() => { if (this.peer === peer && this.isHost && !registered) this.scheduleHostPeerRestart(peer, playerName); }, 15000);
     } catch (error) { this.reportConfigurationError(error); }
-    this.onStatusUpdate();
+  }
+
+  /** PeerJS destroys a peer whose first registration fails; build a new one with backoff. */
+  private scheduleHostPeerRestart(peer: Peer, playerName: string): void {
+    if (this.hostSignalingRetryPending || this.peer !== peer || !this.isHost || this.clientConns.size > 0) return;
+    this.hostSignalingRetryPending = true;
+    const delay = Math.min(15000, 1000 * 2 ** Math.min(this.hostSignalingAttempts, 4));
+    this.hostSignalingAttempts++;
+    this.later(() => {
+      this.hostSignalingRetryPending = false;
+      // Destroying a peer closes its data channels: never do it while guests are attached.
+      if (this.peer !== peer || !this.isHost || this.clientConns.size > 0) return;
+      try { peer.destroy(); } catch { /* already destroyed */ }
+      this.startHostPeer(playerName);
+      this.onStatusUpdate();
+    }, delay);
   }
 
   private acceptConnection(peer: Peer, conn: DataConnection): void {
@@ -482,7 +640,7 @@ export class MultiplayerRoomManager {
     const current = () => this.peer === peer && this.clientConns.get(conn.peer) === conn && this.isHost && !this.disposed;
     this.later(() => { if (current() && !this.connToLogicalPeer.has(conn.peer)) conn.close(); }, 15000);
     conn.on('open', () => { if (current()) this.onStatusUpdate(); });
-    conn.on('data', raw => { if (current()) this.handleEnvelope(raw, reply => this.sendOverConn(conn, reply), conn); });
+    conn.on('data', raw => { if (current()) this.receiveRaw(raw, conn, reply => this.sendOverConn(conn, reply)); });
     const closed = () => {
       if (!current()) return;
       this.clientConns.delete(conn.peer); this.rates.delete(conn);
@@ -541,17 +699,23 @@ export class MultiplayerRoomManager {
         const conn = peer.connect(hostId, { reliable: this.networkOptions.ordered ?? false, serialization: 'raw' });
         this.hostConn = conn;
         const current = () => this.peer === peer && this.hostConn === conn && !this.disposed && !this.isHost;
-        const claim = () => this.sendOverConn(conn, { sender: this.localPeerId, type: 'JOIN_CLAIM', payload: { peerId: this.localPeerId, name: this.localPilotName } });
+        const caps = { deflate: this.compressionEnabled && decompressionSupported() };
+        const claim = () => this.sendOverConn(conn, { sender: this.localPeerId, type: 'JOIN_CLAIM', payload: { peerId: this.localPeerId, name: this.localPilotName, caps } });
         conn.on('open', () => {
           if (!current()) return;
           claim();
           if (this.connectionState !== 'CONNECTED_CLIENT') this.joinRetryTimer = setInterval(() => { if (current() && this.connectionState !== 'CONNECTED_CLIENT') claim(); }, 850);
         });
-        conn.on('data', raw => { if (current()) this.handleEnvelope(raw, reply => this.sendOverConn(conn, reply), conn); });
+        conn.on('data', raw => { if (current()) this.receiveRaw(raw, conn, reply => this.sendOverConn(conn, reply)); });
         conn.on('close', () => { if (current()) this.scheduleReconnect(name); });
         conn.on('error', () => { if (current()) this.scheduleReconnect(name); });
       });
-      peer.on('error', () => { if (this.peer === peer) this.scheduleReconnect(name); });
+      peer.on('error', (error: { type?: string }) => {
+        if (this.peer !== peer) return;
+        // Losing the signaling socket does not break an open WebRTC channel: keep playing on it.
+        if (this.hostConn?.open && SIGNALING_ERRORS.includes(String(error?.type))) return;
+        this.scheduleReconnect(name);
+      });
     } catch (error) { if (!this.reportConfigurationError(error)) this.scheduleReconnect(name); }
     this.onStatusUpdate();
   }
@@ -561,16 +725,19 @@ export class MultiplayerRoomManager {
     if (this.joinRetryTimer) clearInterval(this.joinRetryTimer);
     this.joinRetryTimer = null;
     this.connectionState = 'RECONNECTING'; this.onStatusUpdate();
-    this.reconnectTimer = setTimeout(() => { this.reconnectTimer = null; this.connectAsPeerClient(this.localPilotName); }, 900);
+    // First retry stays fast for a brief Wi-Fi blip; repeated failures back off with jitter so several guests
+    // do not hammer the signaling server in lockstep while the host is gone.
+    const attempt = this.reconnectAttempts++;
+    const base = RECONNECT_DELAYS_MS[Math.min(attempt, RECONNECT_DELAYS_MS.length - 1)];
+    const delay = attempt === 0 ? base : Math.round(base * (0.85 + Math.random() * 0.3));
+    this.reconnectTimer = setTimeout(() => { this.reconnectTimer = null; this.connectAsPeerClient(this.localPilotName); }, delay);
   }
 
   /** Entry from transport callbacks. A sender string alone never grants permission. */
-  public handleEnvelope(raw: unknown, reply: (env: NetEnvelope) => void, source?: DataConnection): void {
+  public handleEnvelope(raw: unknown, reply: (env: NetEnvelope) => void, source?: DataConnection, precounted = false): void {
     if (!source || this.disposed) return;
     const now = performance.now();
-    const rate = this.rates.get(source);
-    if (!rate || now - rate.since > 1000) this.rates.set(source, { since: now, count: 1 });
-    else if (++rate.count > 160) return;
+    if (!precounted && !this.allowMessage(source, now)) return;
     const env = this.parseEnvelope(raw);
     if (!env || env.sender === this.localPeerId) return;
     if (this.isHost) {
@@ -593,6 +760,7 @@ export class MultiplayerRoomManager {
       const slotId = this.assignSlotForPeer(env.sender, cleanName(p.name));
       if (slotId < 1) { reply({ sender: this.localPeerId, type: 'KICK_PEER', payload: { targetPeerId: env.sender, reason: 'La sala está llena (4 jugadores).' } }); return; }
       this.connToLogicalPeer.set(source.peer, env.sender); this.peerToSlot.set(env.sender, slotId); this.peerLastSeen.set(env.sender, now);
+      this.peerCaps.set(env.sender, { deflate: record(p.caps) && p.caps.deflate === true });
       reply({ sender: this.localPeerId, type: 'SLOT_ASSIGN', payload: { peerId: env.sender, slotId, hostName: cleanName(this.arenaEngine.players[0].name), stateSeq: this.stateSeq, activeGame: this.activeGame, botDifficulty: this.arenaEngine.botDifficulty } });
       this.pingClient(env.sender, source);
       if (isNew) { const m = `🟢 ¡${cleanName(p.name)} SE UNIÓ A LA SALA! (SLOT ${slotId + 1})`; this.pushToast(m, 'join'); this.broadcastRoomEvent(m, 'join'); }
@@ -606,7 +774,7 @@ export class MultiplayerRoomManager {
       this.hostName = cleanName(p.hostName); this.clientStateSeq = p.stateSeq; this.activeGame = p.activeGame as ActiveGameId;
       this.arenaEngine.botDifficulty = p.botDifficulty as BotDifficulty; this.connectionState = 'CONNECTED_CLIENT'; this.lastHostSnapReceivedAt = now;
       if (this.joinRetryTimer) clearInterval(this.joinRetryTimer); if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
-      this.joinRetryTimer = null; this.reconnectTimer = null; this.syncEnginesRoster();
+      this.joinRetryTimer = null; this.reconnectTimer = null; this.reconnectAttempts = 0; this.syncEnginesRoster();
       if (connecting) this.pushToast(`🟢 CONECTADO A SALA #${this.roomCode} DE ${this.hostName} (SLOT ${p.slotId + 1})`, 'join');
       this.onStatusUpdate();
     } else if (env.type === 'GAME_SWITCH') {
@@ -636,12 +804,15 @@ export class MultiplayerRoomManager {
         const ping = this.pendingPings.get(env.sender);
         if (!record(p) || !ping || p.nonce !== ping.nonce || !finite(p.sentAtMs, 0, 1e15)) return;
         this.pendingPings.delete(env.sender);
-        this.peerRtt.set(env.sender, Math.max(0, now - ping.at));
+        const estimate = this.peerRtt.get(env.sender) ?? new RttEstimator();
+        estimate.add(Math.max(0, now - ping.at));
+        this.peerRtt.set(env.sender, estimate);
         this.peerLastSeen.set(env.sender, now);
         return;
       }
       if (!finite(p, 0, now)) return;
-      this.lastHostSnapReceivedAt = now; this.pingMs = Math.max(1, Math.round(now - p));
+      this.hostRtt.add(now - p);
+      this.lastHostSnapReceivedAt = now; this.pingMs = Math.max(1, Math.round(this.hostRtt.srtt));
     } else if (env.type === 'CLIENT_INPUT') {
       this.receiveInput(env.sender, p, now);
     } else if (env.type === 'WORLD_SNAP') {
@@ -656,15 +827,18 @@ export class MultiplayerRoomManager {
   private receiveInput(id: string, p: unknown, now: number): void {
     if (!validInput(p) || p.slotId !== this.peerToSlot.get(id) || !integer(p.inputSeq, 1) ||
         p.stateSeq !== this.stateSeq || p.activeGame !== this.activeGame || p.roundEpoch !== this.activeRoundEpoch) return;
+    // Freshness is measured on the host clock against the snapshot the input refers to. The window widens
+    // with this peer's measured RTT and jitter (bounded), so a 400+ ms player still moves.
+    const rtt = this.peerRtt.get(id);
     const snapshotAt = this.snapshotSentTimes.get(p.lastSeenSnapshotSeq ?? 0);
-    if (snapshotAt === undefined || now - snapshotAt > 500) return;
+    if (snapshotAt === undefined || now - snapshotAt > inputFreshnessMs(rtt)) return;
     const newMovement = p.inputSeq > (this.latestInputSeq.get(id) ?? 0);
     const newAction = this.acceptAction(id, p);
     if (!newMovement && !newAction) return;
     this.peerLastSeen.set(id, now);
     const input = { ...p, name: cleanName(p.name) };
     // Client timestamps and claims never determine lag compensation on the host.
-    input.lagCompensationMs = Math.min(180, (this.peerRtt.get(id) ?? 0) / 2 + 40);
+    input.lagCompensationMs = Math.min(180, (rtt?.srtt ?? 0) / 2 + 40);
     const length = Math.hypot(input.moveX, input.moveY); if (length > 1) { input.moveX /= length; input.moveY /= length; }
     const player = this.arenaEngine.players[input.slotId];
     const changed = newMovement && (player.name !== input.name || JSON.stringify(player.cosmetics) !== JSON.stringify(input.cosmetics ?? player.cosmetics));
@@ -696,21 +870,90 @@ export class MultiplayerRoomManager {
     if (snap.hostEpoch !== this.hostEpoch || snap.stateSeq! < this.clientStateSeq || snap.snapshotSeq! <= this.lastSnapshotSeq) return;
     const prevGame = this.activeGame, prevDiff = this.arenaEngine.botDifficulty, prevPhase = this.arenaEngine.phase;
     const prevHumans = this.arenaEngine.players.filter(p => !p.isBot).length;
+    // Computed against the pre-snapshot game: a cartridge or round change resets players to host state anyway.
+    const lead = Math.min(0.12, this.pingMs / 2000);
+    const hint = snap.activeGame === prevGame ? this.predictionHint(snap, now, lead) : lead;
+    const trackKey = this.trackKey(), before = this.localPosition();
     this.lastSnapshotSeq = snap.snapshotSeq!; this.clientStateSeq = snap.stateSeq!; this.activeGame = snap.activeGame;
     this.hostName = cleanName(snap.hostName || 'ANFITRION'); this.lastHostSnapReceivedAt = now; this.lastWorldSnapReceivedAt = now;
     snap.players.forEach(p => { p.name = cleanName(p.name); });
-    const predictionLeadSeconds = Math.min(0.12, this.pingMs / 2000);
-    this.arenaEngine.applySnapshot(snap, this.localSlotId, predictionLeadSeconds);
-    if (snap.chainState) this.chainEngine.applySnapshot(snap.chainState, this.localSlotId, predictionLeadSeconds);
-    if (snap.puttState) this.puttEngine?.applySnapshot(snap.puttState, this.localSlotId, predictionLeadSeconds);
-    if (snap.hotCoreState) this.hotCoreEngine?.applySnapshot(snap.hotCoreState, this.localSlotId, predictionLeadSeconds);
-    if (snap.voltCrownState) this.voltCrownEngine?.applySnapshot(snap.voltCrownState, this.localSlotId, predictionLeadSeconds);
-    if (snap.hexCrushState) this.hexCrushEngine?.applySnapshot(snap.hexCrushState, this.localSlotId, predictionLeadSeconds);
-    if (snap.ricochetState) this.ricochetEngine?.applySnapshot(snap.ricochetState, this.localSlotId, predictionLeadSeconds);
+    const hintFor = (game: ActiveGameId): PredictionHint => game === snap.activeGame ? hint : lead;
+    this.arenaEngine.applySnapshot(snap, this.localSlotId, hintFor('BASH_BOT'));
+    if (snap.chainState) this.chainEngine.applySnapshot(snap.chainState, this.localSlotId, hintFor('CHAIN_PANIC'));
+    if (snap.puttState) this.puttEngine?.applySnapshot(snap.puttState, this.localSlotId, hintFor('TURBO_PUTT'));
+    if (snap.hotCoreState) this.hotCoreEngine?.applySnapshot(snap.hotCoreState, this.localSlotId, hintFor('HOT_CORE'));
+    if (snap.voltCrownState) this.voltCrownEngine?.applySnapshot(snap.voltCrownState, this.localSlotId, hintFor('VOLT_CROWN'));
+    if (snap.hexCrushState) this.hexCrushEngine?.applySnapshot(snap.hexCrushState, this.localSlotId, hintFor('HEX_CRUSH'));
+    if (snap.ricochetState) this.ricochetEngine?.applySnapshot(snap.ricochetState, this.localSlotId, hintFor('RICOCHET_1'));
     if (snap.tournamentState) this.tournamentManager?.applySnapshot(snap.tournamentState);
+    // Remember how far this snapshot moved the local player, so the recorded trajectory stays free of
+    // corrections and later offsets measure only movement the host has not seen.
+    const after = this.localPosition();
+    if (before && after && trackKey === this.trackKey() && trackKey === this.trackContext) {
+      this.trackCorrection.x += after.x - before.x; this.trackCorrection.y += after.y - before.y; this.trackCorrection.z += after.z - before.z;
+    } else this.trackContext = '';
     this.syncEnginesRoster();
     if (prevGame !== this.activeGame || prevDiff !== this.arenaEngine.botDifficulty || prevPhase !== this.arenaEngine.phase ||
         prevHumans !== this.arenaEngine.players.filter(p => !p.isBot).length || snap.tick % 15 === 0) this.onStatusUpdate();
+  }
+
+  private predictionEngine(): { players: { x: number; y: number; z?: number }[] } | undefined {
+    if (this.activeGame === 'HUB') return undefined;
+    if (this.activeGame === 'BASH_BOT') return this.arenaEngine;
+    if (this.activeGame === 'CHAIN_PANIC') return this.chainEngine;
+    if (this.activeGame === 'TURBO_PUTT') return this.puttEngine;
+    return this.currentArenaEngine();
+  }
+
+  private localPosition(): { x: number; y: number; z: number } | null {
+    const p = this.predictionEngine()?.players[this.localSlotId];
+    if (!p || !Number.isFinite(p.x) || !Number.isFinite(p.y)) return null;
+    return { x: p.x, y: p.y, z: typeof p.z === 'number' && Number.isFinite(p.z) ? p.z : 0 };
+  }
+
+  private trackKey(): string { return `${this.activeGame}:${this.activeRoundEpoch}:${this.localSlotId}`; }
+
+  /** Records the local player's position minus all snapshot corrections, once per predicted step. */
+  private sampleLocalTrack(now: number): void {
+    const key = this.trackKey();
+    if (key !== this.trackContext) {
+      this.trackContext = key; this.localTrack = []; this.trackCorrection = { x: 0, y: 0, z: 0 };
+    }
+    const p = this.localPosition();
+    if (!p) return;
+    const c = this.trackCorrection, sample = { t: now, x: p.x - c.x, y: p.y - c.y, z: p.z - c.z };
+    const last = this.localTrack[this.localTrack.length - 1];
+    if (last && now <= last.t) Object.assign(last, sample, { t: last.t });
+    else this.localTrack.push(sample);
+    while (this.localTrack.length > 2 && now - this.localTrack[1].t > TRACK_HISTORY_MS) this.localTrack.shift();
+  }
+
+  private trackAt(t: number): { x: number; y: number; z: number } | null {
+    const track = this.localTrack;
+    if (!track.length || t < track[0].t) return null;
+    let low = 0, high = track.length - 1;
+    while (low < high) { const mid = (low + high + 1) >> 1; if (track[mid].t <= t) low = mid; else high = mid - 1; }
+    const a = track[low], b = track[low + 1];
+    if (!b) return a;
+    const f = (t - a.t) / (b.t - a.t || 1);
+    return { x: a.x + (b.x - a.x) * f, y: a.y + (b.y - a.y) * f, z: a.z + (b.z - a.z) * f };
+  }
+
+  /**
+   * The host reports the newest input it applied for this slot and for how long. Every local step after that
+   * point is movement still in flight; re-adding it to host state removes the RTT-sized pull-back that a
+   * velocity guess produces. Without an acknowledgement (older host, first packets) the legacy lead is used.
+   */
+  private predictionHint(snap: WorldSnapshotPacket, now: number, fallback: number): PredictionHint {
+    const ack = snap.inputAcks?.[this.localSlotId];
+    const sentAt = ack ? this.inputSentAt.get(ack[0]) : undefined;
+    if (!ack || sentAt === undefined || this.trackContext !== this.trackKey()) return fallback;
+    const current = this.localPosition();
+    // The step that produced the acknowledged input began one fixed step before it was sent.
+    const base = this.trackAt(Math.min(now, sentAt - STEP_MS + ack[1]));
+    if (!current || !base) return fallback;
+    const c = this.trackCorrection;
+    return { dx: current.x - c.x - base.x, dy: current.y - c.y - base.y, dz: current.z - c.z - base.z };
   }
 
   private assignSlotForPeer(id: string, name: string): number {
@@ -727,15 +970,20 @@ export class MultiplayerRoomManager {
     if (!this.disposed) this.localPilotName = cleanName(input.name);
     if (this.isHost || this.disposed || this.connectionState !== 'CONNECTED_CLIENT') return;
     const now = performance.now();
+    this.sampleLocalTrack(now);
     const discrete = input.parryPressed || input.dashPressed || input.yankPressed || input.emotePressed > 0 || input.shotReleasedPower !== undefined;
     if (discrete) {
       this.pendingActions.push({ actionSeq: ++this.clientActionSeq, at: now, stateSeq: this.clientStateSeq, activeGame: this.activeGame, roundEpoch: this.activeRoundEpoch, parryPressed: input.parryPressed, dashPressed: input.dashPressed,
         yankPressed: input.yankPressed, emotePressed: input.emotePressed, shotReleasedPower: input.shotReleasedPower, feintPrimed: input.feintPrimed });
       if (this.pendingActions.length > 16) this.pendingActions.shift();
     }
-    // Late actions are discarded after the same short window used to neutralize disconnected movement.
-    while (this.pendingActions[0] && (now - this.pendingActions[0].at > INPUT_EXPIRY_MS || this.pendingActions[0].stateSeq !== this.clientStateSeq || this.pendingActions[0].activeGame !== this.activeGame || this.pendingActions[0].roundEpoch !== this.activeRoundEpoch)) this.pendingActions.shift();
-    const urgent = this.pendingActions.length > 0 || input.chargingParry !== this.lastChargingState;
+    // Late actions are discarded: a parry or dash that could not leave within this window is no longer useful.
+    while (this.pendingActions[0] && (now - this.pendingActions[0].at > ACTION_QUEUE_MS || this.pendingActions[0].stateSeq !== this.clientStateSeq || this.pendingActions[0].activeGame !== this.activeGame || this.pendingActions[0].roundEpoch !== this.activeRoundEpoch)) this.pendingActions.shift();
+    // Starting, stopping or turning is sent at once: waiting for the 35 ms cadence would add that delay to
+    // every direction change and let host and prediction diverge for the in-between steps.
+    const moving = input.moveX !== 0 || input.moveY !== 0, wasMoving = this.lastSentMoveX !== 0 || this.lastSentMoveY !== 0;
+    const turned = moving !== wasMoving || Math.abs(input.moveX - this.lastSentMoveX) + Math.abs(input.moveY - this.lastSentMoveY) > 0.3;
+    const urgent = this.pendingActions.length > 0 || input.chargingParry !== this.lastChargingState || turned;
     if (!urgent && now - this.lastClientInputSentAt < 35) return;
     if (!this.hostConn?.open || this.isCongested(this.hostConn)) return;
     const outgoing: ClientInputPacket = { ...input, slotId: this.localSlotId, inputSeq: ++this.inputSeq,
@@ -745,6 +993,9 @@ export class MultiplayerRoomManager {
     if (this.sendToHost({ sender: this.localPeerId, type: 'CLIENT_INPUT', payload: outgoing })) {
       if (action) this.pendingActions.shift();
       this.lastChargingState = input.chargingParry; this.lastClientInputSentAt = now;
+      this.lastSentMoveX = input.moveX; this.lastSentMoveY = input.moveY;
+      this.inputSentAt.set(outgoing.inputSeq!, now);
+      if (this.inputSentAt.size > 512) this.inputSentAt.delete(this.inputSentAt.keys().next().value!);
     }
   }
 
@@ -766,7 +1017,12 @@ export class MultiplayerRoomManager {
     else if (this.activeGame === 'RICOCHET_1') snap.ricochetState = this.ricochetEngine?.getSnapshot();
     // Include inactive state too, so stopping a tournament also clears it on clients.
     if (this.tournamentManager) snap.tournamentState = this.tournamentManager.getSnapshot();
-    this.sendToAllClients({ sender: this.localPeerId, type: 'WORLD_SNAP', payload: snap });
+    snap.inputAcks = this.arenaEngine.players.map((p, slot) => {
+      const id = slot > 0 && !p.isBot ? p.peerId : null;
+      const seq = id ? this.latestInputSeq.get(id) : undefined, at = id ? this.inputLastSeen.get(id) : undefined;
+      return seq !== undefined && at !== undefined ? [seq, Math.min(600000, Math.max(0, Math.round(now - at)))] : null;
+    });
+    this.broadcastSnapshotFrame({ sender: this.localPeerId, type: 'WORLD_SNAP', payload: snap });
   }
 
   public submitDraftSelection(modId: string): void {

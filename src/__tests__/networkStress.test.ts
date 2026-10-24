@@ -259,6 +259,59 @@ describe('four-player deterministic network stress', () => {
     }
   }, 30000);
 
+  it('keeps full-speed local movement responsive at 350 and 600 ms: no RTT-sized lag, slide or pull-back', () => {
+    const report: Record<string, { travel30: number; slide: number; correctionP95: number }> = {};
+    for (const rtt of [350, 600]) for (const game of ['BASH_BOT', 'HOT_CORE', 'VOLT_CROWN', 'RICOCHET_1'] as const) {
+      wire.reset(29);
+      let physicsSeed = 29;
+      const random = vi.spyOn(Math, 'random').mockImplementation(() => { physicsSeed = (Math.imul(physicsSeed, 1664525) + 1013904223) >>> 0; return physicsSeed / 4294967296; });
+      const { host, clients } = room();
+      host.net.sendOrApplyRoomAction({ kind: 'BOT_DIFF', botDifficulty: 'OFF' });
+      host.net.switchGame(game); advance(30);
+      if (game === 'BASH_BOT') host.arena.balls = [];
+      // Separate lanes so the guests never collide with each other while running.
+      engine(host).players.forEach((p, id) => { p.x = 300; p.y = 160 + id * 70; p.vx = 0; p.vy = 0; });
+      host.net.broadcastHostSnapshot(true);
+      wire.setProfile({ rtt, jitter: Math.round(rtt * 0.15), loss: 0.01 });
+      // Idle long enough for both sides to measure the link, as in a real lobby.
+      for (let frame = 0; frame < 240; frame++) tick(host, clients, 0);
+      const corrections: number[] = [];
+      wire.observe((owner, raw, deliver) => {
+        const c = clients.find(client => client.net.localPeerId === owner);
+        if (!c || JSON.parse(raw).type !== 'WORLD_SNAP') { deliver(); return; }
+        const me = () => engine(c).players[c.net.localSlotId];
+        const before = { x: me().x, y: me().y }, sequenceBefore = (c.net as unknown as { lastSnapshotSeq: number }).lastSnapshotSeq;
+        deliver();
+        if ((c.net as unknown as { lastSnapshotSeq: number }).lastSnapshotSeq !== sequenceBefore) corrections.push(Math.hypot(me().x - before.x, me().y - before.y));
+      });
+      const xs: number[][] = clients.map(() => []);
+      for (let frame = 0; frame < 160; frame++) {
+        tick(host, clients, frame < 70 ? 1 : 0);
+        clients.forEach((c, i) => xs[i].push(engine(c).players[c.net.localSlotId].x));
+      }
+      corrections.sort((a, b) => a - b);
+      const row = {
+        // Distance covered in the first half second of holding the stick: equal to a zero-latency player.
+        travel30: rounded(Math.min(...xs.map(x => x[29] - x[0]))),
+        // Extra glide after releasing: the old velocity lead kept dragging the robot ~60 px at 350 ms.
+        slide: rounded(Math.max(...xs.map(x => Math.max(...x.slice(70).map(v => v - x[69]))))),
+        correctionP95: rounded(p95(corrections))
+      };
+      report[`${game}@${rtt}`] = row;
+      expect(row.travel30, `${game}@${rtt}: local input lagged`).toBeGreaterThan(45);
+      expect(row.slide, `${game}@${rtt}: robot kept sliding after release`).toBeLessThan(36);
+      expect(row.correctionP95, `${game}@${rtt}: snapshot corrections`).toBeLessThan(6);
+      expect(clients.every(c => c.net.isSynchronized), game).toBe(true);
+      quiesce(host);
+      for (let frame = 0; frame < 120; frame++) tick(host, clients, 0, false);
+      expect(Math.max(...clients.map(c => error(host, c))), `${game}@${rtt}: did not converge`).toBeLessThan(32);
+      random.mockRestore(); disposeAll();
+    }
+    if ((globalThis as unknown as { process?: { env: Record<string, string | undefined> } }).process?.env.NET_STRESS_REPORT) {
+      console.info('NETWORK_LOCAL_FEEL', JSON.stringify(report));
+    }
+  });
+
   it('recovers from 500 ms and 3 s stalls, keeps three identities and preserves authoritative KO/lives/scores', () => {
     const { host, clients } = room();
     host.net.switchGame('RICOCHET_1'); advance(30);

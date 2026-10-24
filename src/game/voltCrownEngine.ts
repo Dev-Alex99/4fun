@@ -1,4 +1,4 @@
-import { reconcilePlayer } from './reconciliation';
+import { reconcilePlayer, type PredictionHint } from './reconciliation';
 import { ChaosPhysics } from './chaosPhysics';
 import { sfx } from '../audio/mechanicalSfx';
 import {
@@ -1330,7 +1330,7 @@ export class VoltCrownEngine extends ChaosPhysics {
     };
   }
 
-  public applySnapshot(snap: VoltCrownSnapshot, localSlotId: number, predictionLeadSeconds = 0): void {
+  public applySnapshot(snap: VoltCrownSnapshot, localSlotId: number, prediction: PredictionHint = 0): void {
     const reset = this.arenaIndex !== snap.arenaIndex || this.status !== snap.status || (snap.roundEpoch !== undefined && snap.roundEpoch !== this.roundEpoch);
     this.arenaIndex = snap.arenaIndex;
     this.arenaTitle = snap.arenaTitle;
@@ -1341,7 +1341,7 @@ export class VoltCrownEngine extends ChaosPhysics {
     this.players = snap.players.map((sp) => {
       const previous = this.players[sp.id];
       return reconcilePlayer(previous, sp, sp.id === localSlotId,
-        reset || previous?.alive !== sp.alive || snap.status !== 'PLAYING', predictionLeadSeconds);
+        reset || previous?.alive !== sp.alive || snap.status !== 'PLAYING', prediction);
     });
 
     this.explosions = snap.explosions.map((ex) => ({ ...ex }));

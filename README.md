@@ -28,7 +28,14 @@ PeerJS establece conexiones WebRTC entre el anfitrión y los invitados. El anfit
 
 El protocolo vincula identidad y slot a la conexión, valida mensajes y valores, numera inputs y snapshots, separa las sesiones del anfitrión mediante una época y descarta estados antiguos. Bajo congestión evita acumular snapshots e inputs obsoletos; las acciones pendientes tienen una ventana de validez limitada. La compensación de parry usa evidencia del anfitrión y una ventana acotada, sin aceptar la distancia declarada por el cliente como prueba de un impacto.
 
-La conexión depende de la red real. STUN permite conexiones directas en muchas redes; NAT y firewalls restrictivos pueden requerir **TURN**. Configura VITE_RTC_ICE_SERVERS como un array JSON de RTCIceServer antes de iniciar Vite o construir el sitio. Consulta .env.example y [el contrato y la verificación de red](docs/NETCODE.md).
+Para jugadores con ping alto o conexiones inestables:
+
+- El anfitrión confirma en cada snapshot qué input de cada invitado ya aplicó; el invitado sólo reañade su movimiento todavía en vuelo. El robot propio responde igual a 350-600 ms que sin latencia, sin tirones hacia atrás ni deslizamientos al soltar.
+- Los snapshots viajan comprimidos (de 3 a 7 veces menos subida para el anfitrión), lo que importa mucho en redes lentas o con pérdida.
+- Las ventanas de sincronía, frescura de inputs y expiración se adaptan al RTT y al jitter medidos de cada jugador, siempre con límites.
+- Un fallo del servidor de señalización no corta partidas en curso; las reconexiones usan espera creciente y un enlace mudo se detecta en 6 s. El HUD del invitado muestra ping y variación (±).
+
+La conexión depende de la red real. STUN permite conexiones directas en muchas redes; NAT y firewalls restrictivos pueden requerir **TURN**. Configura VITE_RTC_ICE_SERVERS como un array JSON de RTCIceServer antes de iniciar Vite o construir el sitio. La señalización usa el servidor público de PeerJS salvo que configures un PeerServer propio con VITE_PEER_HOST. Consulta .env.example y [el contrato y la verificación de red](docs/NETCODE.md).
 
 No hay migración de anfitrión: si sale, los invitados intentan reconectar a la misma sala. Una pestaña suspendida por el navegador no equivale a un servidor dedicado. Para partidas estables el anfitrión debe mantener el dispositivo activo; cero latencia en Internet no es una garantía del proyecto.
 
