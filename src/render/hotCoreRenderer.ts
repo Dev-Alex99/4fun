@@ -30,8 +30,8 @@ export class HotCoreRenderer extends CanvasViewportRenderer {
 
     if (engine.screenShake > 0) {
       ctx.translate(
-        (Math.random() - 0.5) * engine.screenShake,
-        (Math.random() - 0.5) * engine.screenShake
+        (Math.random() - 0.5) * this.shakeAmount(engine.screenShake),
+        (Math.random() - 0.5) * this.shakeAmount(engine.screenShake)
       );
     }
 
@@ -74,7 +74,7 @@ export class HotCoreRenderer extends CanvasViewportRenderer {
     this.roundRect(ctx, CHAMBER_LEFT, CHAMBER_TOP, cw, ch, 10);
     ctx.fill();
 
-    if (criticalUrgency > 0 && Math.sin(nowSec * 18) > 0) {
+    if (criticalUrgency > 0 && (this.reducedFlashes || Math.sin(nowSec * 18) > 0)) {
       ctx.fillStyle = `rgba(255, 79, 0, ${0.09 * criticalUrgency})`;
       this.roundRect(ctx, CHAMBER_LEFT, CHAMBER_TOP, cw, ch, 10);
       ctx.fill();
@@ -182,7 +182,7 @@ export class HotCoreRenderer extends CanvasViewportRenderer {
 
     // 6. Pinball Bumpers
     for (const b of engine.bumpers) {
-      const flash = b.hitAnim > 0;
+      const flash = b.hitAnim > 0 && !this.reducedFlashes;
       ctx.beginPath();
       ctx.arc(b.x, b.y + 4, b.radius, 0, Math.PI * 2);
       ctx.fillStyle = 'rgba(24, 24, 27, 0.25)';
@@ -454,7 +454,7 @@ export class HotCoreRenderer extends CanvasViewportRenderer {
     const cx = core.x;
     const cy = isHeld ? core.y - 34 : core.y;
     const urgent = core.fuseTimer < 3.0;
-    const blink = Math.sin(nowSec * (urgent ? 26 : 12)) > 0;
+    const blink = (this.reducedFlashes || Math.sin(nowSec * (urgent ? 26 : 12)) > 0);
 
     ctx.save();
 

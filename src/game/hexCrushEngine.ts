@@ -227,6 +227,12 @@ export const HEX_CRUSH_ARENAS: HexArenaDef[] = [
   }
 ];
 
+HEX_CRUSH_ARENAS.push({ title: 'SECTOR 04 // PUENTES DE CRISTAL',
+  bumpers: [{ x: 500, y: 145, radius: 22, hitAnim: 0 }, { x: 500, y: 371, radius: 22, hitAnim: 0 }],
+  generateTiles: () => HEX_CRUSH_ARENAS[0].generateTiles().map(tile => ({ ...tile,
+    type: tile.q === 0 || tile.r === 0 ? 'GLASS' : 'STEEL', health: tile.q === 0 || tile.r === 0 ? 1 : 2,
+    maxHealth: tile.q === 0 || tile.r === 0 ? 1 : 2 })) });
+
 export class HexCrushEngine extends ChaosPhysics {
   public arenaIndex = 0;
   public arenaTitle = '';
@@ -326,6 +332,7 @@ export class HexCrushEngine extends ChaosPhysics {
   }
 
   public resetChampionship(): void {
+    this.resetMatchStats();
     this.players.forEach((p) => {
       p.score = 0;
     });
@@ -1166,8 +1173,8 @@ export class HexCrushEngine extends ChaosPhysics {
         type: 'dust',
         x,
         y,
-        vx: (Math.random() - 0.5) * 80,
-        vy: (Math.random() - 0.5) * 80,
+        vx: (this.random() - 0.5) * 80,
+        vy: (this.random() - 0.5) * 80,
         life: 0.45,
         decay: 1.4,
         color: '#D4CEBF',
@@ -1181,10 +1188,10 @@ export class HexCrushEngine extends ChaosPhysics {
       this.looseParts.push({
         x,
         y,
-        vx: (Math.random() - 0.5) * 260,
-        vy: (Math.random() - 0.5) * 260,
-        rot: Math.random() * Math.PI * 2,
-        vRot: (Math.random() - 0.5) * 12,
+        vx: (this.random() - 0.5) * 260,
+        vy: (this.random() - 0.5) * 260,
+        rot: this.random() * Math.PI * 2,
+        vRot: (this.random() - 0.5) * 12,
         color,
         life: 3.2,
         maxLife: 3.2

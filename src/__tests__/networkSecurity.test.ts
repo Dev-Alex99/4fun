@@ -7,8 +7,11 @@ import { VoltCrownEngine } from '../game/voltCrownEngine';
 import { HexCrushEngine } from '../game/hexCrushEngine';
 import { RicochetEngine } from '../game/ricochetEngine';
 import { TournamentManager } from '../game/tournamentManager';
+import { CargoCrewEngine } from '../game/cargoCrewEngine';
 import { MultiplayerRoomManager, type NetEnvelope, type RoomNetworkOptions } from '../net/multiplayerRoom';
 import type { ClientInputPacket } from '../types';
+import { PROTOCOL_VERSION } from '../net/protocol';
+import { emptyMatchStats, makeSessionResult } from '../game/matchResults';
 
 const rtc = vi.hoisted(() => {
   class Events {
@@ -69,9 +72,10 @@ const all: MultiplayerRoomManager[] = [];
 function manager(options?: RoomNetworkOptions) {
   const arena = new ArenaEngine(), chain = new ChainPanicEngine(), putt = new PuttWarEngine();
   const hot = new HotCoreEngine(), volt = new VoltCrownEngine(), hex = new HexCrushEngine(), rico = new RicochetEngine(), tournament = new TournamentManager();
-  const net = new MultiplayerRoomManager(arena, chain, () => {}, putt, hot, volt, hex, tournament, rico, options);
+  const cargo = new CargoCrewEngine();
+  const net = new MultiplayerRoomManager(arena, chain, () => {}, putt, hot, volt, hex, tournament, rico, options, cargo);
   all.push(net);
-  return { net, arena, chain, putt, hot, volt, hex, rico, tournament };
+  return { net, arena, chain, putt, hot, volt, hex, rico, tournament, cargo };
 }
 function host() { const h = manager(); h.net.hostRoom('TEST', 'ALEX'); return h; }
 function join(name = 'MATEO') {
@@ -94,7 +98,7 @@ function transport(net: MultiplayerRoomManager) {
 function sendRaw(net: MultiplayerRoomManager, type: NetEnvelope['type'], payload: unknown, extras: object = {}) {
   const { client } = transport(net);
 
-  client.send(JSON.stringify({ protocolVersion: 1, sender: net.localPeerId, hostEpoch: (net as unknown as { hostEpoch: string }).hostEpoch, type, payload, ...extras }));
+  client.send(JSON.stringify({ protocolVersion: PROTOCOL_VERSION, sender: net.localPeerId, hostEpoch: (net as unknown as { hostEpoch: string }).hostEpoch, type, payload, ...extras }));
 }
 function input(net: MultiplayerRoomManager, values: Partial<ClientInputPacket> = {}): ClientInputPacket {
   return { slotId: net.localSlotId, name: 'MATEO', moveX: 0, moveY: 0, aimAngle: 0, parryPressed: false,
@@ -106,6 +110,155 @@ beforeEach(() => { vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'se
 afterEach(() => { for (const n of all.splice(0)) n.dispose(); vi.clearAllTimers(); vi.useRealTimers(); });
 
 describe('authenticated room transport and runtime validation', () => {
+  it('cancels a remote putt charge without firing and rejects presses delayed past the cancellation', () => {
+    const h = host(), c = join(); h.net.switchGame('TURBO_PUTT');
+    const player = h.putt.players[c.net.localSlotId];
+    player.isCharging = true; player.chargePower = 0.9;
+    sendRaw(c.net, 'CLIENT_INPUT', input(c.net, { inputSeq: 5, cancelHeldActions: true }));
+    expect(player.isCharging).toBe(false); expect(player.chargePower).toBe(0);
+    const shot = vi.spyOn(h.putt, 'executePutt');
+    sendRaw(c.net, 'CLIENT_INPUT', input(c.net, { inputSeq: 4, actionSeq: 7, shotReleasedPower: 0.9 }));
+    expect(shot).not.toHaveBeenCalled();
+    sendRaw(c.net, 'CLIENT_INPUT', input(c.net, { inputSeq: 6, actionSeq: 8, shotReleasedPower: 0.5 }));
+    expect(shot).toHaveBeenCalled();
+    expect(player.strokes).toBe(1);
+  });
+  it('synchronizes CARGO-CREW grip actions, integrity and host-confirmed results across four players', () => {
+    const h = host(), a = join('ALFA'), b = join('BETA'), c = join('GAMA');
+    h.net.switchGame('CARGO_CREW');
+    sendRaw(a.net, 'CLIENT_INPUT', input(a.net, { actionSeq: 1, parryPressed: true }));
+    expect(h.cargo.players[1].gripping).toBe(true);
+    sendRaw(a.net, 'CLIENT_INPUT', input(a.net, { inputSeq: 2, actionSeq: 1, parryPressed: true }));
+    expect(h.cargo.players[1].gripping).toBe(true);
+    h.cargo.integrity = 72; h.net.broadcastHostSnapshot(true);
+    for (const guest of [a, b, c]) {
+      expect(guest.cargo.integrity).toBe(72);
+      expect(guest.cargo.players[1].gripping).toBe(true);
+      expect(guest.net.activeGame).toBe('CARGO_CREW');
+    }
+    const result = makeSessionResult({ id: 'route-test', gameId: 'CARGO_CREW', title: 'RUTA COMPLETADA', cooperative: true,
+      durationSeconds: 120, winnerSlots: [0, 1, 2, 3], players: h.cargo.players.map(p => ({ slot: p.id, name: p.name,
+        isBot: p.isBot, score: 3, stats: { ...emptyMatchStats(), deliveries: 3 } })) });
+    a.net.publishSessionResult(result);
+    expect(h.net.sessionResult).toBeNull();
+    h.net.publishSessionResult(result);
+    expect(c.net.sessionResult?.id).toBe('route-test');
+    expect(c.net.sessionResult?.winnerSlots).toEqual([0, 1, 2, 3]);
+    h.net.sendOrApplyRoomAction({ kind: 'RESET_MATCH' });
+    expect(h.net.sessionResult).toBeNull();
+    expect(c.net.sessionResult).toBeNull();
+    expect(h.cargo.stageIndex).toBe(0);
+  });
+  it('replicates campaign checkpoints and team mode while restricting both controls to the host', () => {
+    const h = host(), c = join();
+    c.net.sendOrApplyRoomAction({ kind: 'START_CAMPAIGN' });
+    expect(h.chain.campaign.active).toBe(false);
+    h.net.sendOrApplyRoomAction({ kind: 'START_CAMPAIGN' });
+    h.chain.campaign.checkpointUnlocked = true; h.net.broadcastHostSnapshot(true);
+    expect(c.chain.campaign.active).toBe(true);
+    expect(c.chain.campaign.checkpointUnlocked).toBe(true);
+    h.net.switchGame('VOLT_CROWN');
+    c.net.sendOrApplyRoomAction({ kind: 'VOLT_MODE', voltMode: 'TEAMS' });
+    expect(h.volt.mode).toBe('FFA');
+    h.net.sendOrApplyRoomAction({ kind: 'VOLT_MODE', voltMode: 'TEAMS' });
+    expect(c.volt.mode).toBe('TEAMS');
+    h.net.sendOrApplyRoomAction({ kind: 'START_TOURNAMENT', tournamentOptions: { totalRounds: 3, games: ['VOLT_CROWN'], mutatorsEnabled: false } });
+    expect(h.volt.mode).toBe('FFA');
+    expect(c.volt.mode).toBe('FFA');
+  });
+  it('synchronizes tournament options and readiness for four humans, with a host-owned countdown', () => {
+    const h = host(), a = join('ALFA'), b = join('BETA'), c = join('GAMA');
+    h.net.sendOrApplyRoomAction({ kind: 'START_TOURNAMENT', tournamentOptions: {
+      totalRounds: 7, games: ['HEX_CRUSH'], mutatorsEnabled: false
+    } });
+    expect(a.tournament.state.options).toEqual(h.tournament.state.options);
+    expect(c.tournament.state.requiredSlots).toEqual([0, 1, 2, 3]);
+    a.net.submitTournamentReady(); b.net.submitTournamentReady(); c.net.submitTournamentReady();
+    expect(h.tournament.state.readySlots).toEqual([1, 2, 3]);
+    expect(h.tournament.state.countdown).toBe(0);
+    h.net.submitTournamentReady();
+    expect(b.tournament.state.countdown).toBe(3);
+    h.tournament.step(3.01, () => {});
+    h.net.broadcastHostSnapshot(true);
+    for (const player of [h, a, b, c]) expect(player.tournament.isPaused).toBe(false);
+  });
+
+  it('authenticates ready confirmations and rejects stale rounds, duplicates and forged slots', () => {
+    const h = host(), c = join();
+    const options = { totalRounds: 3 as const, games: ['HEX_CRUSH' as const], mutatorsEnabled: false };
+    h.net.sendOrApplyRoomAction({ kind: 'START_TOURNAMENT', tournamentOptions: options });
+    const preparationId = h.tournament.state.preparationId;
+    sendRaw(c.net, 'TOURNAMENT_READY', { slotId: 0, preparationId });
+    sendRaw(c.net, 'TOURNAMENT_READY', { slotId: 1, preparationId: preparationId + 1 });
+    expect(h.tournament.state.readySlots).toEqual([]);
+    h.net.submitTournamentReady(); c.net.submitTournamentReady();
+    h.tournament.step(1, () => {});
+    c.net.submitTournamentReady();
+    expect(h.tournament.state.countdown).toBe(2);
+    h.tournament.step(2.01, () => {});
+    h.tournament.recordRoundWinner(1);
+    h.tournament.step(3.3, game => h.net.switchGame(game, true));
+    sendRaw(c.net, 'TOURNAMENT_READY', { slotId: 1, preparationId });
+    expect(h.tournament.state.readySlots).toEqual([]);
+    expect(c.tournament.state.preparing).toBe(true);
+  });
+
+  it('waits for new arrivals during the countdown and proceeds when a pending guest explicitly leaves', () => {
+    const h = host();
+    h.net.sendOrApplyRoomAction({ kind: 'START_TOURNAMENT', tournamentOptions: {
+      totalRounds: 3, games: ['HOT_CORE'], mutatorsEnabled: false
+    } });
+    h.net.submitTournamentReady(); h.tournament.step(1, () => {});
+    const c = join();
+    expect(h.tournament.state.countdown).toBe(0);
+    expect(c.tournament.state.requiredSlots).toEqual([0, 1]);
+    c.net.disconnectCleanly();
+    expect(h.tournament.state.requiredSlots).toEqual([0]);
+    expect(h.tournament.state.countdown).toBe(3);
+  });
+
+  it('reserves disconnected slots but clears their ready confirmation until reconnect or expiry', () => {
+    const h = host(), c = join();
+    h.net.sendOrApplyRoomAction({ kind: 'START_TOURNAMENT', tournamentOptions: {
+      totalRounds: 3, games: ['HOT_CORE'], mutatorsEnabled: false
+    } });
+    h.net.submitTournamentReady(); c.net.submitTournamentReady();
+    transport(c.net).client.close();
+    expect(h.tournament.state.readySlots).toEqual([0]);
+    expect(h.tournament.state.countdown).toBe(0);
+    vi.advanceTimersByTime(901);
+    open(c.net);
+    h.net.broadcastHostSnapshot(true);
+    expect(c.net.localSlotId).toBe(1);
+    expect(c.tournament.state.readySlots).toEqual([0]);
+    c.net.submitTournamentReady();
+    expect(h.tournament.state.countdown).toBe(3);
+  });
+
+  it('drops gameplay actions during preparation and resets a repeated game without losing the roster', () => {
+    const h = host(), c = join();
+    h.hex.players[0].score = 2;
+    h.net.sendOrApplyRoomAction({ kind: 'START_TOURNAMENT', tournamentOptions: {
+      totalRounds: 3, games: ['HEX_CRUSH'], mutatorsEnabled: false
+    } });
+    expect(h.hex.players[0].score).toBe(0);
+    const apply = vi.spyOn(h.hex, 'applyRemoteInput');
+    sendRaw(c.net, 'CLIENT_INPUT', input(c.net, { actionSeq: 1, parryPressed: true }));
+    expect(apply).not.toHaveBeenCalled();
+    h.net.submitTournamentReady(); c.net.submitTournamentReady();
+    h.tournament.step(3.01, () => {});
+    h.hex.players[0].score = 3;
+    h.tournament.recordRoundWinner(0);
+    h.tournament.step(3.3, game => h.net.switchGame(game, true));
+    expect(h.hex.players[0].score).toBe(0);
+    expect(h.hex.players[1].name).toBe('MATEO');
+    expect(h.hex.players[1].isBot).toBe(false);
+    expect(c.tournament.state.roundIndex).toBe(1);
+    h.net.switchGame('HUB');
+    expect(h.tournament.state.active).toBe(false);
+    expect(c.tournament.state.active).toBe(false);
+  });
+
   it('joins four players via real connection callbacks and rejects overflow without replacing anyone', () => {
     const h = host(), a = join('ALFA'), b = join('BETA'), c = join('GAMA');
     expect([a.net.localSlotId, b.net.localSlotId, c.net.localSlotId]).toEqual([1, 2, 3]);
@@ -144,7 +297,7 @@ describe('authenticated room transport and runtime validation', () => {
     expect(h.net.connectedPeersCount).toBe(count);
     expect(h.arena.players[1].name).toBe('MATEO');
     // The public dispatch function cannot bypass transport ownership.
-    h.net.handleEnvelope({ protocolVersion: 1, sender: 'P-NO-CONNECTION', type: 'JOIN_CLAIM', payload: { peerId: 'P-NO-CONNECTION', name: 'OTHER' } }, () => {});
+    h.net.handleEnvelope({ protocolVersion: PROTOCOL_VERSION, sender: 'P-NO-CONNECTION', type: 'JOIN_CLAIM', payload: { peerId: 'P-NO-CONNECTION', name: 'OTHER' } }, () => {});
     expect(h.net.connectedPeersCount).toBe(count);
   });
 
@@ -174,7 +327,7 @@ describe('authenticated room transport and runtime validation', () => {
     const conn = transport(c.net).server;
     expect(h.net.kickPlayerSlot(1)).toBe(true);
     expect(c.net.kickedNotice).toContain('vetado');
-    conn.emit('data', JSON.stringify({ protocolVersion: 1, sender: 'P-NEW-SENDER', type: 'JOIN_CLAIM', payload: { peerId: 'P-NEW-SENDER', name: 'BACK' } }));
+    conn.emit('data', JSON.stringify({ protocolVersion: PROTOCOL_VERSION, sender: 'P-NEW-SENDER', type: 'JOIN_CLAIM', payload: { peerId: 'P-NEW-SENDER', name: 'BACK' } }));
     expect(h.arena.players[1].isBot).toBe(true);
     vi.advanceTimersByTime(1500);
     expect(c.net.kickedNotice).toContain('vetado');
@@ -206,7 +359,7 @@ describe('ordering, reconnection and bounded latency', () => {
     open(c.net); expect(c.net.isSynchronized).toBe(true); expect(c.net.localSlotId).toBe(1);
     const active = rtc.peers.get(c.net.localPeerId)!;
     abandoned.emit('open'); oldClient.emit('open'); oldClient.emit('close'); oldServer.emit('close');
-    oldClient.emit('data', JSON.stringify({ protocolVersion: 1, sender: h.net.localPeerId,
+    oldClient.emit('data', JSON.stringify({ protocolVersion: PROTOCOL_VERSION, sender: h.net.localPeerId,
       hostEpoch: (h.net as unknown as { hostEpoch: string }).hostEpoch, type: 'SLOT_ASSIGN',
       payload: { peerId: c.net.localPeerId, slotId: 3, hostName: 'OBSOLETE', stateSeq: 999, activeGame: 'HOT_CORE', botDifficulty: 'NORMAL' } }));
     expect(c.net.localSlotId).toBe(1); expect(c.net.activeGame).toBe('HUB');
@@ -420,7 +573,7 @@ describe('ordering, reconnection and bounded latency', () => {
     const p = input(c.net, { inputSeq: 5, actionSeq: 5, parryPressed: true });
     const epoch = (c.net as unknown as { hostEpoch: string }).hostEpoch;
     const { server } = transport(c.net);
-    const delayed = JSON.stringify({ protocolVersion: 1, sender: c.net.localPeerId, hostEpoch: epoch, type: 'CLIENT_INPUT', payload: p });
+    const delayed = JSON.stringify({ protocolVersion: PROTOCOL_VERSION, sender: c.net.localPeerId, hostEpoch: epoch, type: 'CLIENT_INPUT', payload: p });
     vi.advanceTimersByTime(600);
     const apply = vi.spyOn(h.arena, 'applyRemoteInput'); server.emit('data', delayed);
     expect(apply).not.toHaveBeenCalled();
@@ -560,7 +713,7 @@ describe('ordering, reconnection and bounded latency', () => {
 });
 
 describe('high-latency and unstable-link resilience', () => {
-  const HOST_PEER = 'tp04-deck-room-v4-TEST';
+  const HOST_PEER = 'tp04-deck-room-v8-TEST';
   // setImmediate is not faked, so native zlib callbacks (run on libuv's thread pool) get event-loop turns.
   const nextTurn = () => new Promise<void>(resolve => (globalThis as unknown as { setImmediate: (callback: () => void) => void }).setImmediate(resolve));
   const busy = (...rooms: { net: MultiplayerRoomManager }[]) => rooms.some(room => (room.net as unknown as { frameJobs: number }).frameJobs > 0);
@@ -692,7 +845,7 @@ describe('high-latency and unstable-link resilience', () => {
     h.net.switchGame('RICOCHET_1'); expect(c.net.activeGame).toBe('RICOCHET_1');
     // A code that was never registered by this tab still belongs to another host: join it instead.
     const other = manager(); other.net.hostRoom('ELSE', 'NEW');
-    rtc.peers.get('tp04-deck-room-v4-ELSE')!.emit('error', { type: 'unavailable-id' });
+    rtc.peers.get('tp04-deck-room-v8-ELSE')!.emit('error', { type: 'unavailable-id' });
     expect(other.net.isHost).toBe(false); expect(other.net.connectionState).toBe('CONNECTING');
   });
 
@@ -729,7 +882,7 @@ describe('high-latency and unstable-link resilience', () => {
     // Input that refers to a 900 ms old snapshot is still current for a ~450 ms player.
     h.net.broadcastHostSnapshot(true);
     const epoch = (c.net as unknown as { hostEpoch: string }).hostEpoch;
-    const late = JSON.stringify({ protocolVersion: 1, sender: c.net.localPeerId, hostEpoch: epoch, type: 'CLIENT_INPUT',
+    const late = JSON.stringify({ protocolVersion: PROTOCOL_VERSION, sender: c.net.localPeerId, hostEpoch: epoch, type: 'CLIENT_INPUT',
       payload: input(c.net, { inputSeq: 900, actionSeq: 900, parryPressed: true }) });
     vi.advanceTimersByTime(900);
     const apply = vi.spyOn(h.arena, 'applyRemoteInput');
@@ -759,7 +912,7 @@ describe('high-latency and unstable-link resilience', () => {
 });
 
 describe('host signaling recovery before the room is reachable', () => {
-  const HOST_PEER = 'tp04-deck-room-v4-TEST';
+  const HOST_PEER = 'tp04-deck-room-v8-TEST';
   it('rebuilds a host peer whose first registration failed or stalled, without resetting the match', () => {
     const h = manager(); h.net.hostRoom('TEST', 'ALEX'); h.net.switchGame('HOT_CORE');
     const first = rtc.peers.get(HOST_PEER)!;
@@ -777,5 +930,50 @@ describe('host signaling recovery before the room is reachable', () => {
     // Once guests are attached the peer is never torn down by the watchdog or late errors.
     third.emit('error', { type: 'socket-error' }); vi.advanceTimersByTime(20000);
     expect(rtc.peers.get(HOST_PEER)).toBe(third); expect(h.net.connectedPeersCount).toBe(1);
+  });
+});
+
+describe('party votes and repeatable challenges over the room transport', () => {
+  it('shares four human votes, rejects impersonation and stale ballots, and keeps every player on the next game', () => {
+    const h = host(), a = join('ANA'), b = join('BETO'), c = join('CORA');
+    h.net.startGameVote();
+    expect(a.net.gameVote.open).toBe(true);
+    sendRaw(a.net, 'GAME_VOTE', { slotId: 0, voteId: h.net.gameVote.id, game: 'HOT_CORE' });
+    expect(h.net.gameVote.ballots[0]).toBeNull();
+    sendRaw(a.net, 'GAME_VOTE', { slotId: a.net.localSlotId, voteId: h.net.gameVote.id - 1, game: 'HOT_CORE' });
+    expect(h.net.gameVote.ballots[1]).toBeNull();
+    h.net.submitGameVote('BASH_BOT'); a.net.submitGameVote('CARGO_CREW'); b.net.submitGameVote('CARGO_CREW'); c.net.submitGameVote('CHAIN_PANIC');
+    expect(h.net.gameVote.open).toBe(false); expect(h.net.gameVote.winner).toBe('CARGO_CREW');
+    for (const client of [a, b, c]) expect(client.net.gameVote).toEqual(h.net.gameVote);
+    h.net.switchGame(h.net.gameVote.winner!);
+    expect([a.net.localSlotId, b.net.localSlotId, c.net.localSlotId]).toEqual([1, 2, 3]);
+    for (const client of [a, b, c]) expect(client.net.activeGame).toBe('CARGO_CREW');
+    a.net.startGameVote(); expect(h.net.gameVote.open).toBe(false);
+  });
+  it('reproduces the initial scenario and random state for all games and clears challenges on manual configuration', () => {
+    const h = host(), c = join();
+    const read = () => ({
+      bash: [h.arena.courtLayout, h.arena.balls.map(b => [b.targetId, b.vx, b.vy])], chain: [h.chain.levelIndex, h.chain.mode],
+      cargo: h.cargo.routeIndex, putt: [h.putt.holeIndex, h.putt.cupX], hot: [h.hot.arenaIndex, h.hot.core.holderId],
+      volt: [h.volt.arenaIndex, h.volt.mode], hex: h.hex.arenaIndex, rico: [h.rico.arenaIndex, h.rico.bullets.map(b => [b.vx, b.vy])]
+    });
+    const games = ['BASH_BOT', 'CHAIN_PANIC', 'TURBO_PUTT', 'HOT_CORE', 'VOLT_CROWN', 'HEX_CRUSH', 'RICOCHET_1', 'CARGO_CREW'];
+    for (let i = 0; i < 8; i++) {
+      const code = `1${String.fromCharCode(65 + i)}-ABCD1234`;
+      h.net.startChallenge(code); const first = read()[(['bash', 'chain', 'putt', 'hot', 'volt', 'hex', 'rico', 'cargo'] as const)[i]];
+      h.net.startChallenge(code);
+      expect(read()[(['bash', 'chain', 'putt', 'hot', 'volt', 'hex', 'rico', 'cargo'] as const)[i]]).toEqual(first);
+      expect(c.net.activeGame).toBe(games[i]); expect(c.net.challenge).toEqual(h.net.challenge);
+      expect(h.net.challenge?.partySize).toBe(2); expect(h.net.challenge?.eligible).toBe(true);
+    }
+    c.net.startChallenge('1A-AAAA'); expect(h.net.activeGame).toBe('CARGO_CREW');
+    h.net.sendOrApplyRoomAction({ kind: 'CARGO_ROUTE', cargoRoute: 0 });
+    expect(h.net.challenge).toBeNull(); expect(c.net.challenge).toBeNull();
+  });
+  it('marks a challenge as unranked when the participating group changes', () => {
+    const h = host(), c = join(); h.net.startChallenge('1H-AAAA');
+    expect(h.net.challenge?.eligible).toBe(true);
+    c.net.disconnectCleanly();
+    expect(h.net.challenge?.eligible).toBe(false);
   });
 });

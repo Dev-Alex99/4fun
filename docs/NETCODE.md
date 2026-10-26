@@ -25,7 +25,23 @@ Una quinta persona recibe el rechazo de sala llena sin reemplazar a un jugador e
 
 ## Versiones, orden y cambios de ronda
 
-El sobre lleva `protocolVersion: 1`, `sender`, `type`, `payload` y, tras el ingreso, `hostEpoch`. Una versión ausente o distinta se rechaza. No se permite que mensajes del protocolo anterior modifiquen la sala.
+El sobre lleva `protocolVersion: 5`, `sender`, `type`, `payload` y, tras el ingreso, `hostEpoch`. Una versión ausente o distinta se rechaza. No se permite que mensajes del protocolo anterior modifiquen la sala. Las salas usan el prefijo `tp04-deck-room-v8-` para separar clientes que no entienden las votaciones, los retos y los escenarios adicionales.
+
+`GAME_VOTE` es la única decisión nueva enviada por invitados. El anfitrión comprueba identidad de conexión, slot y número de votación vigente. Sólo los humanos actuales cuentan para la mayoría; repetir un mensaje sustituye el mismo voto y no añade otro. `gameVote` se distribuye en snapshots, también a quienes se reconectan. Crear/cerrar votaciones e iniciar juegos sigue siendo autoridad del anfitrión.
+
+Los retos incluyen un descriptor validado contra su código: juego, escenario, mutador y semilla. El anfitrión reinicia los motores con un generador de azar por instancia, fija bots normales y publica el escenario completo. El mismo código reproduce la configuración inicial; no promete una trayectoria idéntica con acciones distintas. Cambiar ajustes manualmente limpia el reto. Un cambio en el número de humanos marca el intento como no comparable. Los récords se guardan localmente a partir del resultado confirmado por el anfitrión.
+
+La práctica usa motores e inputs propios, no envía acciones de práctica a la sala ni resultados para desbloqueos. Abrirla libera los controles de la sala sin pausar su reloj.
+
+`TOURNAMENT_READY` es una confirmación de invitado, no una acción administrativa. El anfitrión vincula el slot a la conexión autenticada y exige el `preparationId` vigente; las confirmaciones de rondas o copas anteriores se descartan. Los snapshots incluyen opciones de torneo, humanos esperados, confirmaciones y cuenta atrás. Tanto la simulación como las acciones remotas se pausan durante la preparación; solo el anfitrión avanza la cuenta atrás. Una nueva entrada o la desconexión de un jugador listo cancela la cuenta. Al liberar un slot se recalculan los humanos pendientes.
+
+`START_CAMPAIGN` y `VOLT_MODE` son acciones exclusivas del anfitrión. Una campaña incluye checkpoints, tiempo, seis resultados de sector y cuatro contadores de rescates. El estado de equipos replica modo y dos baterías compartidas. `cargoState` incluye cuatro jugadores, enganches, integridad, seguros, checkpoint y avance de la ruta; su índice de etapa y sus valores se validan antes de aplicarse. La predicción de carga mueve presentación y controles, sin resolver daños o entregas.
+
+`sessionResult` es un resultado sellado por el anfitrión, con identificador de sesión/ronda, participantes, ganadores y métricas confirmadas. Los invitados no pueden publicarlo. El resultado se conserva para la pantalla de revancha y se limpia al cambiar de juego o reiniciar. La libreta local deduplica el identificador; la persistencia local no supone una clasificación global verificable.
+
+`cancelHeldActions` neutraliza los controles y cancela habilidades sostenidas del propio slot antes de aplicar el input. El anfitrión recuerda su `inputSeq` y rechaza acciones anteriores que lleguen después; no permite que una carga cancelada dispare al cerrar la ayuda. El invitado descarta su cola local de acciones al cancelar. La sala sigue simulando mientras un jugador consulta sus paneles.
+
+Los eventos de carga incluyen una secuencia, tipo, mensaje breve y tiempo del anfitrión. El snapshot valida esos campos; la predicción no crea daños ni confirmaciones de reparación. El diagnóstico exportado usa una lista cerrada de campos y sólo afirma conexión directa/relay cuando un par ICE seleccionado ha alcanzado `succeeded`.
 
 | Campo | Invariante |
 | --- | --- |

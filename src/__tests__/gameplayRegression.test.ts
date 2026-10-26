@@ -9,6 +9,7 @@ import { RicochetEngine } from '../game/ricochetEngine';
 import { TournamentManager } from '../game/tournamentManager';
 import { ClientInputPacket } from '../types';
 import { reconcilePlayer } from '../game/reconciliation';
+import { readyTournamentRound } from './tournamentTestUtils';
 
 const idle: ClientInputPacket = {
   slotId: 0, name: 'ALEX', moveX: 0, moveY: 0, aimAngle: 0,
@@ -91,6 +92,7 @@ describe('Tournament and Ricochet progress', () => {
     expect(game.matchWinnerId).toBe(0);
     const tournament = new TournamentManager();
     tournament.startTournament(() => {});
+    readyTournamentRound(tournament);
     tournament.recordRoundWinner(game.matchWinnerId);
     tournament.step(3.21, () => {});
     expect(tournament.state.roundIndex).toBe(1);
@@ -115,6 +117,7 @@ describe('Tournament and Ricochet progress', () => {
     const game = new PuttWarEngine();
     const tournament = new TournamentManager();
     tournament.startTournament(() => {});
+    readyTournamentRound(tournament);
     game.status = 'HOLE_COMPLETE';
     Object.assign(game.players[3], { sunkInCup: true, sunkOrder: 1, totalPoints: 1 });
     game.players[0].totalPoints = 100;
@@ -143,6 +146,7 @@ describe('Tournament and Ricochet progress', () => {
     const tournament = new TournamentManager();
     tournament.startTournament(() => {});
     for (const id of [3, 1, 3, 1, null]) {
+      readyTournamentRound(tournament);
       tournament.recordRoundWinner(id);
       if (!tournament.state.isFinished) tournament.step(3.21, () => {});
     }
@@ -155,12 +159,14 @@ describe('Tournament and Ricochet progress', () => {
     const tournament = new TournamentManager();
     tournament.startTournament(() => {});
     for (let i = 0; i < 5; i++) {
+      readyTournamentRound(tournament);
       tournament.recordRoundWinner(null);
       if (i < 4) tournament.step(3.21, () => {});
     }
     expect(tournament.state.champId).toBeNull();
     const fresh = new TournamentManager();
     tournament.startTournament(() => {});
+    readyTournamentRound(tournament);
     tournament.recordRoundWinner(2);
     fresh.applySnapshot(tournament.getSnapshot());
     expect(fresh.isIntermission).toBe(true);
@@ -170,6 +176,7 @@ describe('Tournament and Ricochet progress', () => {
     const tournament = new TournamentManager();
     tournament.startTournament(() => {});
     tournament.step(2.3, () => {});
+    readyTournamentRound(tournament);
     const players = [{ id: 0, isBot: false, alive: true }];
     expect(tournament.evaluateSoloBashRound('BASH_BOT', 'OFF', players, 29.99)).toBe(false);
     expect(tournament.evaluateSoloBashRound('BASH_BOT', 'OFF', players, 30)).toBe(true);
@@ -183,6 +190,7 @@ describe('Tournament and Ricochet progress', () => {
     const tournament = new TournamentManager();
     tournament.startTournament(() => {});
     tournament.step(2.3, () => {});
+    readyTournamentRound(tournament);
     const game = new ArenaEngine();
     game.botDifficulty = 'OFF';
     game.spawnRound();
@@ -205,6 +213,8 @@ describe('Tournament and Ricochet progress', () => {
     tournament.startTournament(() => {});
     expect(tournament.evaluateSoloBashRound('BASH_BOT', 'OFF', solo, 60)).toBe(false);
     tournament.step(2.3, () => {});
+    expect(tournament.evaluateSoloBashRound('BASH_BOT', 'OFF', solo, 60)).toBe(false);
+    readyTournamentRound(tournament);
     expect(tournament.evaluateSoloBashRound('RICOCHET_1', 'OFF', solo, 60)).toBe(false);
     expect(tournament.evaluateSoloBashRound('BASH_BOT', 'NORMAL', solo, 60)).toBe(false);
     expect(tournament.evaluateSoloBashRound('BASH_BOT', 'OFF', [...solo, { id: 1, isBot: false, alive: true }], 60)).toBe(false);
@@ -223,6 +233,7 @@ describe('Tournament and Ricochet progress', () => {
       const tournament = new TournamentManager();
       tournament.startTournament(() => {});
       tournament.step(2.3, () => {});
+      readyTournamentRound(tournament);
       expect(tournament.evaluateSoloBashRound('BASH_BOT', 'OFF', [{ id: 0, isBot: false, alive: true, lastKOAt: 900 }], 1)).toBe(false);
       expect(tournament.state.scores).toEqual([0, 0, 0, 0]);
     } finally { clock.mockRestore(); }

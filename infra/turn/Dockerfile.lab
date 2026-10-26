@@ -1,0 +1,8 @@
+FROM coturn/coturn:4.18.0-r0
+# The upstream binary carries file capabilities. Copying without preserving xattrs
+# removes them so exec works with cap_drop: ALL and no-new-privileges. The lab
+# listens above 1024 and needs no capabilities; never add them back at runtime.
+USER root
+RUN cp /usr/bin/turnserver /usr/local/bin/turnserver-lab && chmod 755 /usr/local/bin/turnserver-lab
+USER nobody:nogroup
+ENTRYPOINT ["/usr/local/bin/turnserver-lab"]

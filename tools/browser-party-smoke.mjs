@@ -1,0 +1,84 @@
+// Requires a dedicated Firefox WebDriver BiDi profile; never attach to your everyday browser.
+import { writeFile, mkdir } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+const outputDirectory = process.env.TP04_TEST_OUTPUT ?? join(tmpdir(), 'tp04-browser-party');
+await mkdir(outputDirectory, { recursive: true });
+const ws = new WebSocket(process.env.TP04_BIDI_URL ?? 'ws://127.0.0.1:9224/session');
+await new Promise((resolve, reject) => { ws.onopen = resolve; ws.onerror = reject; });
+let next = 0, ended = false; const tasks = new Map(), errors = [];
+ws.onmessage = event => {
+  const data = JSON.parse(event.data);
+  if (data.method === 'log.entryAdded' && data.params?.type === 'javascript' && data.params?.level === 'error') errors.push(data.params.text);
+  const task = tasks.get(data.id); if (!task) return;
+  tasks.delete(data.id); clearTimeout(task.timer); data.type === 'error' ? task.reject(new Error(JSON.stringify(data))) : task.resolve(data.result);
+};
+const command = (method, params = {}) => new Promise((resolve, reject) => { const id = ++next; const timer = setTimeout(() => { tasks.delete(id); reject(new Error('BiDi timeout: ' + method)); }, 15000); tasks.set(id, { resolve, reject, timer }); ws.send(JSON.stringify({ id, method, params })); });
+ws.onclose = () => { for (const task of tasks.values()) { clearTimeout(task.timer); task.reject(new Error('BiDi closed')); } tasks.clear(); };
+try {
+  await command('session.new', { capabilities: {} }); await command('session.subscribe', { events: ['log.entryAdded'] });
+  const { context } = await command('browsingContext.create', { type: 'tab' });
+  const tree = await command('browsingContext.getTree',{maxDepth:0}); for (const page of tree.contexts) if(page.context!==context) await command('browsingContext.close',{context:page.context});
+  const evaluate = async expression => {
+    const result = await command('script.evaluate', { expression, target: { context }, awaitPromise: true });
+    if (result.type === 'exception') throw new Error(JSON.stringify(result));
+    return result.result?.value;
+  };
+  const pause = ms => evaluate(`new Promise(resolve => setTimeout(resolve, ${ms}))`);
+  const assert = async (expression, label) => { if (!await evaluate(expression)) throw new Error('FAILED: ' + label); process.stdout.write('PASS ' + label + '\n'); };
+  const screenshot = async name => { const { data } = await command('browsingContext.captureScreenshot', { context, origin: 'viewport' }); await writeFile(join(outputDirectory, name + '.png'), Buffer.from(data, 'base64')); };
+  await command('browsingContext.setViewport', { context, viewport: { width: 390, height: 844 }, devicePixelRatio: 1 });
+  await command('browsingContext.navigate', { context, url: process.env.TP04_TEST_URL ?? 'http://127.0.0.1:5173/', wait: 'interactive' });
+  await evaluate(`new Promise((resolve, reject) => { let n = 0; const poll = () => document.querySelector('#playerSlotsBar')?.children.length ? resolve(true) : ++n > 100 ? reject('Boot failed') : setTimeout(poll, 100); poll(); })`);
+  await evaluate(`(() => { document.getElementById('onboardingNameInput').value = 'ALEX'; document.getElementById('confirmOnboardingBtn').click(); return true; })()`);
+
+  await assert(`getComputedStyle(document.getElementById('practiceOverlay')).display === 'none' && getComputedStyle(document.getElementById('shareOverlay')).display === 'none'`, 'optional overlays start visually hidden');
+  await evaluate(`(async () => {
+    const source = performance.getEntriesByType('resource').find(e => new URL(e.name).pathname === '/src/net/multiplayerRoom.ts')?.name;
+    const { MultiplayerRoomManager } = await import(source ?? '/src/net/multiplayerRoom.ts');
+    const original = MultiplayerRoomManager.prototype.broadcastHostSnapshot;
+    MultiplayerRoomManager.prototype.broadcastHostSnapshot = function(...args) { globalThis.qaNet = this; return original.apply(this,args); };
+    document.querySelector('[data-launch="CARGO_CREW"]').click(); document.getElementById('touchToggleBtn').click(); return true;
+  })()`); await pause(250);
+  await evaluate(`document.getElementById('mobileRoomBtn').click(); document.getElementById('playExtras').open=true; document.getElementById('practicePanel').open=true; document.getElementById('practiceGameSelect').value='CHAIN_PANIC'; globalThis.beforePracticeTime=qaNet.cargoEngine.elapsedSeconds; globalThis.beforePracticeProgress=localStorage.getItem('tp04_progress_v1'); document.getElementById('startPracticeBtn').click(); true`);
+  await evaluate(`new Promise((resolve,reject)=>{let n=0;const poll=()=>{if(!document.getElementById('practiceOverlay').classList.contains('hidden'))resolve(true);else if(++n>60)reject('Practice failed');else setTimeout(poll,100)};poll()})`);
+  await evaluate(`(async()=>{const source=performance.getEntriesByType('resource').find(e=>new URL(e.name).pathname==='/src/ui/practiceRoom.ts')?.name; const {PracticeRoom}=await import(source);const original=PracticeRoom.prototype.frame;PracticeRoom.prototype.frame=function(...args){globalThis.qaPractice=this;return original.apply(this,args)};return true})()`); await pause(150);
+  const key = async(code,down=true)=>evaluate(`window.dispatchEvent(new KeyboardEvent('${down?'keydown':'keyup'}',{code:'${code}',key:'${code}',bubbles:true,cancelable:true}));true`);
+  await key('ArrowRight');await pause(350);await key('ArrowRight',false);
+  await key('Space');await pause(180);await key('Space',false);await pause(200);
+  await key('ShiftLeft');await pause(100);await key('KeyE');await pause(500);await key('KeyE',false);await key('ShiftLeft',false);
+  await assert(`qaPractice.session.complete && localStorage.getItem('tp04_practice_complete').includes('CHAIN_PANIC')`, 'interactive chain lesson completes a real rescue');
+  await assert(`qaNet.cargoEngine.elapsedSeconds > beforePracticeTime && localStorage.getItem('tp04_progress_v1') === beforePracticeProgress`, 'practice keeps room running and grants no match rewards');
+  await assert(`(()=>{const b=document.getElementById('closePracticeBtn'),r=b.getBoundingClientRect();return b.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2))})()`, 'practice buttons are visible and unobstructed');
+  await screenshot('4fun-beta2-practice-portrait');
+  await evaluate(`document.getElementById('closePracticeBtn').click(); document.getElementById('comfortPanel').open=true; const volume=document.getElementById('musicVolumeInput');volume.value='0';volume.dispatchEvent(new Event('input'));const motion=document.getElementById('reducedMotionInput');motion.checked=true;motion.dispatchEvent(new Event('input'));const flashes=document.getElementById('reducedFlashesInput');flashes.checked=true;flashes.dispatchEvent(new Event('input'));const scale=document.getElementById('controlScaleInput');scale.value='1.15';scale.dispatchEvent(new Event('input'));true`);
+  await assert(`JSON.parse(localStorage.getItem('tp04_play_preferences')).controlScale === 1.15 && document.body.classList.contains('reduced-motion') && document.getElementById('musicVolumeValue').textContent === '0%'`, 'comfort controls persist volume, motion, flashes and touch size');
+  await command('browsingContext.setViewport',{context,viewport:{width:844,height:390},devicePixelRatio:1});await pause(150);
+  await evaluate(`document.getElementById('practiceGameSelect').value='HEX_CRUSH';document.getElementById('startPracticeBtn').click();true`);await pause(180);
+  await assert(`qaPractice.session.game==='HEX_CRUSH' && document.body.scrollWidth === innerWidth`, 'landscape practice supports large touch controls without horizontal overflow');
+  await screenshot('4fun-beta2-practice-landscape');
+  await evaluate(`document.getElementById('closePracticeBtn').click();document.getElementById('partyPanel').open=true;document.getElementById('openInviteBtn').click();true`);
+  await evaluate(`new Promise((resolve,reject)=>{let n=0;const poll=()=>{if(document.querySelector('#shareQr svg'))resolve(true);else if(++n>60)reject('QR failed');else setTimeout(poll,100)};poll()})`);
+  await assert(`new URL(document.getElementById('shareUrlInput').value).searchParams.get('room')===qaNet.roomCode && new URL(document.getElementById('shareUrlInput').value).searchParams.get('join')==='1'`, 'QR invitation points to the current room');
+  await evaluate(`document.getElementById('copyShareBtn').click();true`);await pause(400);
+  await assert(`/copi/i.test(document.getElementById('shareStatus').textContent)`, 'invitation copy has a usable clipboard fallback');
+  await screenshot('4fun-beta2-room-qr');
+  await evaluate(`document.getElementById('closeShareBtn').click();qaNet.switchGame('HUB');document.getElementById('startGameVoteBtn').click();true`);await pause(150);
+  await assert(`qaNet.gameVote.open && document.querySelectorAll('[data-vote-game]').length===8`, 'party ballot offers all eight games');
+  await evaluate(`document.querySelector('[data-vote-game="TURBO_PUTT"]').click();true`);await pause(100);
+  await assert(`qaNet.gameVote.winner==='TURBO_PUTT' && !qaNet.gameVote.open`, 'votes close when all humans participate');
+  await evaluate(`globalThis.savedRoom=qaNet.roomCode;document.getElementById('playVoteWinnerBtn').click();true`);await pause(150);
+  await assert(`qaNet.activeGame==='TURBO_PUTT' && qaNet.roomCode===savedRoom`, 'voted game preserves the room');
+  await evaluate(`document.getElementById('mobileRoomBtn').click();document.getElementById('challengeGameSelect').value='CARGO_CREW';document.getElementById('generateChallengeBtn').click();document.getElementById('startChallengeBtn').click();true`);await pause(150);
+  await assert(`qaNet.challenge?.game==='CARGO_CREW' && qaNet.cargoEngine.routeIndex===qaNet.challenge.stage && qaNet.challenge.eligible`, 'shared challenge applies its cargo route and consistent rules');
+  await evaluate(`document.getElementById('mobileRoomBtn').click();document.getElementById('shareChallengeBtn').click();true`);await pause(250);
+  await assert(`new URL(document.getElementById('shareUrlInput').value).searchParams.get('challenge')===qaNet.challenge.code && !new URL(document.getElementById('shareUrlInput').value).searchParams.has('room')`, 'challenge link starts a separate group on the same configuration');
+  await screenshot('4fun-beta2-shared-challenge');
+  await evaluate(`document.getElementById('closeShareBtn').click();true`);
+  await command('browsingContext.setViewport',{context,viewport:{width:1280,height:1000},devicePixelRatio:1});await pause(150);
+  await assert(`document.body.scrollWidth===innerWidth && !document.body.classList.contains('compact-play')`, 'desktop layout remains usable with the new panels');
+  await assert(`document.getElementById('courtCanvas').getBoundingClientRect().height > 200 && getComputedStyle(document.getElementById('controlDeck')).overflowY === 'auto'`, 'expanded desktop options preserve the playable arena');
+  await screenshot('4fun-beta2-desktop-options');
+  process.stdout.write('JavaScript errors: '+JSON.stringify(errors)+'\n');if(errors.length)throw new Error('Browser errors');
+  await command('browsingContext.close', { context }); ended = true; await command('session.end');
+} finally { if (!ended) { try { await command('session.end'); } catch {} } ws.close(); }

@@ -6,12 +6,14 @@ import { VOLT_CROWN_ARENAS, VoltCrownEngine } from '../game/voltCrownEngine';
 import { HEX_CRUSH_ARENAS, HexCrushEngine } from '../game/hexCrushEngine';
 import { RICOCHET_ARENAS, RicochetEngine } from '../game/ricochetEngine';
 import { TournamentManager } from '../game/tournamentManager';
+import { readyTournamentRound } from './tournamentTestUtils';
 import { PUTT_HOLES, PuttWarEngine } from '../game/puttWarEngine';
 import { MultiplayerRoomManager } from '../net/multiplayerRoom';
 import { ProceduralChiptuneEngine } from '../audio/chiptuneBgm';
 import { TouchGamepad } from '../input/touchGamepad';
 import { RobotWorkshopManager, ROBOT_HATS, ROBOT_VISORS, ROBOT_SKINS } from '../game/robotWorkshop';
 import { ClientInputPacket } from '../types';
+import { PROTOCOL_VERSION } from '../net/protocol';
 
 const dummyInput: ClientInputPacket = {
   slotId: 0,
@@ -116,9 +118,9 @@ describe('ArenaEngine (01 // BASH-BOT)', () => {
 });
 
 describe('ChainPanicEngine (02 // CHAIN-PANIC)', () => {
-  it('loads all 6 industrial sectors without errors', () => {
+  it('loads all 8 industrial sectors without errors', () => {
     const engine = new ChainPanicEngine();
-    expect(CHAIN_LEVELS.length).toBe(6);
+    expect(CHAIN_LEVELS.length).toBe(8);
 
     for (let i = 0; i < CHAIN_LEVELS.length; i++) {
       engine.loadLevel(i);
@@ -173,9 +175,9 @@ describe('ChainPanicEngine (02 // CHAIN-PANIC)', () => {
 });
 
 describe('PuttWarEngine (03 // TURBO-PUTT)', () => {
-  it('loads all 6 combat mini-golf holes without errors', () => {
+  it('loads all 7 combat mini-golf holes without errors', () => {
     const engine = new PuttWarEngine();
-    expect(PUTT_HOLES.length).toBe(6);
+    expect(PUTT_HOLES.length).toBe(7);
 
     for (let i = 0; i < PUTT_HOLES.length; i++) {
       engine.loadHole(i);
@@ -238,14 +240,14 @@ describe('MultiplayerRoomManager Anti-Freeze Watchdog & Moderation', () => {
     type Conn = NonNullable<Parameters<typeof host.handleEnvelope>[2]>;
     const epoch = (net: MultiplayerRoomManager) => (net as unknown as { hostEpoch: string }).hostEpoch;
     const server = { peer: client.localPeerId, open: true, close: () => {}, send: (raw: unknown) => {
-      client.handleEnvelope(raw, reply => guest.send(JSON.stringify({ ...reply, protocolVersion: 1, hostEpoch: epoch(client) })), guest as unknown as Conn);
+      client.handleEnvelope(raw, reply => guest.send(JSON.stringify({ ...reply, protocolVersion: PROTOCOL_VERSION, hostEpoch: epoch(client) })), guest as unknown as Conn);
     } };
-    const guest = { peer: 'tp04-deck-room-v4-TP04', open: true, close: () => {}, send: (raw: unknown) => {
-      host.handleEnvelope(raw, reply => server.send(JSON.stringify({ ...reply, protocolVersion: 1, hostEpoch: epoch(host) })), server as unknown as Conn);
+    const guest = { peer: 'tp04-deck-room-v8-TP04', open: true, close: () => {}, send: (raw: unknown) => {
+      host.handleEnvelope(raw, reply => server.send(JSON.stringify({ ...reply, protocolVersion: PROTOCOL_VERSION, hostEpoch: epoch(host) })), server as unknown as Conn);
     } };
     (host as unknown as { clientConns: Map<string, Conn> }).clientConns.set(client.localPeerId, server as unknown as Conn);
     (client as unknown as { hostConn: Conn }).hostConn = guest as unknown as Conn;
-    guest.send(JSON.stringify({ protocolVersion: 1, sender: client.localPeerId, type: 'JOIN_CLAIM', payload: { peerId: client.localPeerId, name: 'SOFIA' } }));
+    guest.send(JSON.stringify({ protocolVersion: PROTOCOL_VERSION, sender: client.localPeerId, type: 'JOIN_CLAIM', payload: { peerId: client.localPeerId, name: 'SOFIA' } }));
     return { host, client, hostArena, hostChain, hostPutt, clientArena, clientChain, clientPutt };
   }
 
@@ -640,6 +642,7 @@ describe('TournamentManager (Party Tournament Mode & Chaos Mutators)', () => {
     for (let i = 0; i < 30; i++) tm.step(0.1, (g) => switched.push(g));
 
     // Player 0 wins Round 1
+    readyTournamentRound(tm);
     tm.recordRoundWinner(0);
     expect(tm.state.scores[0]).toBe(3);
 
@@ -648,6 +651,7 @@ describe('TournamentManager (Party Tournament Mode & Chaos Mutators)', () => {
     expect(tm.state.roundIndex).toBe(1);
 
     // Player 1 wins Round 2
+    readyTournamentRound(tm);
     tm.recordRoundWinner(1);
     expect(tm.state.scores[1]).toBe(3);
 
@@ -656,6 +660,7 @@ describe('TournamentManager (Party Tournament Mode & Chaos Mutators)', () => {
     expect(tm.state.roundIndex).toBe(2);
 
     // Player 0 wins Round 3
+    readyTournamentRound(tm);
     tm.recordRoundWinner(0);
     expect(tm.state.scores[0]).toBe(6);
 
@@ -664,6 +669,7 @@ describe('TournamentManager (Party Tournament Mode & Chaos Mutators)', () => {
     expect(tm.state.roundIndex).toBe(3);
 
     // Player 2 wins Round 4
+    readyTournamentRound(tm);
     tm.recordRoundWinner(2);
 
     // Fast-forward to Round 5 (Final)
@@ -671,6 +677,7 @@ describe('TournamentManager (Party Tournament Mode & Chaos Mutators)', () => {
     expect(tm.state.roundIndex).toBe(4);
 
     // Player 0 wins Round 5
+    readyTournamentRound(tm);
     tm.recordRoundWinner(0);
     expect(tm.state.scores[0]).toBe(9);
 
@@ -684,6 +691,7 @@ describe('TournamentManager (Party Tournament Mode & Chaos Mutators)', () => {
     const client = new TournamentManager();
 
     host.startTournament(() => {});
+    readyTournamentRound(host);
     host.recordRoundWinner(1);
 
     const snap = host.getSnapshot();
@@ -796,7 +804,7 @@ describe('RicochetEngine (07 // RICOCHET-1)', () => {
     expect(engine.players.length).toBe(4);
     expect(engine.bullets.length).toBe(1);
     expect(engine.mirrors.length).toBeGreaterThan(0);
-    expect(RICOCHET_ARENAS.length).toBe(3);
+    expect(RICOCHET_ARENAS.length).toBe(4);
 
     const p0 = engine.players[0];
     expect(p0.lives).toBe(3);

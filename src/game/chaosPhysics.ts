@@ -1,4 +1,5 @@
 import { ChaosMutatorId } from '../types';
+import { emptyMatchStats } from './matchResults';
 
 export interface ChaosBomb {
   x: number;
@@ -9,6 +10,24 @@ export interface ChaosBomb {
 
 /** Shared host clock and physical coefficients; scoring stays in each game engine. */
 export class ChaosPhysics {
+  private randomSeed: number | null = null;
+  public setRandomSeed(seed: number | null): void { this.randomSeed = seed === null ? null : seed >>> 0; }
+  protected random(): number {
+    if (this.randomSeed === null) return Math.random();
+    this.randomSeed = (Math.imul(1664525, this.randomSeed) + 1013904223) >>> 0;
+    return this.randomSeed / 4294967296;
+  }
+  public matchStats = Array.from({ length: 4 }, emptyMatchStats);
+  public matchSeconds = 0;
+  public resetMatchStats(): void {
+    this.matchStats = Array.from({ length: 4 }, emptyMatchStats);
+    this.matchSeconds = 0;
+  }
+  protected noteParry(slot: number, perfect: boolean): void {
+    const stats = this.matchStats[slot];
+    stats.parries++; if (perfect) stats.perfectParries++;
+    stats.streak++; stats.bestStreak = Math.max(stats.bestStreak, stats.streak);
+  }
   public chaosMutator: ChaosMutatorId = 'NONE';
   public simulationTime = 0;
   public roundEpoch = 0;
@@ -36,6 +55,7 @@ export class ChaosPhysics {
   }
 
   protected advanceChaos(dt: number, authoritative: boolean, playing: boolean, explode: (bomb: ChaosBomb) => void): void {
+    if (authoritative && playing) this.matchSeconds += dt;
     this.simulationTime += dt;
     if (!playing || this.chaosMutator !== 'BOMB_RAIN') return;
     for (let i = this.chaosBombs.length - 1; i >= 0; i--) {
@@ -50,7 +70,7 @@ export class ChaosPhysics {
     this.nextRainIn -= dt;
     if (this.nextRainIn <= 0) {
       this.nextRainIn += 4;
-      this.chaosBombs.push({ x: 170 + Math.random() * 660, y: 120 + Math.random() * 275, fuse: 0.8, radius: 145 });
+      this.chaosBombs.push({ x: 170 + this.random() * 660, y: 120 + this.random() * 275, fuse: 0.8, radius: 145 });
     }
   }
 

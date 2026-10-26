@@ -1,5 +1,9 @@
+import { playPreferences } from '../game/playPreferences';
 /** Shared CSS-pixel camera used by drawing and pointer aiming. */
 export class CanvasViewportRenderer {
+  protected get reducedFlashes(): boolean { return playPreferences.reducedFlashes; }
+  protected get reducedMotion(): boolean { return playPreferences.reducedMotion; }
+  protected shakeAmount(amount: number): number { return this.reducedMotion ? 0 : amount; }
   protected readonly canvas: HTMLCanvasElement;
   protected readonly ctx: CanvasRenderingContext2D;
   protected scale = 1;
@@ -9,6 +13,11 @@ export class CanvasViewportRenderer {
   protected viewportHeight = 1;
   private ghostActive = false;
   private ghostTime = 0;
+  private playInsets = { top: 0, bottom: 0, left: 0, right: 0, compact: false };
+
+  public setPlayInsets(insets: typeof this.playInsets): void {
+    this.playInsets = { ...insets };
+  }
 
   constructor(
     canvas: HTMLCanvasElement,
@@ -38,9 +47,12 @@ export class CanvasViewportRenderer {
     this.viewportHeight = h;
     this.ctx.setTransform(targetW / w, 0, 0, targetH / h, 0, 0);
     this.ctx.globalAlpha = 1;
-    this.scale = Math.min(Math.max(1, w - this.padX * 2) / this.worldWidth, Math.max(1, h - this.padY * 2) / this.worldHeight);
-    this.offsetX = (w - this.worldWidth * this.scale) * 0.5;
-    this.offsetY = (h - this.worldHeight * this.scale) * 0.5;
+    const inset = this.playInsets;
+    const width = Math.max(1, w - inset.left - inset.right), height = Math.max(1, h - inset.top - inset.bottom);
+    const padX = inset.compact ? 4 : this.padX, padY = inset.compact ? 4 : this.padY;
+    this.scale = Math.min(Math.max(1, width - padX * 2) / this.worldWidth, Math.max(1, height - padY * 2) / this.worldHeight);
+    this.offsetX = inset.left + (width - this.worldWidth * this.scale) * 0.5;
+    this.offsetY = inset.top + (height - this.worldHeight * this.scale) * 0.5;
   }
 
   public screenToCourt(clientX: number, clientY: number): { x: number; y: number } {

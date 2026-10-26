@@ -32,7 +32,7 @@ const SLOT_PALETTE = [
 ];
 
 const EMOTE_LABELS = ['¡EZ!', '¡UY!', '💀 K.O.', '¡MÍRAME!'];
-const LAYOUT_ORDER: CourtLayout[] = ['PINBALL', 'CLASSIC', 'CORE'];
+const LAYOUT_ORDER: CourtLayout[] = ['PINBALL', 'CLASSIC', 'CORE', 'CROSS'];
 
 export class ArenaEngine extends ChaosPhysics {
   public tick = 0;
@@ -116,6 +116,7 @@ export class ArenaEngine extends ChaosPhysics {
   }
 
   public resetChampionship(): void {
+    this.resetMatchStats();
     const preservedPeers = this.players.map((p) => ({
       peerId: p.peerId,
       name: p.name,
@@ -133,6 +134,11 @@ export class ArenaEngine extends ChaosPhysics {
     this.phase = 'PLAYING';
     this.spawnRound();
     this.onPhaseChange?.();
+  }
+
+  public dispose(): void {
+    if (this.roundEndTimer) clearTimeout(this.roundEndTimer);
+    this.roundEndTimer = null; this.remoteInputs.clear();
   }
 
   public spawnRound(): void {
@@ -158,6 +164,8 @@ export class ArenaEngine extends ChaosPhysics {
         { x: COURT_CENTER_X - 135, y: COURT_CENTER_Y, radius: 24, hitAnim: 0 },
         { x: COURT_CENTER_X + 135, y: COURT_CENTER_Y, radius: 24, hitAnim: 0 }
       );
+    } else if (this.courtLayout === 'CROSS') {
+      for (const [x, y] of [[365, 180], [635, 180], [365, 336], [635, 336]]) this.bumpers.push({ x, y, radius: 21, hitAnim: 0 });
     } else if (this.courtLayout === 'CORE') {
       this.bumpers.push({ x: COURT_CENTER_X, y: COURT_CENTER_Y, radius: 30, hitAnim: 0 });
     }
@@ -189,7 +197,7 @@ export class ArenaEngine extends ChaosPhysics {
     const alivePlayers = this.players.filter((p) => p.alive);
     const firstTarget =
       alivePlayers.length > 0
-        ? alivePlayers[Math.floor(Math.random() * alivePlayers.length)].id
+        ? alivePlayers[Math.floor(this.random() * alivePlayers.length)].id
         : 0;
 
     return {
@@ -197,8 +205,8 @@ export class ArenaEngine extends ChaosPhysics {
       x: COURT_CENTER_X,
       y: COURT_CENTER_Y - 35 + id * 70,
       z: 18,
-      vx: (Math.random() - 0.5) * 90,
-      vy: (Math.random() - 0.5) * 90,
+      vx: (this.random() - 0.5) * 90,
+      vy: (this.random() - 0.5) * 90,
       speed: 250,
       baseSpeed: 250,
       radius: 11,
@@ -366,7 +374,7 @@ export class ArenaEngine extends ChaosPhysics {
     applyHardwareMod(player, modId);
     this.players.forEach((p) => {
       if (p.isBot && this.botDifficulty !== 'OFF' && p.id !== slotId) {
-        const randomMod = this.draftOptions[Math.floor(Math.random() * this.draftOptions.length)];
+        const randomMod = this.draftOptions[Math.floor(this.random() * this.draftOptions.length)];
         if (randomMod) applyHardwareMod(p, randomMod);
       }
     });
@@ -397,6 +405,7 @@ export class ArenaEngine extends ChaosPhysics {
   }
 
   private executeDeflection(p: PlayerState, ball: GyroBallState, isPerfect: boolean): void {
+    this.noteParry(p.id, isPerfect);
     this.comboCount++;
     ball.ownerId = p.id;
     ball.targetId = this.chooseNextTarget(p);
@@ -410,12 +419,12 @@ export class ArenaEngine extends ChaosPhysics {
       // Rhythm-change Drop-Shot / Heavy Curve Feint!
       ball.isFeint = true;
       ball.speed = Math.max(210, ball.speed * 0.68);
-      ball.curveSpin = (3.4 + p.curvePower) * (Math.random() > 0.5 ? 1 : -1);
+      ball.curveSpin = (3.4 + p.curvePower) * (this.random() > 0.5 ? 1 : -1);
     } else {
       ball.isFeint = false;
       const accel = isPerfect ? 1.2 * p.smashPower : 1.12;
       ball.speed = Math.min(950, ball.speed * accel);
-      ball.curveSpin = p.curvePower * (Math.random() > 0.5 ? 2.5 : -2.5);
+      ball.curveSpin = p.curvePower * (this.random() > 0.5 ? 2.5 : -2.5);
     }
 
     const launchAngle = !p.isBot
@@ -598,9 +607,9 @@ export class ArenaEngine extends ChaosPhysics {
               const feintPenalty = threatBall.isFeint ? 0.28 : 0.0;
               const finalChance = Math.max(0.12, baseChance - speedPenalty - feintPenalty);
 
-              p.botWillParry = Math.random() < finalChance;
+              p.botWillParry = this.random() < finalChance;
               // Human reaction distance jitter (sometimes late or normal parry instead of always perfect)
-              p.botTriggerDist = 36 + Math.random() * 24 + threatBall.speed * 0.04;
+              p.botTriggerDist = 36 + this.random() * 24 + threatBall.speed * 0.04;
             }
 
             const distBall = Math.hypot(threatBall.x - p.x, threatBall.y - p.y);
@@ -609,7 +618,7 @@ export class ArenaEngine extends ChaosPhysics {
                 this.triggerParry(p);
               } else {
                 // Bot misjudged timing! Either swings way too early/late or panics with a sideways dash
-                if (Math.random() < 0.45) {
+                if (this.random() < 0.45) {
                   this.triggerDash(p, -(threatBall.y - p.y), threatBall.x - p.x);
                 }
               }
@@ -753,6 +762,7 @@ export class ArenaEngine extends ChaosPhysics {
           this.executeDeflection(p, ball, isPerfect);
         } else if (d <= p.radius + ball.radius - 2) {
           p.alive = false;
+          this.matchStats[p.id].streak = 0;
           p.lastKOAt = performance.now();
           const proof = { ballId: ball.id, lethalPassId: ball.passId, continuationPassId: ball.passId, ownerId: ball.ownerId, at: p.lastKOAt };
           this.knockoutProofs.set(p.id, proof);
@@ -799,7 +809,7 @@ export class ArenaEngine extends ChaosPhysics {
           } else {
             ball.ownerId = -1;
             ball.speed = Math.max(ball.baseSpeed * 1.12, ball.speed * 0.78);
-            ball.targetId = remaining[Math.floor(Math.random() * remaining.length)].id;
+            ball.targetId = remaining[Math.floor(this.random() * remaining.length)].id;
             ball.passId = this.nextPassId++;
           }
           proof.continuationPassId = ball.passId;
@@ -1006,8 +1016,8 @@ export class ArenaEngine extends ChaosPhysics {
 
   public spawnDust(x: number, y: number, count: number): void {
     for (let i = 0; i < count; i++) {
-      const ang = Math.random() * Math.PI * 2;
-      const spd = 25 + Math.random() * 90;
+      const ang = this.random() * Math.PI * 2;
+      const spd = 25 + this.random() * 90;
       this.particles.push({
         type: 'dust',
         x,
@@ -1015,9 +1025,9 @@ export class ArenaEngine extends ChaosPhysics {
         vx: Math.cos(ang) * spd,
         vy: Math.sin(ang) * spd,
         life: 1.0,
-        decay: 2.2 + Math.random(),
+        decay: 2.2 + this.random(),
         color: '#F4F0E8',
-        size: 5 + Math.random() * 5
+        size: 5 + this.random() * 5
       });
     }
   }
@@ -1035,8 +1045,8 @@ export class ArenaEngine extends ChaosPhysics {
       size: 9
     });
     for (let i = 0; i < count; i++) {
-      const ang = Math.random() * Math.PI * 2;
-      const spd = 85 + Math.random() * 210;
+      const ang = this.random() * Math.PI * 2;
+      const spd = 85 + this.random() * 210;
       this.particles.push({
         type: 'spark',
         x,
@@ -1044,9 +1054,9 @@ export class ArenaEngine extends ChaosPhysics {
         vx: Math.cos(ang) * spd,
         vy: Math.sin(ang) * spd,
         life: 1.0,
-        decay: 2.5 + Math.random() * 1.4,
+        decay: 2.5 + this.random() * 1.4,
         color,
-        size: 4 + Math.random() * 3
+        size: 4 + this.random() * 3
       });
     }
   }
@@ -1054,15 +1064,15 @@ export class ArenaEngine extends ChaosPhysics {
   public spawnKOMechanicalParts(x: number, y: number, bodyColor: string): void {
     this.spawnDust(x, y, 10);
     for (let i = 0; i < 5; i++) {
-      const ang = Math.random() * Math.PI * 2;
-      const spd = 65 + Math.random() * 150;
+      const ang = this.random() * Math.PI * 2;
+      const spd = 65 + this.random() * 150;
       this.looseParts.push({
         x,
         y,
         vx: Math.cos(ang) * spd,
         vy: Math.sin(ang) * spd,
-        rot: Math.random() * Math.PI * 2,
-        vRot: (Math.random() - 0.5) * 12,
+        rot: this.random() * Math.PI * 2,
+        vRot: (this.random() - 0.5) * 12,
         color: i % 2 === 0 ? bodyColor : '#71717A',
         life: 3.2,
         maxLife: 3.2

@@ -6,7 +6,8 @@ export type ActiveGameId =
   | 'HOT_CORE'
   | 'VOLT_CROWN'
   | 'HEX_CRUSH'
-  | 'RICOCHET_1';
+  | 'RICOCHET_1'
+  | 'CARGO_CREW';
 
 export type ChaosMutatorId =
   | 'NONE'
@@ -76,11 +77,19 @@ export const CHAOS_MUTATORS: Record<ChaosMutatorId, ChaosMutatorDef> = {
   }
 };
 
+export type TournamentGameId = Exclude<ActiveGameId, 'HUB' | 'CHAIN_PANIC' | 'CARGO_CREW'>;
+
+export interface TournamentOptions {
+  totalRounds: 3 | 5 | 7;
+  games: TournamentGameId[];
+  mutatorsEnabled: boolean;
+}
+
 export interface TournamentMatchState {
   elapsedSeconds?: number;
   pendingNextRound?: boolean;
   active: boolean;
-  roundIndex: number; // 0..4
+  roundIndex: number;
   totalRounds: number;
   gameSequence: ActiveGameId[];
   mutators: ChaosMutatorId[];
@@ -91,10 +100,17 @@ export interface TournamentMatchState {
   rouletteTimer: number;
   isFinished: boolean;
   champId: number | null;
+  options: TournamentOptions;
+  preparing: boolean;
+  preparationId: number;
+  requiredSlots: number[];
+  readySlots: number[];
+  countdown: number;
+  matchStats: MatchStats[];
 }
 export type RoundPhase = 'PLAYING' | 'CARD_DRAFT' | 'MATCH_OVER';
 export type BotDifficulty = 'CHILL' | 'NORMAL' | 'PRO' | 'OFF';
-export type CourtLayout = 'CLASSIC' | 'PINBALL' | 'CORE';
+export type CourtLayout = 'CLASSIC' | 'PINBALL' | 'CORE' | 'CROSS';
 
 export interface HardwareMod {
   id: string;
@@ -114,7 +130,28 @@ export interface PinballBumper {
 
 export type RobotHatId = 'NONE' | 'CROWN' | 'CONE' | 'RADAR' | 'PROP' | 'VIKING' | 'HEADPHONES';
 export type RobotVisorId = 'CYAN' | 'AMBER' | 'EMERALD' | 'MAGENTA' | 'RED' | 'WHITE';
-export type RobotSkinId = 'STOCK' | 'STEALTH' | 'WARNING' | 'VAPOR';
+export type RobotSkinId = 'STOCK' | 'STEALTH' | 'WARNING' | 'VAPOR' | 'RESCUE' | 'CHAMPION' | 'CHROME' | 'FREIGHT';
+
+export interface MatchStats {
+  parries: number;
+  perfectParries: number;
+  streak: number;
+  bestStreak: number;
+  rescues: number;
+  crownSeconds: number;
+  deliveries: number;
+}
+
+export interface SessionResult {
+  id: string;
+  gameId: ActiveGameId | 'TOURNAMENT';
+  title: string;
+  cooperative: boolean;
+  durationSeconds: number;
+  winnerSlots: number[];
+  players: Array<{ slot: number; name: string; isBot: boolean; score: number; stats: MatchStats }>;
+  highlights: Array<{ slot: number; title: string; value: number; unit: string }>;
+}
 
 export interface RobotCosmetics {
   hat: RobotHatId;
@@ -224,6 +261,24 @@ export interface FloatingCallout {
 
 export type ChainGameMode = 'COOP' | 'SABOTAGE';
 
+export interface ChainCampaignState {
+  active: boolean;
+  completed: boolean;
+  runId: string;
+  checkpointUnlocked: boolean;
+  elapsedSeconds: number;
+  sectorSeconds: number;
+  sectorTimes: number[];
+  sectorWipes: number[];
+  rescues: number[];
+}
+
+export interface ChainCampaignSave {
+  version: 1;
+  levelIndex: number;
+  campaign: ChainCampaignState;
+}
+
 export interface ChainPlayerState {
   id: number;
   name: string;
@@ -277,6 +332,38 @@ export interface HeavyBattery {
   delivered: boolean;
 }
 
+export interface CargoPlayer extends ChainPlayerState {
+  gripping: boolean;
+  toolCooldown: number;
+}
+
+export interface CargoFeedback {
+  seq: number;
+  kind: 'PIT' | 'FALL' | 'CRANE' | 'REPAIR' | 'CHECKPOINT' | 'DELIVERY' | 'RECOVER';
+  text: string;
+  atSeconds: number;
+}
+
+export interface CargoSnapshot extends SimulationSnapshotMetadata {
+  routeIndex?: number;
+  stageDamage?: number[];
+  stageRepairs?: number[];
+  feedback?: CargoFeedback | null;
+  stageIndex: number;
+  status: 'PLAYING' | 'STAGE_CLEAR' | 'RECOVERING' | 'ROUTE_COMPLETE';
+  statusTimer: number;
+  elapsedSeconds: number;
+  stageSeconds: number;
+  stageTimes: number[];
+  integrity: number;
+  damageTaken: number;
+  retries: number;
+  checkpoint: boolean;
+  players: CargoPlayer[];
+  battery: HeavyBattery;
+  switches: PressureSwitch[];
+}
+
 export interface RotaryLaser {
   cx: number;
   cy: number;
@@ -313,10 +400,11 @@ export interface SimulationSnapshotMetadata {
 }
 
 export interface ChainPanicSnapshot extends SimulationSnapshotMetadata {
+  campaign?: ChainCampaignState;
   levelIndex: number;
   levelTitle: string;
   mode: ChainGameMode;
-  status: 'PLAYING' | 'LEVEL_CLEAR' | 'TEAM_WIPE';
+  status: 'PLAYING' | 'LEVEL_CLEAR' | 'TEAM_WIPE' | 'CAMPAIGN_COMPLETE';
   statusTimer: number;
   doorOpen: boolean;
   windWarning: boolean;
@@ -602,6 +690,8 @@ export interface VoltPressurePlate {
 }
 
 export interface VoltCrownSnapshot extends SimulationSnapshotMetadata {
+  mode?: 'FFA' | 'TEAMS';
+  teamScores?: number[];
   arenaIndex: number;
   arenaTitle: string;
   status: 'PLAYING' | 'ROUND_OVER' | 'MATCH_OVER';
@@ -780,6 +870,8 @@ export interface RicochetSnapshot extends SimulationSnapshotMetadata {
 }
 
 export interface ClientInputPacket {
+  /** Cancel held abilities before applying neutral controls when opening local panels. */
+  cancelHeldActions?: boolean;
   inputSeq?: number;
   lastSeenSnapshotSeq?: number;
   /** Assigned by the host from measured RTT; never trusted from a remote payload. */
@@ -810,6 +902,9 @@ export interface ClientInputPacket {
 }
 
 export interface WorldSnapshotPacket extends SimulationSnapshotMetadata {
+  gameVote?: import('./game/partyVote').PartyVote;
+  challenge?: import('./game/sharedChallenge').SharedChallenge | null;
+  sessionResult?: SessionResult | null;
   snapshotSeq?: number;
   hostEpoch?: string;
   hitStopTimer?: number;
@@ -829,6 +924,7 @@ export interface WorldSnapshotPacket extends SimulationSnapshotMetadata {
   balls: GyroBallState[];
   bumpers: PinballBumper[];
   chainState?: ChainPanicSnapshot;
+  cargoState?: CargoSnapshot;
   puttState?: PuttWarSnapshot;
   hotCoreState?: HotCoreSnapshot;
   voltCrownState?: VoltCrownSnapshot;

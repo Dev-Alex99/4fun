@@ -1,10 +1,15 @@
+import { validVote } from '../game/partyVote';
+import { validChallenge, validChallengeCode } from '../game/sharedChallenge';
 import type { ClientInputPacket, RobotCosmetics } from '../types';
+import { validTournamentOptions } from '../game/tournamentRules';
+import { validCampaignSave, validCampaignState } from '../game/chainCampaign';
+import { validMatchStats, validSessionResult } from '../game/matchResults';
 
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 5;
 export const MAX_MESSAGE_CHARS = 256 * 1024;
-export const GAME_IDS = ['HUB', 'BASH_BOT', 'CHAIN_PANIC', 'TURBO_PUTT', 'HOT_CORE', 'VOLT_CROWN', 'HEX_CRUSH', 'RICOCHET_1'];
+export const GAME_IDS = ['HUB', 'BASH_BOT', 'CHAIN_PANIC', 'TURBO_PUTT', 'HOT_CORE', 'VOLT_CROWN', 'HEX_CRUSH', 'RICOCHET_1', 'CARGO_CREW'];
 export const BOT_LEVELS = ['CHILL', 'NORMAL', 'PRO', 'OFF'];
-export const MESSAGE_TYPES = ['JOIN_CLAIM', 'SLOT_ASSIGN', 'GAME_SWITCH', 'ROOM_ACTION', 'CLIENT_INPUT', 'WORLD_SNAP', 'DRAFT_PICK', 'KICK_PEER', 'PEER_LEAVE', 'ROOM_EVENT', 'PING_REQ', 'PING_ACK'];
+export const MESSAGE_TYPES = ['JOIN_CLAIM', 'SLOT_ASSIGN', 'GAME_SWITCH', 'ROOM_ACTION', 'CLIENT_INPUT', 'WORLD_SNAP', 'DRAFT_PICK', 'TOURNAMENT_READY', 'GAME_VOTE', 'KICK_PEER', 'PEER_LEAVE', 'ROOM_EVENT', 'PING_REQ', 'PING_ACK'];
 export const record = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 export const finite = (v: unknown, min = -1e7, max = 1e7): v is number => typeof v === 'number' && Number.isFinite(v) && v >= min && v <= max;
 export const integer = (v: unknown, min = 0, max = Number.MAX_SAFE_INTEGER): v is number => finite(v, min, max) && Number.isSafeInteger(v);
@@ -16,7 +21,7 @@ export const cleanName = (v: string): string => cleanText(v, 10).trim().toUpperC
 export function validCosmetics(v: unknown): v is RobotCosmetics {
   return record(v) && ['NONE', 'CROWN', 'CONE', 'RADAR', 'PROP', 'VIKING', 'HEADPHONES'].includes(String(v.hat)) &&
     ['CYAN', 'AMBER', 'EMERALD', 'MAGENTA', 'RED', 'WHITE'].includes(String(v.visor)) &&
-    ['STOCK', 'STEALTH', 'WARNING', 'VAPOR'].includes(String(v.skin));
+    ['STOCK', 'STEALTH', 'WARNING', 'VAPOR', 'RESCUE', 'CHAMPION', 'CHROME', 'FREIGHT'].includes(String(v.skin));
 }
 
 /** Bounded JSON only: reject cycles, nonfinite numbers and prototype-bearing keys before dispatch. */
@@ -44,7 +49,7 @@ export function validInput(v: unknown): v is ClientInputPacket {
       typeof v.parryPressed !== 'boolean' || typeof v.chargingParry !== 'boolean' || typeof v.dashPressed !== 'boolean' ||
       !integer(v.emotePressed, 0, 4) || !finite(v.clientBallDist, 0, 100000)) return false;
   for (const key of ['inputSeq', 'actionSeq', 'stateSeq', 'lastSeenSnapshotSeq', 'roundEpoch']) if (v[key] !== undefined && !integer(v[key], 0)) return false;
-  for (const key of ['yankPressed', 'anchorHeld', 'feintPrimed']) if (v[key] !== undefined && typeof v[key] !== 'boolean') return false;
+  for (const key of ['yankPressed', 'anchorHeld', 'feintPrimed', 'cancelHeldActions']) if (v[key] !== undefined && typeof v[key] !== 'boolean') return false;
   for (const key of ['clientX', 'clientY', 'clientZ']) if (v[key] !== undefined && !finite(v[key], -10000, 10000)) return false;
   if (v.shotReleasedPower !== undefined && !finite(v.shotReleasedPower, 0, 1)) return false;
   if (v.sentAtMs !== undefined && !finite(v.sentAtMs, 0, 1e15)) return false;
@@ -54,22 +59,30 @@ export function validInput(v: unknown): v is ClientInputPacket {
 export function validAction(v: unknown): boolean {
   if (!record(v)) return false;
   switch (v.kind) {
+    case 'CARGO_ROUTE': return integer(v.cargoRoute, 0, 2);
+    case 'START_CHALLENGE': return validChallengeCode(v.challengeCode);
     case 'BOT_DIFF': return BOT_LEVELS.includes(String(v.botDifficulty));
     case 'CHAIN_MODE': return v.chainMode === 'COOP' || v.chainMode === 'SABOTAGE';
+    case 'VOLT_MODE': return v.voltMode === 'FFA' || v.voltMode === 'TEAMS';
+    case 'START_CAMPAIGN': return v.campaignSave === undefined || validCampaignSave(v.campaignSave);
     case 'LOAD_STAGE': return ['levelIndex', 'holeIndex', 'arenaIndex'].some(k => v[k] !== undefined) &&
       ['levelIndex', 'holeIndex', 'arenaIndex'].every(k => v[k] === undefined || integer(v[k], 0, 50));
-    case 'RESET_MATCH': case 'START_TOURNAMENT': case 'STOP_TOURNAMENT': return true;
+    case 'START_TOURNAMENT': return (v.tournamentOptions === undefined || validTournamentOptions(v.tournamentOptions)) &&
+      (v.replaySame === undefined || typeof v.replaySame === 'boolean');
+    case 'RESET_MATCH': case 'STOP_TOURNAMENT': return true;
     default: return false;
   }
 }
 
 /** Check the fixed player roster and required structure before an engine can consume a snapshot. */
 export function validSnapshot(v: unknown): boolean {
+  if (record(v) && ((v.gameVote !== undefined && !validVote(v.gameVote)) || (v.challenge !== undefined && v.challenge !== null && !validChallenge(v.challenge)))) return false;
+  if (record(v) && v.sessionResult !== undefined && v.sessionResult !== null && !validSessionResult(v.sessionResult, GAME_IDS)) return false;
   if (!record(v) || !GAME_IDS.includes(String(v.activeGame)) || !integer(v.stateSeq, 1) ||
       !integer(v.snapshotSeq, 1) || !peerId(v.hostEpoch) || !integer(v.tick) ||
       (v.hostName !== undefined && !text(v.hostName, 80)) || !BOT_LEVELS.includes(String(v.botDifficulty)) ||
       !['PLAYING', 'CARD_DRAFT', 'MATCH_OVER'].includes(String(v.phase)) ||
-      !['CLASSIC', 'PINBALL', 'CORE'].includes(String(v.courtLayout)) ||
+      !['CLASSIC', 'PINBALL', 'CORE', 'CROSS'].includes(String(v.courtLayout)) ||
       !finite(v.roundTimer) || typeof v.multiballActive !== 'boolean' || !finite(v.comboCount, 0) ||
       !Array.isArray(v.draftOptions) || !v.draftOptions.every(x => text(x, 96)) ||
       !entityArray(v.balls, 'id x y z vx vy speed baseSpeed radius rotation targetId ownerId passId curveSpin') ||
@@ -77,11 +90,12 @@ export function validSnapshot(v: unknown): boolean {
       !(v.lastRoundWinnerId === null || integer(v.lastRoundWinnerId, 0, 3))) return false;
   if (v.inputAcks !== undefined && !(Array.isArray(v.inputAcks) && v.inputAcks.length === 4 && v.inputAcks.every(ack => ack === null ||
       (Array.isArray(ack) && ack.length === 2 && integer(ack[0], 1) && integer(ack[1], 0, 600000))))) return false;
-  for (const k of ['chainState', 'puttState', 'hotCoreState', 'voltCrownState', 'hexCrushState', 'ricochetState']) {
+  for (const k of ['chainState', 'puttState', 'hotCoreState', 'voltCrownState', 'hexCrushState', 'ricochetState', 'cargoState']) {
     if (v[k] !== undefined && (!record(v[k]) || !validPlayers(v[k].players, k))) return false;
   }
   const states: Record<string, [string, string[]]> = {
     CHAIN_PANIC: ['chainState', ['switches', 'lasers', 'rotaryLasers', 'fragileTiles']],
+    CARGO_CREW: ['cargoState', ['switches']],
     TURBO_PUTT: ['puttState', ['bombs', 'crates', 'bumpers', 'windmills', 'explosions']],
     HOT_CORE: ['hotCoreState', ['bumpers', 'pillars', 'boostPads', 'explosions']],
     VOLT_CROWN: ['voltCrownState', ['projectiles', 'traps', 'plates', 'bumpers', 'explosions']],
@@ -94,13 +108,24 @@ export function validSnapshot(v: unknown): boolean {
     if (!record(state) || !text(state.status, 20) || !finite(state.statusTimer) || required[1].some(k => !Array.isArray(state[k]))) return false;
     const scalarFields: Record<string, string> = {
       CHAIN_PANIC: 'levelIndex statusTimer windForceY completions wipes',
+      CARGO_CREW: 'stageIndex statusTimer elapsedSeconds stageSeconds integrity damageTaken retries',
       TURBO_PUTT: 'holeIndex par hurryTimer statusTimer cupX cupY cupRadius',
       HOT_CORE: 'arenaIndex statusTimer', VOLT_CROWN: 'arenaIndex statusTimer', HEX_CRUSH: 'arenaIndex statusTimer', RICOCHET_1: 'arenaIndex statusTimer'
     };
     if (!numbers(state, scalarFields[String(v.activeGame)])) return false;
-    const statuses = v.activeGame === 'CHAIN_PANIC' ? ['PLAYING', 'LEVEL_CLEAR', 'TEAM_WIPE'] :
+    const statuses = v.activeGame === 'CARGO_CREW' ? ['PLAYING', 'STAGE_CLEAR', 'RECOVERING', 'ROUTE_COMPLETE'] : v.activeGame === 'CHAIN_PANIC' ? ['PLAYING', 'LEVEL_CLEAR', 'TEAM_WIPE', 'CAMPAIGN_COMPLETE'] :
       v.activeGame === 'TURBO_PUTT' ? ['PLAYING', 'HOLE_COMPLETE'] : ['PLAYING', 'ROUND_OVER', 'MATCH_OVER'];
     if (!statuses.includes(state.status)) return false;
+    if (state.campaign !== undefined && !validCampaignState(state.campaign)) return false;
+    if (v.activeGame === 'CARGO_CREW' && (!integer(state.stageIndex, 0, 2) || !finite(state.integrity, 0, 100) || typeof state.checkpoint !== 'boolean' ||
+      !record(state.battery) || !Array.isArray(state.stageTimes) || state.stageTimes.length > 3 || !state.stageTimes.every(t => finite(t, 0)))) return false;
+    if (v.activeGame === 'CARGO_CREW' && ['stageDamage', 'stageRepairs'].some(k => state[k] !== undefined && (!Array.isArray(state[k]) || state[k].length > 3 || !state[k].every(n => finite(n, 0, 1e9))))) return false;
+    if (v.activeGame === 'CARGO_CREW' && state.routeIndex !== undefined && !integer(state.routeIndex, 0, 2)) return false;
+    if (v.activeGame === 'CARGO_CREW' && state.feedback !== undefined && state.feedback !== null &&
+      (!record(state.feedback) || !integer(state.feedback.seq, 1) || !['PIT', 'FALL', 'CRANE', 'REPAIR', 'CHECKPOINT', 'DELIVERY', 'RECOVER'].includes(String(state.feedback.kind)) ||
+        !text(state.feedback.text, 180) || !finite(state.feedback.atSeconds, 0))) return false;
+    if (v.activeGame === 'VOLT_CROWN' && ((state.mode !== undefined && !['FFA', 'TEAMS'].includes(String(state.mode))) ||
+      (state.teamScores !== undefined && (!Array.isArray(state.teamScores) || state.teamScores.length !== 2 || !state.teamScores.every(score => finite(score, 0, 100)))))) return false;
     if (v.activeGame === 'HOT_CORE' && !record(state.core)) return false;
     if (v.activeGame === 'VOLT_CROWN' && !record(state.crown)) return false;
     const numericArrays: Record<string, string> = {
@@ -125,9 +150,17 @@ export function validSnapshot(v: unknown): boolean {
         !Array.isArray(t.scores) || t.scores.length !== 4 || !t.scores.every(s => finite(s, 0)) ||
         !Array.isArray(t.gameSequence) || !t.gameSequence.every(g => GAME_IDS.includes(String(g))) ||
         !Array.isArray(t.mutators) || !t.mutators.every(m => text(m, 40)) || !text(t.currentMutator, 40) || !text(t.rouletteDisplayId, 40) ||
-        !(t.champId === null || integer(t.champId, 0, 3))) return false;
+        !(t.champId === null || integer(t.champId, 0, 3)) || !validTournamentOptions(t.options) ||
+        typeof t.preparing !== 'boolean' || !integer(t.preparationId) || !finite(t.countdown, 0, 3) ||
+        !slotList(t.requiredSlots) || !slotList(t.readySlots) || !Array.isArray(t.matchStats) || t.matchStats.length !== 4 || !t.matchStats.every(validMatchStats)) return false;
+    const requiredSlots = t.requiredSlots;
+    if (!t.readySlots.every(id => requiredSlots.includes(id))) return false;
   }
   return true;
+}
+
+function slotList(value: unknown): value is number[] {
+  return Array.isArray(value) && value.length <= 4 && new Set(value).size === value.length && value.every(id => integer(id, 0, 3));
 }
 
 function numbers(v: Record<string, unknown>, fields: string): boolean {
@@ -142,6 +175,7 @@ function validPlayers(v: unknown, kind: string): boolean {
   const numeric: Record<string, string> = {
     base: 'score walkCycle tiltX parryTimer parryCooldown chargeTime batSwingDir dashTimer dashCooldown aimAngle emoteTimer botEvaluatedPassId botTriggerDist parryRadiusMult parryWindowBonus curvePower dashCooldownMult speedMult smashPower',
     chainState: 'z vz dangleTime yankCooldown walkCycle emoteTimer',
+    cargoState: 'z vz dangleTime yankCooldown walkCycle emoteTimer toolCooldown',
     puttState: 'lastSafeX lastSafeY aimAngle chargePower puttCooldown bombCooldown shockwaveCooldown anvilTimer strokes totalPoints sunkOrder emoteTimer botShotTimer',
     hotCoreState: 'score aimAngle walkCycle shieldTimer shieldCooldown dashTimer dashCooldown empCooldown passImmunityTimer emoteTimer',
     voltCrownState: 'score holdStreak aimAngle walkCycle shieldTimer shieldCooldown dashTimer dashCooldown taserCooldown stunTimer immunityTimer emoteTimer',
@@ -150,6 +184,7 @@ function validPlayers(v: unknown, kind: string): boolean {
   };
   const booleans: Record<string, string> = {
     base: 'alive feintPrimed botWillParry dashShockwave magnetPull', chainState: 'isSaboteur onGround isDangling isAnchored',
+    cargoState: 'isSaboteur onGround isDangling isAnchored gripping',
     puttState: 'isCharging sunkInCup', hotCoreState: 'alive', voltCrownState: 'alive', hexCrushState: 'alive isGroundPounding', ricochetState: 'alive'
   };
   return Array.isArray(v) && v.length === 4 && v.every((p, i) => {

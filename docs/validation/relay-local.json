@@ -1,0 +1,269 @@
+{
+  "experiment": "Four real PeerJS/WebRTC peers in one Firefox page through local authenticated Coturn",
+  "scope": "BASH movement only; no combat, balls or bots",
+  "impairments": "Application messages before DataConnection.send, not UDP/SCTP packet loss",
+  "limits": "Same device, loopback ICE test profile and local signaling. No WAN, NAT diversity, Safari/iOS or human playtesting verified.",
+  "runs": [
+    {
+      "capturedAt": "2026-10-25T23:01:39.255280+00:00",
+      "profile": "base",
+      "protocolVersion": 5,
+      "completed": true,
+      "movementConverged": true,
+      "relayVerified": true,
+      "durationSeconds": 15,
+      "addedRttMs": 0,
+      "jitterPerMessageMs": 0,
+      "dropProbability": 0,
+      "controlledOutageTriggered": false,
+      "clients": [
+        {
+          "slot": 1,
+          "connection": "CONNECTED_CLIENT",
+          "synchronized": true,
+          "rosterMatches": true,
+          "roundMatches": true,
+          "acceptedSnapshots": 267,
+          "snapshotAgeMs": 33,
+          "protocolPingMs": 1,
+          "selectedIcePairs": [
+            {
+              "local": "relay",
+              "remote": "relay",
+              "relay": true,
+              "state": "succeeded",
+              "rttMs": 0
+            }
+          ],
+          "localErrorNow": 0,
+          "remoteErrorNow": 0,
+          "sent": 286,
+          "artificiallyDropped": 0,
+          "transportErrors": []
+        },
+        {
+          "slot": 2,
+          "connection": "CONNECTED_CLIENT",
+          "synchronized": true,
+          "rosterMatches": true,
+          "roundMatches": true,
+          "acceptedSnapshots": 266,
+          "snapshotAgeMs": 33,
+          "protocolPingMs": 1,
+          "selectedIcePairs": [
+            {
+              "local": "relay",
+              "remote": "relay",
+              "relay": true,
+              "state": "succeeded",
+              "rttMs": 0
+            }
+          ],
+          "localErrorNow": 0,
+          "remoteErrorNow": 0,
+          "sent": 286,
+          "artificiallyDropped": 0,
+          "transportErrors": []
+        },
+        {
+          "slot": 3,
+          "connection": "CONNECTED_CLIENT",
+          "synchronized": true,
+          "rosterMatches": true,
+          "roundMatches": true,
+          "acceptedSnapshots": 264,
+          "snapshotAgeMs": 33,
+          "protocolPingMs": 1,
+          "selectedIcePairs": [
+            {
+              "local": "relay",
+              "remote": "relay",
+              "relay": true,
+              "state": "succeeded",
+              "rttMs": 0
+            }
+          ],
+          "localErrorNow": 0,
+          "remoteErrorNow": 0,
+          "sent": 286,
+          "artificiallyDropped": 0,
+          "transportErrors": []
+        }
+      ]
+    },
+    {
+      "capturedAt": "2026-10-25T23:03:49.992690+00:00",
+      "profile": "moderate",
+      "protocolVersion": 5,
+      "completed": true,
+      "movementConverged": true,
+      "relayVerified": true,
+      "durationSeconds": 18,
+      "addedRttMs": 200,
+      "jitterPerMessageMs": 60,
+      "dropProbability": 0.05,
+      "controlledOutageTriggered": false,
+      "clients": [
+        {
+          "slot": 1,
+          "connection": "CONNECTED_CLIENT",
+          "synchronized": true,
+          "rosterMatches": true,
+          "roundMatches": true,
+          "acceptedSnapshots": 319,
+          "snapshotAgeMs": 1,
+          "protocolPingMs": 186,
+          "selectedIcePairs": [
+            {
+              "local": "relay",
+              "remote": "relay",
+              "relay": true,
+              "state": "succeeded",
+              "rttMs": 0
+            }
+          ],
+          "localErrorNow": 0,
+          "remoteErrorNow": 0.01,
+          "sent": 326,
+          "artificiallyDropped": 14,
+          "transportErrors": []
+        },
+        {
+          "slot": 2,
+          "connection": "CONNECTED_CLIENT",
+          "synchronized": true,
+          "rosterMatches": true,
+          "roundMatches": true,
+          "acceptedSnapshots": 318,
+          "snapshotAgeMs": 1,
+          "protocolPingMs": 181,
+          "selectedIcePairs": [
+            {
+              "local": "relay",
+              "remote": "relay",
+              "relay": true,
+              "state": "succeeded",
+              "rttMs": 0
+            }
+          ],
+          "localErrorNow": 0,
+          "remoteErrorNow": 0.01,
+          "sent": 325,
+          "artificiallyDropped": 14,
+          "transportErrors": []
+        },
+        {
+          "slot": 3,
+          "connection": "CONNECTED_CLIENT",
+          "synchronized": true,
+          "rosterMatches": true,
+          "roundMatches": true,
+          "acceptedSnapshots": 317,
+          "snapshotAgeMs": 1,
+          "protocolPingMs": 181,
+          "selectedIcePairs": [
+            {
+              "local": "relay",
+              "remote": "relay",
+              "relay": true,
+              "state": "succeeded",
+              "rttMs": 0
+            }
+          ],
+          "localErrorNow": 0,
+          "remoteErrorNow": 0.01,
+          "sent": 324,
+          "artificiallyDropped": 15,
+          "transportErrors": []
+        }
+      ]
+    },
+    {
+      "capturedAt": "2026-10-25T23:02:21.823390+00:00",
+      "profile": "outage",
+      "protocolVersion": 5,
+      "completed": true,
+      "movementConverged": true,
+      "relayVerified": true,
+      "durationSeconds": 18,
+      "addedRttMs": 0,
+      "jitterPerMessageMs": 0,
+      "dropProbability": 0,
+      "controlledOutageTriggered": true,
+      "clients": [
+        {
+          "slot": 1,
+          "connection": "CONNECTED_CLIENT",
+          "synchronized": true,
+          "rosterMatches": true,
+          "roundMatches": true,
+          "acceptedSnapshots": 225,
+          "snapshotAgeMs": 0,
+          "protocolPingMs": 1,
+          "selectedIcePairs": [
+            {
+              "local": "relay",
+              "remote": "relay",
+              "relay": true,
+              "state": "succeeded",
+              "rttMs": 0
+            }
+          ],
+          "localErrorNow": 0.01,
+          "remoteErrorNow": 0.01,
+          "sent": 240,
+          "artificiallyDropped": 0,
+          "transportErrors": []
+        },
+        {
+          "slot": 3,
+          "connection": "CONNECTED_CLIENT",
+          "synchronized": true,
+          "rosterMatches": true,
+          "roundMatches": true,
+          "acceptedSnapshots": 318,
+          "snapshotAgeMs": 0,
+          "protocolPingMs": 1,
+          "selectedIcePairs": [
+            {
+              "local": "relay",
+              "remote": "relay",
+              "relay": true,
+              "state": "succeeded",
+              "rttMs": 0
+            }
+          ],
+          "localErrorNow": 0.01,
+          "remoteErrorNow": 0.01,
+          "sent": 342,
+          "artificiallyDropped": 0,
+          "transportErrors": []
+        },
+        {
+          "slot": 2,
+          "connection": "CONNECTED_CLIENT",
+          "synchronized": true,
+          "rosterMatches": true,
+          "roundMatches": true,
+          "acceptedSnapshots": 320,
+          "snapshotAgeMs": 0,
+          "protocolPingMs": 1,
+          "selectedIcePairs": [
+            {
+              "local": "relay",
+              "remote": "relay",
+              "relay": true,
+              "state": "succeeded",
+              "rttMs": 0
+            }
+          ],
+          "localErrorNow": 0,
+          "remoteErrorNow": 0.01,
+          "sent": 342,
+          "artificiallyDropped": 0,
+          "transportErrors": []
+        }
+      ]
+    }
+  ]
+}

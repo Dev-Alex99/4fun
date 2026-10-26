@@ -213,10 +213,13 @@ class FakeAudioContext {
   state = 'running';
   destination = {};
   starts: number[] = [];
+  gains: ReturnType<FakeAudioContext['createGain']>[] = [];
   closed = false;
   constructor() { FakeAudioContext.instances.push(this); }
-  param() { return { setValueAtTime() {}, exponentialRampToValueAtTime() {}, cancelScheduledValues() {} }; }
-  createGain() { return { gain: this.param(), connect() {}, disconnect() {} }; }
+  param() { return { setValueAtTime: vi.fn(), exponentialRampToValueAtTime: vi.fn(), linearRampToValueAtTime: vi.fn(), setTargetAtTime: vi.fn(), cancelScheduledValues: vi.fn() }; }
+  createGain(): { gain: ReturnType<FakeAudioContext['param']>; connect(): void; disconnect(): void } {
+    const node = { gain: this.param(), connect() {}, disconnect() {} }; this.gains.push(node); return node;
+  }
   source() { return { connect() {}, frequency: this.param(), start: (time: number) => { this.starts.push(time); }, stop() {} }; }
   createOscillator() { return this.source(); }
   createBufferSource() { return this.source(); }
@@ -227,6 +230,16 @@ class FakeAudioContext {
 }
 
 describe('Audio and persistence recovery', () => {
+  it('supports true zero music volume before playback and clamps live volume changes', () => {
+    vi.useFakeTimers(); localStorage.clear(); FakeAudioContext.instances.length = 0;
+    vi.stubGlobal('AudioContext', FakeAudioContext);
+    const engine = new ProceduralChiptuneEngine(); engine.setVolume(0); engine.toggle();
+    const gain = FakeAudioContext.instances[0].gains[0].gain;
+    expect(gain.linearRampToValueAtTime).toHaveBeenCalledWith(0, 0.4);
+    engine.setVolume(2); expect(gain.setTargetAtTime).toHaveBeenLastCalledWith(1, 0, 0.02);
+    engine.setVolume(-1); expect(gain.setTargetAtTime).toHaveBeenLastCalledWith(0, 0, 0.02);
+    engine.dispose();
+  });
   it('continues without exceptions when access to storage is denied', () => {
     const getter = vi.spyOn(window, 'localStorage', 'get').mockImplementation(() => { throw new DOMException('Denied', 'SecurityError'); });
     const engine = new ProceduralChiptuneEngine();

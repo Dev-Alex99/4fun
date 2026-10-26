@@ -263,7 +263,26 @@ const ARENA_MIN_Y = 66;
 const ARENA_MAX_Y = 450;
 const WINNING_BATTERY = 100;
 
+VOLT_CROWN_ARENAS.push({ title: 'SECTOR 05 // INTERCAMBIADOR DE CORONAS',
+  bumpers: [{ x: 390, y: 155, radius: 25 }, { x: 610, y: 361, radius: 25 }],
+  traps: VOLT_CROWN_ARENAS[2].traps.filter(t => t.type === 'CONVEYOR').map((t, i) => ({ ...t, id: 'cross-belt-' + i,
+    x: i ? 600 : 330, y: 150, w: 65, h: 216, dirX: 0, dirY: i ? -180 : 180 })), plates: [] });
+
 export class VoltCrownEngine extends ChaosPhysics {
+  public mode: 'FFA' | 'TEAMS' = 'FFA';
+  public teamScores = [0, 0];
+
+  public teamFor(slot: number): number { return slot % 2; }
+  public areAllies(first: number, second: number): boolean { return this.mode === 'TEAMS' && this.teamFor(first) === this.teamFor(second); }
+  public get winningTeam(): number | null { return this.mode === 'TEAMS' && this.lastWinnerId !== null ? this.teamFor(this.lastWinnerId) : null; }
+
+  private chargeBattery(player: VoltCrownPlayer, amount: number): void {
+    if (this.mode === 'TEAMS') {
+      const team = this.teamFor(player.id);
+      this.teamScores[team] = Math.min(WINNING_BATTERY, this.teamScores[team] + amount);
+      this.players.filter(p => this.teamFor(p.id) === team).forEach(p => { p.score = this.teamScores[team]; });
+    } else player.score = Math.min(WINNING_BATTERY, player.score + amount);
+  }
   public arenaIndex = 0;
   public arenaTitle = VOLT_CROWN_ARENAS[0].title;
   public status: 'PLAYING' | 'ROUND_OVER' | 'MATCH_OVER' = 'PLAYING';
@@ -360,6 +379,8 @@ export class VoltCrownEngine extends ChaosPhysics {
   }
 
   public resetChampionship(): void {
+    this.resetMatchStats();
+    this.teamScores = [0, 0];
     this.players.forEach((p) => {
       p.score = 0;
       p.holdStreak = 0;
@@ -517,7 +538,7 @@ export class VoltCrownEngine extends ChaosPhysics {
       sfx.playBatParry(2, true, false);
 
       this.players.forEach((other) => {
-        if (other.id !== p.id && other.alive) {
+        if (other.id !== p.id && other.alive && !this.areAllies(p.id, other.id)) {
           const dx = other.x - p.x;
           const dy = other.y - p.y;
           const dist = Math.hypot(dx, dy) || 1;
@@ -569,6 +590,7 @@ export class VoltCrownEngine extends ChaosPhysics {
   }
 
   private reflectProjectile(proj: VoltProjectile, defender: VoltCrownPlayer): void {
+    this.noteParry(defender.id, true);
     proj.isReflected = true;
     const attacker = this.players[proj.ownerId];
     proj.ownerId = defender.id;
@@ -594,7 +616,7 @@ export class VoltCrownEngine extends ChaosPhysics {
     this.crown.x = victim.x;
     this.crown.y = victim.y;
 
-    const angle = Math.atan2(impulseY, impulseX) || Math.random() * Math.PI * 2;
+    const angle = Math.atan2(impulseY, impulseX) || this.random() * Math.PI * 2;
     const pwr = Math.max(340, Math.hypot(impulseX, impulseY));
     this.crown.vx = Math.cos(angle) * pwr;
     this.crown.vy = Math.sin(angle) * pwr;
@@ -628,7 +650,7 @@ export class VoltCrownEngine extends ChaosPhysics {
   }
 
   private triggerVoltOvercharge(king: VoltCrownPlayer): void {
-    king.score = Math.min(WINNING_BATTERY, king.score + 15);
+    this.chargeBattery(king, 15);
     king.holdStreak = 0;
     this.screenShake = 18;
 
@@ -643,7 +665,7 @@ export class VoltCrownEngine extends ChaosPhysics {
     sfx.playKODisassembly();
 
     this.players.forEach((other) => {
-      if (other.id !== king.id && other.alive) {
+      if (other.id !== king.id && other.alive && !this.areAllies(king.id, other.id)) {
         const dx = other.x - king.x;
         const dy = other.y - king.y;
         const d = Math.hypot(dx, dy) || 1;
@@ -856,17 +878,18 @@ export class VoltCrownEngine extends ChaosPhysics {
 
       // King charges battery score per second
       if (isKing) {
-        p.score = Math.min(WINNING_BATTERY, p.score + dt * 3.6);
+        this.matchStats[p.id].crownSeconds += dt;
+        this.chargeBattery(p, dt * 3.6);
         p.holdStreak += dt;
 
         // Visual King Overdrive trail when holding crown at high charge
-        if (p.score >= 50 && Math.random() < 0.35) {
+        if (p.score >= 50 && this.random() < 0.35) {
           this.particles.push({
             type: 'spark',
-            x: p.x + (Math.random() - 0.5) * 14,
-            y: p.y + (Math.random() - 0.5) * 14,
-            vx: -p.vx * 0.25 + (Math.random() - 0.5) * 60,
-            vy: -p.vy * 0.25 + (Math.random() - 0.5) * 60,
+            x: p.x + (this.random() - 0.5) * 14,
+            y: p.y + (this.random() - 0.5) * 14,
+            vx: -p.vx * 0.25 + (this.random() - 0.5) * 60,
+            vy: -p.vy * 0.25 + (this.random() - 0.5) * 60,
             life: 0.35,
             decay: 1.0,
             color: '#FACC15',
@@ -1014,7 +1037,7 @@ export class VoltCrownEngine extends ChaosPhysics {
       // Check Player Hits
       let hit = false;
       for (const p of participants) {
-        if (!p.alive || p.id === proj.ownerId) continue;
+        if (!p.alive || p.id === proj.ownerId || this.areAllies(p.id, proj.ownerId)) continue;
         const d = Math.hypot(p.x - proj.x, p.y - proj.y);
         if (d <= p.radius + 12) {
           hit = true;
@@ -1051,7 +1074,7 @@ export class VoltCrownEngine extends ChaosPhysics {
       for (let j = i + 1; j < participants.length; j++) {
         const p1 = participants[i];
         const p2 = participants[j];
-        if (!p1.alive || !p2.alive) continue;
+        if (!p1.alive || !p2.alive || this.areAllies(p1.id, p2.id)) continue;
         const dx = p2.x - p1.x;
         const dy = p2.y - p1.y;
         const dist = Math.hypot(dx, dy) || 1;
@@ -1148,7 +1171,7 @@ export class VoltCrownEngine extends ChaosPhysics {
 
     if (isKing) {
       // King bot: Flee from hunters and avoid active hazards
-      const hunters = this.players.filter((o) => o.id !== bot.id && o.alive);
+      const hunters = this.getActiveParticipants().filter((o) => o.id !== bot.id && o.alive && !this.areAllies(bot.id, o.id));
       hunters.sort(
         (a, b) => Math.hypot(a.x - bot.x, a.y - bot.y) - Math.hypot(b.x - bot.x, b.y - bot.y)
       );
@@ -1171,7 +1194,7 @@ export class VoltCrownEngine extends ChaosPhysics {
       bot.vy += (fleeY / flen) * moveSpeed * 8.2 * dt;
 
       // Defend if hunter is charging or projectile approaching
-      if (dist < 95 && bot.shieldCooldown <= 0 && Math.random() < 0.16) {
+      if (dist < 95 && bot.shieldCooldown <= 0 && this.random() < 0.16) {
         this.triggerTaserOrDefend(bot);
       }
     } else {
@@ -1184,6 +1207,11 @@ export class VoltCrownEngine extends ChaosPhysics {
         if (king) {
           targetX = king.x;
           targetY = king.y;
+          if (this.areAllies(bot.id, king.id)) {
+            const threat = this.getActiveParticipants().filter(p => !this.areAllies(bot.id, p.id) && p.alive)
+              .sort((a, b) => Math.hypot(a.x - king.x, a.y - king.y) - Math.hypot(b.x - king.x, b.y - king.y))[0];
+            if (threat) { targetX = threat.x; targetY = threat.y; }
+          }
         }
       } else {
         targetX = this.crown.x;
@@ -1204,10 +1232,10 @@ export class VoltCrownEngine extends ChaosPhysics {
         dist < 280 &&
         dist > 80 &&
         bot.taserCooldown <= 0 &&
-        Math.random() < 0.04
+        this.random() < 0.04
       ) {
         this.triggerTaserOrDefend(bot, bot.aimAngle);
-      } else if (dist < 130 && bot.dashCooldown <= 0 && Math.random() < 0.05) {
+      } else if (dist < 130 && bot.dashCooldown <= 0 && this.random() < 0.05) {
         this.triggerDash(bot, dx, dy);
       }
     }
@@ -1316,6 +1344,8 @@ export class VoltCrownEngine extends ChaosPhysics {
       simulationTime: this.simulationTime,
       chaosBombs: this.chaosBombs.map((bomb) => ({ ...bomb })),
       arenaIndex: this.arenaIndex,
+      mode: this.mode,
+      teamScores: [...this.teamScores],
       arenaTitle: this.arenaTitle,
       status: this.status,
       statusTimer: this.statusTimer,
@@ -1333,6 +1363,8 @@ export class VoltCrownEngine extends ChaosPhysics {
   public applySnapshot(snap: VoltCrownSnapshot, localSlotId: number, prediction: PredictionHint = 0): void {
     const reset = this.arenaIndex !== snap.arenaIndex || this.status !== snap.status || (snap.roundEpoch !== undefined && snap.roundEpoch !== this.roundEpoch);
     this.arenaIndex = snap.arenaIndex;
+    this.mode = snap.mode ?? 'FFA';
+    this.teamScores = [...(snap.teamScores ?? [0, 0])];
     this.arenaTitle = snap.arenaTitle;
     this.status = snap.status;
     this.statusTimer = snap.statusTimer;
@@ -1378,8 +1410,8 @@ export class VoltCrownEngine extends ChaosPhysics {
         type: 'dust',
         x,
         y,
-        vx: (Math.random() - 0.5) * 60,
-        vy: (Math.random() - 0.5) * 60,
+        vx: (this.random() - 0.5) * 60,
+        vy: (this.random() - 0.5) * 60,
         life: 0.45,
         decay: 1.4,
         color: '#D4CEBF',
@@ -1393,10 +1425,10 @@ export class VoltCrownEngine extends ChaosPhysics {
       this.looseParts.push({
         x,
         y,
-        vx: (Math.random() - 0.5) * 260,
-        vy: (Math.random() - 0.5) * 260,
-        rot: Math.random() * Math.PI * 2,
-        vRot: (Math.random() - 0.5) * 12,
+        vx: (this.random() - 0.5) * 260,
+        vy: (this.random() - 0.5) * 260,
+        rot: this.random() * Math.PI * 2,
+        vRot: (this.random() - 0.5) * 12,
         color,
         life: 3.2,
         maxLife: 3.2

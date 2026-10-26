@@ -30,8 +30,8 @@ export class VoltCrownRenderer extends CanvasViewportRenderer {
 
     if (engine.screenShake > 0) {
       ctx.translate(
-        (Math.random() - 0.5) * engine.screenShake,
-        (Math.random() - 0.5) * engine.screenShake
+        (Math.random() - 0.5) * this.shakeAmount(engine.screenShake),
+        (Math.random() - 0.5) * this.shakeAmount(engine.screenShake)
       );
     }
 
@@ -166,7 +166,7 @@ export class VoltCrownRenderer extends CanvasViewportRenderer {
           ctx.save();
           ctx.font = '800 11px "JetBrains Mono", monospace';
           ctx.textAlign = 'center';
-          const blink = Math.sin(nowSec * 22) > 0;
+          const blink = (this.reducedFlashes || Math.sin(nowSec * 22) > 0);
           ctx.fillStyle = blink ? '#EF4444' : '#F59E0B';
           ctx.fillText('⚠️ ¡PELIGRO!', trap.x + trap.w * 0.5, trap.y + trap.h * 0.5 + 4);
           ctx.restore();
@@ -181,7 +181,7 @@ export class VoltCrownRenderer extends CanvasViewportRenderer {
 
         if (trap.active) {
           // Pulsing beam
-          const beamAlpha = 0.75 + Math.sin(nowSec * 22) * 0.25;
+          const beamAlpha = this.reducedFlashes ? 0.8 : 0.75 + Math.sin(nowSec * 22) * 0.25;
           ctx.save();
           ctx.strokeStyle = `rgba(239, 68, 68, ${beamAlpha})`;
           ctx.lineWidth = trap.w;
@@ -247,7 +247,7 @@ export class VoltCrownRenderer extends CanvasViewportRenderer {
 
     // 6. Pinball Bumpers
     for (const b of engine.bumpers) {
-      const flash = b.hitAnim > 0;
+      const flash = b.hitAnim > 0 && !this.reducedFlashes;
       ctx.beginPath();
       ctx.arc(b.x, b.y + 4, b.radius, 0, Math.PI * 2);
       ctx.fillStyle = 'rgba(24, 24, 27, 0.25)';
@@ -312,6 +312,13 @@ export class VoltCrownRenderer extends CanvasViewportRenderer {
       .sort((a, b) => a.y - b.y);
 
     for (const p of activePlayers) {
+      if (engine.mode === 'TEAMS') {
+        ctx.strokeStyle = engine.teamFor(p.id) === 0 ? '#0e7490' : '#a21caf';
+        ctx.lineWidth = 4;
+        ctx.beginPath(); ctx.ellipse(p.x, p.y + 10, 28, 12, 0, 0, Math.PI * 2); ctx.stroke();
+        ctx.font = '800 12px monospace'; ctx.textAlign = 'center'; ctx.fillStyle = ctx.strokeStyle;
+        ctx.fillText(`EQUIPO ${engine.teamFor(p.id) === 0 ? 'A' : 'B'}`, p.x, p.y - 65);
+      }
       this.drawPlayer(ctx, p, engine.crown.holderId === p.id, p.id === localSlotId, nowSec);
     }
 
@@ -367,7 +374,7 @@ export class VoltCrownRenderer extends CanvasViewportRenderer {
       ctx.font = '900 20px "Space Grotesk", sans-serif';
       ctx.textAlign = 'center';
       ctx.fillText(
-        winner ? `👑 ¡${winner.name} GANA LA CORONA VOLTAICA (100%)!` : '¡PARTIDA COMPLETADA!',
+        engine.winningTeam !== null ? `👑 ¡EQUIPO ${engine.winningTeam === 0 ? 'A' : 'B'} GANA CON 100%!` : winner ? `👑 ¡${winner.name} GANA LA CORONA VOLTAICA (100%)!` : '¡PARTIDA COMPLETADA!',
         500,
         250
       );

@@ -78,6 +78,12 @@ export const RICOCHET_ARENAS: RicochetArenaDef[] = [
   }
 ];
 
+RICOCHET_ARENAS.push({ name: 'SECTOR 04 // DOBLE HÉLICE', subtitle: 'Dos reflectores giratorios abren trayectorias entre las bandas',
+  mirrors: [{ baseX: 350, baseY: 258, length: 120, angle: 0, rotSpeed: 0.65 },
+    { baseX: 650, baseY: 258, length: 120, angle: Math.PI / 2, rotSpeed: -0.65 },
+    { baseX: 500, baseY: 105, length: 95, angle: 0, moveRangeX: 90, moveSpeed: 0.9 },
+    { baseX: 500, baseY: 411, length: 95, angle: 0, moveRangeX: 90, moveSpeed: -0.9 }] });
+
 export class RicochetEngine extends ChaosPhysics {
   public arenaIndex = 0;
   public status: 'PLAYING' | 'ROUND_OVER' | 'MATCH_OVER' = 'PLAYING';
@@ -197,7 +203,7 @@ export class RicochetEngine extends ChaosPhysics {
     });
 
     // Spawn 1 heavy bouncing plasma bullet in the center
-    const randomAngle = (Math.PI / 4) * (Math.floor(Math.random() * 4) * 2 + 1) + 0.15;
+    const randomAngle = (Math.PI / 4) * (Math.floor(this.random() * 4) * 2 + 1) + 0.15;
     const initialSpeed = 380;
     this.bullets = [
       {
@@ -218,6 +224,7 @@ export class RicochetEngine extends ChaosPhysics {
   }
 
   public resetChampionship(): void {
+    this.resetMatchStats();
     this.players.forEach((player) => { player.score = 0; });
     this.matchWinnerId = null;
     this.loadArena(0);
@@ -322,8 +329,8 @@ export class RicochetEngine extends ChaosPhysics {
           p.respawnTimer -= safeDt;
           if (p.respawnTimer <= 0) {
             p.alive = true;
-            p.x = 200 + Math.random() * 600;
-            p.y = 150 + Math.random() * 216;
+            p.x = 200 + this.random() * 600;
+            p.y = 150 + this.random() * 216;
           }
         }
         return;
@@ -613,6 +620,7 @@ export class RicochetEngine extends ChaosPhysics {
 
         // A. Parry Swing
         if (p.parryTimer > 0 && distToPlayer < p.radius + 26) {
+          this.noteParry(p.id, true);
           // Redirect along player aim angle!
           const newSpeed = Math.min(850, Math.hypot(b.vx, b.vy) * 1.25);
           b.vx = Math.cos(p.aimAngle) * newSpeed;
@@ -634,6 +642,7 @@ export class RicochetEngine extends ChaosPhysics {
         // If player is hit by bullet
         if (distToPlayer < p.radius + b.radius && (b.ownerId !== p.id || b.bounceCount > 0)) {
           p.alive = false;
+          this.matchStats[p.id].streak = 0;
           p.lives = Math.max(0, p.lives - 1);
           p.respawnTimer = 2.0;
 
@@ -660,15 +669,15 @@ export class RicochetEngine extends ChaosPhysics {
 
   private emitSparks(x: number, y: number, color: string, count: number): void {
     for (let i = 0; i < count; i++) {
-      const angle = Math.random() * Math.PI * 2;
-      const spd = 60 + Math.random() * 180;
+      const angle = this.random() * Math.PI * 2;
+      const spd = 60 + this.random() * 180;
       this.sparks.push({
         x,
         y,
         vx: Math.cos(angle) * spd,
         vy: Math.sin(angle) * spd,
         color,
-        life: 0.18 + Math.random() * 0.22,
+        life: 0.18 + this.random() * 0.22,
         maxLife: 0.4
       });
     }

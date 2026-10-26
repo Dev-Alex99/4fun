@@ -2,7 +2,7 @@
 <html lang="es">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>TP-SYSTEM // 4-Player Tactical Party Deck</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -14,9 +14,34 @@
   <body>
     <div id="app">
       <!-- Industrial Hardware Casing -->
+      <div id="practiceOverlay" class="practice-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="practiceTitle">
+        <section class="practice-box">
+          <header><div><h2 id="practiceTitle">PRÁCTICA</h2><span id="practiceProgress"></span></div><div><button id="restartPracticeBtn" class="keycap-btn">REPETIR</button><button id="closePracticeBtn" class="keycap-btn">VOLVER A MI SALA</button></div></header>
+          <p id="practiceTask" role="status" aria-live="polite"></p>
+          <div id="practiceSurface"><canvas id="practiceCanvas" tabindex="0" aria-label="Zona de práctica jugable"></canvas></div>
+          <p class="practice-notice">WASD / flechas: mover · mouse: apuntar · Espacio / A: acción · Shift / B: acción secundaria · E: habilidad. Escape vuelve a la sala. La sala sigue jugando.</p>
+        </section>
+      </div>
+      <div id="shareOverlay" class="share-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="shareTitle">
+        <section class="share-box"><h2 id="shareTitle">INVITAR A LA SALA</h2><p id="shareDescription"></p>
+          <div id="shareQr" role="img" aria-label="Código QR del enlace"></div>
+          <label>ENLACE <input id="shareUrlInput" type="text" readonly></label><p id="shareStatus" role="status" aria-live="polite"></p>
+          <div class="connection-panel-actions"><button id="nativeShareBtn" class="keycap-btn">COMPARTIR</button><button id="copyShareBtn" class="keycap-btn">COPIAR ENLACE</button><button id="closeShareBtn" class="keycap-btn">CERRAR</button></div>
+        </section>
+      </div>
       <main class="hardware-chassis">
+        <div id="mobilePlayBar" class="mobile-play-bar hidden">
+          <div class="play-bar-identity"><strong id="mobileGameName"></strong><span id="mobileRoomStatus"></span><span id="mobileMatchStatus"></span></div>
+          <div class="play-bar-actions">
+            <button id="mobileHelpBtn" class="keycap-btn" aria-label="Cómo jugar">?</button>
+            <button id="expandPlayBtn" class="keycap-btn" aria-label="Ampliar el juego" title="Ampliar el juego">⤢</button>
+            <button id="mobileRoomBtn" class="keycap-btn" aria-controls="controlDeck" aria-expanded="false">☰ SALA</button>
+          </div>
+        </div>
+        <button id="roomPanelScrim" class="room-panel-scrim hidden" aria-label="Cerrar el panel de sala" tabindex="-1"></button>
         <!-- Top Tactile Control Deck -->
-        <header class="control-deck">
+        <header id="controlDeck" class="control-deck" aria-label="Sala y ajustes">
+          <button id="closeRoomPanelBtn" class="keycap-btn close-room-panel hidden">✕ VOLVER AL JUEGO</button>
           <div class="brand-module">
             <div class="status-led" id="netLed" title="Estado de red P2P"></div>
             <div>
@@ -51,6 +76,7 @@
             <button data-game="RICOCHET_1" class="keycap-btn tab-btn">
               07 // RICOCHET-1
             </button>
+            <button data-game="CARGO_CREW" class="keycap-btn tab-btn">08 // CARGO-CREW</button>
             <button id="tabTournamentBtn" class="keycap-btn tab-btn keycap-yellow" style="color: #18181b">
               🏆 TORNEO FIESTA
             </button>
@@ -96,7 +122,56 @@
             <button id="resetMatchBtn" class="keycap-btn" title="Reiniciar partida o sector">
               RESET
             </button>
+            <button id="focusGameBtn" class="keycap-btn hidden">⤢ VISTA DE JUEGO</button>
+            <button id="desktopHelpBtn" class="keycap-btn hidden">? CÓMO JUGAR</button>
           </div>
+          <div id="mobileGameSettings" class="mobile-game-settings hidden">
+            <button id="mobilePrevStageBtn" class="keycap-btn"></button>
+            <button id="mobileNextStageBtn" class="keycap-btn"></button>
+            <button id="mobileModeBtn" class="keycap-btn"></button>
+            <button id="mobileWorkshopBtn" class="keycap-btn">🧰 TALLER</button>
+          </div>
+          <details id="playExtras" class="connection-panel"><summary>PRÁCTICA · GRUPO · AJUSTES</summary>
+          <details id="partyPanel" class="connection-panel">
+            <summary>JUGAR EN GRUPO Y RETOS</summary>
+            <div class="connection-panel-actions"><button id="openInviteBtn" class="keycap-btn">INVITAR · QR</button><button id="startGameVoteBtn" class="keycap-btn">VOTAR SIGUIENTE JUEGO</button></div>
+            <p id="gameVoteStatus" role="status"></p><div id="gameVoteChoices" class="party-vote-grid"></div>
+            <div class="connection-panel-actions"><button id="finishGameVoteBtn" class="keycap-btn hidden">CERRAR VOTACIÓN</button><button id="playVoteWinnerBtn" class="keycap-btn hidden">JUGAR AL GANADOR</button></div>
+            <label>RETO COMPARTIDO <select id="challengeGameSelect" aria-label="Juego del reto"></select></label>
+            <div class="connection-panel-actions"><button id="generateChallengeBtn" class="keycap-btn">CREAR CÓDIGO</button><input id="challengeCodeInput" maxlength="16" placeholder="1A-ABCD1234" aria-label="Código del reto" autocapitalize="characters" spellcheck="false"></div>
+            <p id="challengePreview" role="status"></p>
+            <div class="connection-panel-actions"><button id="startChallengeBtn" class="keycap-btn">JUGAR RETO</button><button id="shareChallengeBtn" class="keycap-btn">COMPARTIR RETO</button></div>
+            <p>El código fija escenario, reglas y azar inicial. Los récords se guardan en este navegador y se comparan con el mismo número de humanos; los retos usan bots normales.</p>
+            <p id="challengeRecords"></p>
+          </details>
+          <details class="connection-panel" id="practicePanel">
+            <summary>APRENDER JUGANDO · ≈30 S</summary>
+            <label>JUEGO <select id="practiceGameSelect" aria-label="Juego para practicar"></select></label>
+            <button id="startPracticeBtn" class="keycap-btn">ABRIR PRÁCTICA</button>
+            <p>Práctica opcional en tu dispositivo. Tu sala sigue en curso; aquí no se ganan puntos ni pinturas.</p>
+          </details>
+          <details class="connection-panel" id="comfortPanel">
+            <summary>SONIDO Y COMODIDAD</summary>
+            <div class="comfort-grid">
+              <label>EFECTOS <input id="effectsVolumeInput" type="range" min="0" max="100" step="1"><output id="effectsVolumeValue"></output></label>
+              <label>MÚSICA <input id="musicVolumeInput" type="range" min="0" max="100" step="1"><output id="musicVolumeValue"></output></label>
+              <label><input id="reducedMotionInput" type="checkbox"> REDUCIR SACUDIDAS</label>
+              <label><input id="reducedFlashesInput" type="checkbox"> REDUCIR DESTELLOS</label>
+              <label>MANDO TÁCTIL <select id="controlScaleInput"><option value="0.9">Compacto</option><option value="1">Normal</option><option value="1.15">Grande</option></select></label>
+            </div>
+            <p>Los ajustes se guardan en este dispositivo. Los avisos de peligro permanecen visibles.</p>
+          </details>
+          </details>
+          <details id="connectionPanel" class="connection-panel">
+            <summary>CONEXIÓN DE LA SALA</summary>
+            <p id="connectionPanelSummary">Crea o únete a una sala para comprobar sus enlaces.</p>
+            <div id="connectionPanelLinks"></div>
+            <div class="connection-panel-actions">
+              <button id="refreshConnectionBtn" class="keycap-btn">COMPROBAR ENLACES</button>
+              <button id="copyDiagnosticsBtn" class="keycap-btn">COPIAR DIAGNÓSTICO</button>
+            </div>
+            <p id="connectionPanelStatus" role="status" aria-live="polite"></p>
+          </details>
         </header>
 
         <!-- Recessed 3/4 Perspective Tabletop Arena -->
@@ -124,6 +199,8 @@
             <button id="chainModeBtn" class="keycap-btn keycap-sm hidden">
               MODO: CO-OP
             </button>
+            <button id="cargoRouteBtn" class="keycap-btn keycap-sm hidden">RUTA CLÁSICA</button>
+            <button id="voltModeBtn" class="keycap-btn keycap-sm hidden">MODO: INDIVIDUAL</button>
             <button id="hudWorkshopBtn" class="keycap-btn keycap-sm" title="Personalizar sombreros, visores y skins">
               🧰 TALLER
             </button>
@@ -131,6 +208,8 @@
           </div>
 
           <!-- Bottom Printed Technical Manual Strip -->
+          <div id="adventureHud" class="adventure-hud hidden" aria-live="polite"></div>
+          <div id="actionHint" class="action-hint hidden" role="status" aria-live="polite"></div>
           <footer class="hud-bottom-bar">
             <div class="manual-strip" id="controlsLegendStrip">
               <span><strong>[WASD]</strong> MOVER</span>
@@ -181,6 +260,17 @@
                   <span class="touch-btn-sub">HIT</span>
                 </button>
               </div>
+            </div>
+          </div>
+
+          <div id="gameHelpOverlay" class="draft-overlay game-help-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="gameHelpTitle">
+            <div class="draft-card-box game-help-box" tabindex="-1">
+              <div class="draft-header"><div><p class="draft-eyebrow">GUÍA DE JUEGO</p><h2 id="gameHelpTitle" class="draft-title"></h2></div><button id="closeGameHelpBtn" class="keycap-btn">✕ CERRAR</button></div>
+              <p id="gameHelpObjective" class="tourney-objective"></p>
+              <dl id="gameHelpControls" class="tourney-controls"></dl>
+              <p id="gameHelpTip" class="tourney-tip"></p>
+              <button id="helpPracticeBtn" class="keycap-btn">PRACTICAR ESTE JUEGO</button>
+              <p class="help-live-notice">La partida sigue en curso mientras consultas esta guía o practicas.</p>
             </div>
           </div>
 
@@ -264,28 +354,54 @@
               </div>
 
               <!-- Special Game Mode: CHAOTIC PARTY TOURNAMENT HERO BANNER -->
+              <details class="progress-panel">
+                <summary>🏅 TU LIBRETA · HAZAÑAS, RÉCORDS Y PINTURAS</summary>
+                <div id="playerProgressPanel"></div>
+              </details>
               <div class="tournament-hero-card">
-                <div>
+                <div class="tourney-info">
                   <div class="tourney-header">
-                    <span class="tourney-tag">MODO FIESTA // 5 RONDAS</span>
+                    <span class="tourney-tag">MODO FIESTA // TU COPA</span>
                     <span class="tourney-players">4 PILOTOS SIMULTÁNEOS</span>
                   </div>
                   <h2 class="tourney-title">🏆 TORNEO DEL CAOS (PLAYLIST MULTIJUEGO)</h2>
                   <p class="tourney-desc">
-                    Compite en una seguidilla de <strong>5 minijuegos aleatorios</strong> con la <strong>Ruleta de Mutadores Sísmicos</strong> girando antes de cada ronda: Gravedad Lunar 🌀, Turbo Overclock ⚡, Lluvia de Dinamita 💣, Hiper-Rebote 🧲 y Pulso Fantasma 👻. ¡El piloto con más puntos acumulados alza la Gran Copa de Oro!
+                    Arma una copa de <strong>3, 5 o 7 rondas</strong> con tus juegos favoritos y mutadores opcionales. Antes de cada juego, todos pueden leer las reglas y confirmar que están listos. Cada victoria vale <strong>3 puntos de copa</strong>.
                   </p>
                 </div>
                 <button id="hubStartTournamentBtn" class="keycap-btn keycap-yellow keycap-lg">
                   🏆 INICIAR TORNEO FIESTA →
                 </button>
+                <fieldset id="tourneySettings" class="tourney-settings">
+                  <legend>PERSONALIZA LA COPA</legend>
+                  <div class="tourney-settings-top">
+                    <label for="tourneyRoundsSelect">Rondas
+                      <select id="tourneyRoundsSelect">
+                        <option value="3">3 · CORTO</option>
+                        <option value="5" selected>5 · NORMAL</option>
+                        <option value="7">7 · LARGO</option>
+                      </select>
+                    </label>
+                    <label class="tourney-option"><input id="tourneyMutatorsInput" type="checkbox" checked /> Ruleta de mutadores</label>
+                  </div>
+                  <div class="tourney-game-options" role="group" aria-label="Juegos incluidos en el sorteo">
+                    <label class="tourney-option"><input type="checkbox" data-tournament-game="BASH_BOT" checked /> BASH-BOT</label>
+                    <label class="tourney-option"><input type="checkbox" data-tournament-game="HOT_CORE" checked /> HOT-CORE</label>
+                    <label class="tourney-option"><input type="checkbox" data-tournament-game="VOLT_CROWN" checked /> VOLT-CROWN</label>
+                    <label class="tourney-option"><input type="checkbox" data-tournament-game="HEX_CRUSH" checked /> HEX-CRUSH</label>
+                    <label class="tourney-option"><input type="checkbox" data-tournament-game="TURBO_PUTT" checked /> TURBO-PUTT</label>
+                    <label class="tourney-option"><input type="checkbox" data-tournament-game="RICOCHET_1" checked /> RICOCHET-1</label>
+                  </div>
+                  <p id="tourneySettingsHint" class="tourney-settings-hint" role="status">Se sortean sin repetir hasta agotar los juegos elegidos. Los cooperativos se juegan aparte.</p>
+                </fieldset>
               </div>
 
               <!-- Quick Filter, Search & Random Game Bar -->
               <div class="hub-filter-bar">
                 <div class="hub-filter-pills">
-                  <button class="filter-pill active" data-filter="ALL">TODOS (7)</button>
+                  <button class="filter-pill active" data-filter="ALL">TODOS (8)</button>
                   <button class="filter-pill" data-filter="PVP">⚔️ DUELOS PVP (6)</button>
-                  <button class="filter-pill" data-filter="COOP">🤝 CO-OP (1)</button>
+                  <button class="filter-pill" data-filter="COOP">🤝 CO-OP (2)</button>
                   <button class="filter-pill" data-filter="PARTY">🎉 GOLF & FIESTA (2)</button>
                 </div>
                 <div class="hub-filter-actions">
@@ -343,12 +459,16 @@
                     </p>
                     <div class="cart-specs">
                       <span>⛓️ FÍSICA DE CUERDA</span>
-                      <span>🚨 3 SECTORES INDUSTRIALES</span>
+                      <span>🚨 6 SECTORES · CHECKPOINTS · MEDALLAS</span>
                     </div>
                   </div>
                   <button data-launch="CHAIN_PANIC" class="keycap-btn keycap-cobalt keycap-lg launch-game-btn">
-                    JUGAR CHAIN-PANIC (02) →
+                    JUGAR LIBRE (02) →
                   </button>
+                  <div class="adventure-actions">
+                    <button id="startChainCampaignBtn" class="keycap-btn keycap-green">⛓️ CAMPAÑA · 6 SECTORES</button>
+                    <button id="continueChainCampaignBtn" class="keycap-btn">CONTINUAR CAMPAÑA</button>
+                  </div>
                 </div>
 
                 <!-- Cartridge 03: TURBO-PUTT (Combat Mini-Golf + Worms) -->
@@ -408,7 +528,7 @@
                       Porta la **Corona Voltaica (`👑`)** para cargar tu batería de 0% a 100%. Dispara el **Táser de Choque (`[CLIC/ESPACIO]`)** para despojar al Rey, activa **trampas del mapa (`[E]`)** y desata la **Sobrecarga de 15s (`⚡`)**!
                     </p>
                     <div class="cart-specs">
-                      <span>👑 CACERÍA & TÁSER</span>
+                      <span>👑 INDIVIDUAL O EQUIPOS 2 CONTRA 2</span>
                       <span>🚨 TRAMPAS & PISTONES</span>
                     </div>
                   </div>
@@ -461,6 +581,16 @@
                     JUGAR RICOCHET-1 (07) →
                   </button>
                 </div>
+                <div class="game-cartridge" data-category="COOP" data-game-title="CARGO-CREW COOPERATIVO CARGA BATERIA CINTAS GRUAS REACTOR TRANSPORTE">
+                  <div class="cart-accent-stripe" style="background:#0e7490"></div>
+                  <div>
+                    <div class="cart-header"><span class="cart-badge" style="background:#0e7490">🚚 CARTUCHO 08 // COOPERATIVO</span><span class="cart-players">1 A 4 · AYUDANTES BOT</span></div>
+                    <h2 class="cart-title">CARGO-CREW // TURNO DE FÁBRICA</h2>
+                    <p class="cart-summary">Transporten una batería pesada por tres etapas con cintas y grúas. Engancha o suelta cerca de la carga con <strong>Espacio / A</strong>, mantén <strong>Shift / B</strong> para anclar y pulsa <strong>E</strong> para reparar. Activen los seguros y entreguen la carga al reactor.</p>
+                    <div class="cart-specs"><span>⛓️ TRANSPORTE CON CABLES</span><span>🏭 3 ETAPAS · CHECKPOINTS</span><span>🏅 RÉCORDS DEL EQUIPO</span></div>
+                  </div>
+                  <button data-launch="CARGO_CREW" class="keycap-btn keycap-cobalt keycap-lg launch-game-btn">INICIAR TURNO EN EQUIPO →</button>
+                </div>
               </div>
 
               <!-- Empty state if search finds nothing -->
@@ -506,14 +636,24 @@
           </div>
 
           <!-- Tournament Roulette & Championship Podium Overlay -->
-          <div id="tournamentOverlay" class="draft-overlay hidden">
-            <div class="draft-card-box tournament-modal-box">
+          <div id="tournamentOverlay" class="draft-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="tourneyModalTitle">
+            <div class="draft-card-box tournament-modal-box" tabindex="-1">
               <div class="draft-header">
                 <div>
                   <div class="draft-eyebrow" id="tourneyModalEyebrow">TORNEO DEL CAOS // RONDA 1 DE 5</div>
                   <h2 class="draft-title" id="tourneyModalTitle">RULETA DE MUTADORES</h2>
                 </div>
                 <div class="hazard-badge"></div>
+              </div>
+
+              <div id="tourneyPreparationView" class="tourney-preparation-view hidden">
+                <p id="tourneyObjective" class="tourney-objective"></p>
+                <dl id="tourneyControls" class="tourney-controls"></dl>
+                <p id="tourneyTip" class="tourney-tip"></p>
+                <p id="tourneyMutator" class="tourney-mutator"></p>
+                <div id="tourneyReadyRoster" class="tourney-ready-roster" aria-label="Preparación de los jugadores"></div>
+                <p id="tourneyReadyStatus" class="tourney-ready-status" role="status" aria-live="polite"></p>
+                <button id="tourneyReadyBtn" class="keycap-btn keycap-green keycap-lg">✓ ESTOY LISTO</button>
               </div>
 
               <!-- Slot Machine Roulette View -->
@@ -535,15 +675,34 @@
               <div id="tourneyPodiumView" class="tourney-podium-view hidden">
                 <div class="podium-trophy">🏆</div>
                 <h3 class="podium-champ-name" id="tourneyChampName">¡ALEX ES EL GRAN CAMPEÓN!</h3>
-                <p class="podium-champ-desc">Dominó la playlist de 5 minijuegos con la mayor cantidad de puntos de copa.</p>
+                <p class="podium-champ-desc">Cada victoria suma 3 puntos. En un empate a puntos, gana quien consiguió la victoria más reciente.</p>
+                <div class="tourney-leaderboard" id="tourneyFinalLeaderboard"></div>
+                <div id="tourneyHighlights"></div>
                 <div class="podium-actions">
                   <button id="tourneyRestartBtn" class="keycap-btn keycap-yellow keycap-lg">
-                    🔄 REPETIR TORNEO
+                    ↻ MISMA SELECCIÓN
+                  </button>
+                  <button id="tourneyShuffleBtn" class="keycap-btn keycap-orange keycap-lg">
+                    🎲 NUEVO SORTEO
                   </button>
                   <button id="tourneyExitHubBtn" class="keycap-btn keycap-lg">
                     ⊞ VOLVER AL HUB
                   </button>
                 </div>
+              </div>
+              <button id="tourneyCancelBtn" class="keycap-btn keycap-sm tourney-cancel-btn">CANCELAR TORNEO Y VOLVER AL HUB</button>
+            </div>
+          </div>
+
+          <div id="sessionResultOverlay" class="draft-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="sessionResultTitle">
+            <div class="draft-card-box session-result-box" tabindex="-1">
+              <p id="sessionResultEyebrow" class="draft-eyebrow"></p>
+              <h2 id="sessionResultTitle" class="draft-title"></h2>
+              <div id="sessionResultBody" class="session-result-body"></div>
+              <div class="session-result-actions">
+                <button id="sessionResultPrimary" class="keycap-btn keycap-green keycap-lg">REVANCHA</button>
+                <button id="sessionResultSecondary" class="keycap-btn keycap-yellow hidden"></button>
+                <button id="sessionResultExit" class="keycap-btn">VOLVER AL HUB</button>
               </div>
             </div>
           </div>

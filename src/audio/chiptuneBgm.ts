@@ -76,6 +76,14 @@ export class ProceduralChiptuneEngine {
     return this.ctx;
   }
 
+  public setVolume(volume: number): void {
+    this.volume = Math.max(0, Math.min(1, Number.isFinite(volume) ? volume : 0.18));
+    if (this.ctx && this.masterGain && this.isRunning) {
+      this.masterGain.gain.cancelScheduledValues(this.ctx.currentTime);
+      this.masterGain.gain.setTargetAtTime(this.volume, this.ctx.currentTime, 0.02);
+    }
+  }
+
   public toggle(): boolean {
     this.enabled = !this.enabled;
     writeStorage('local', 'tp04_bgm_enabled', String(this.enabled));
@@ -107,7 +115,7 @@ export class ProceduralChiptuneEngine {
     if (this.masterGain) {
       this.masterGain.gain.cancelScheduledValues(ac.currentTime);
       this.masterGain.gain.setValueAtTime(0.001, ac.currentTime);
-      this.masterGain.gain.exponentialRampToValueAtTime(this.volume, ac.currentTime + 0.4);
+      this.masterGain.gain.linearRampToValueAtTime(this.volume, ac.currentTime + 0.4);
     }
 
     this.timerId = window.setInterval(() => {

@@ -10,6 +10,31 @@
   --mono: 'JetBrains Mono', ui-monospace, monospace;
   --sans: 'Space Grotesk', system-ui, sans-serif;
 }
+.adventure-actions, .session-result-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.adventure-actions > button, .session-result-actions > button { flex: 1 1 150px; min-height: 44px; white-space: normal; }
+.adventure-hud { position: absolute; top: 54px; left: 14px; right: 14px; z-index: 6; padding: 8px 12px; border: 2px solid var(--ink); border-radius: 8px; background: var(--panel); font: 700 11px var(--mono); display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.adventure-hud.hidden { display: none; }
+.sector-progress { display: flex; gap: 4px; }
+.sector-progress span { padding: 4px 8px; border: 1px solid #a1a1aa; border-radius: 4px; }
+.sector-progress .sector-done { background: #dcfce7; border-color: #15803d; }
+.sector-progress .sector-current { background: #fef08a; border-color: var(--ink); }
+#sessionResultOverlay { z-index: 95; }
+.session-result-box { max-width: 720px; }
+.session-result-box .hidden { display: none !important; }
+.session-result-body { margin: 18px 0; line-height: 1.55; }
+.result-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; margin: 14px 0; }
+.result-card { padding: 12px; border: 2px solid var(--ink); border-radius: 8px; background: #fffdf8; }
+.result-card strong { display: block; font: 800 12px var(--mono); margin-bottom: 6px; }
+.result-card p { font-size: 13px; }
+.progress-panel { margin: 0 0 18px; padding: 14px; border: 2px solid var(--ink); border-radius: 10px; background: var(--panel); }
+.progress-panel summary { cursor: pointer; min-height: 32px; font: 800 12px var(--mono); }
+.progress-panel p { font-size: 13px; line-height: 1.5; }
+.cosmetic-locked { opacity: 0.6; }
+@media (max-width: 600px) {
+  #sessionResultOverlay { position: fixed; inset: 0; padding: 12px; }
+  .adventure-hud { top: 45px; left: 6px; right: 6px; font-size: 10px; }
+  .sector-progress span { padding: 3px 6px; }
+}
 
 * {
   box-sizing: border-box;
@@ -34,6 +59,7 @@ body {
 #app {
   width: 100vw;
   height: 100vh;
+  height: 100dvh;
   padding: 14px;
   display: flex;
   align-items: center;
@@ -640,6 +666,7 @@ body {
 .arena-well {
   position: relative;
   flex: 1;
+  min-height: 0;
   width: 100%;
   background: var(--well);
   border: 2.5px solid var(--ink);
@@ -1178,8 +1205,56 @@ body {
 
 /* Tournament Modal & Roulette View */
 .tournament-modal-box {
-  max-width: 580px;
+  max-width: 660px;
   text-align: center;
+}
+#tournamentOverlay { z-index: 90; }
+.tournament-modal-box .hidden { display: none !important; }
+
+.tournament-hero-card { flex-wrap: wrap; }
+.tournament-hero-card > .tourney-info { flex: 1 1 320px; }
+.tourney-settings {
+  flex: 1 0 100%;
+  min-width: 0;
+  margin: 4px 0 0;
+  padding: 16px;
+  border: 2px solid var(--ink);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.7);
+  color: var(--ink);
+  text-align: left;
+}
+.tourney-settings legend { padding: 0 8px; font: 800 12px var(--mono); }
+.tourney-settings-top { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 24px; margin-bottom: 12px; }
+.tourney-settings-top > label:first-child { display: flex; align-items: center; gap: 10px; font-weight: 800; }
+.tourney-settings select { min-height: 44px; padding: 6px 10px; border: 2px solid var(--ink); border-radius: 6px; background: white; font: 700 12px var(--mono); color: var(--ink); }
+.tourney-game-options { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px 12px; }
+.tourney-option { display: flex; align-items: center; gap: 8px; min-height: 44px; font: 700 12px var(--mono); cursor: pointer; }
+.tourney-option input { width: 18px; height: 18px; flex-shrink: 0; accent-color: #15803d; }
+.tourney-settings-hint { margin: 10px 0 0; font-size: 12px; line-height: 1.5; }
+.tourney-settings:disabled { opacity: 0.65; }
+.tourney-preparation-view { text-align: left; }
+.tourney-objective { font-size: 16px; line-height: 1.5; font-weight: 700; }
+.tourney-controls { display: grid; grid-template-columns: minmax(100px, auto) 1fr; gap: 10px 14px; padding: 16px; margin: 16px 0; background: #f4f4f5; border: 2px solid var(--ink); border-radius: 8px; }
+.tourney-controls dt { font: 800 11px var(--mono); align-self: center; }
+.tourney-controls dd { margin: 0; font-size: 13px; line-height: 1.4; }
+.tourney-tip, .tourney-mutator { font-size: 13px; line-height: 1.5; }
+.tourney-mutator { padding: 10px 12px; border-left: 4px solid #eab308; background: #fef9c3; }
+.tourney-ready-roster { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 18px; }
+.tourney-ready-player { padding: 10px; border: 2px solid #a1a1aa; border-radius: 6px; font: 700 11px var(--mono); overflow-wrap: anywhere; }
+.tourney-ready-player.is-ready { border-color: #15803d; background: #dcfce7; }
+.tourney-ready-status { min-height: 24px; text-align: center; font: 800 14px var(--mono); }
+#tourneyReadyBtn { width: 100%; min-height: 44px; }
+.tourney-cancel-btn { margin-top: 18px; min-height: 44px; }
+#tourneyFinalLeaderboard { width: 100%; }
+.podium-actions { flex-wrap: wrap; justify-content: center; }
+@media (max-width: 600px) {
+  #tournamentOverlay { position: fixed; inset: 0; padding: 12px; }
+  .tournament-modal-box { padding: 16px; }
+  .tourney-game-options { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .tourney-controls { padding: 12px; gap: 10px; grid-template-columns: minmax(90px, 0.8fr) 1.2fr; }
+  .podium-actions { width: 100%; }
+  .podium-actions .keycap-btn { width: 100%; white-space: normal; }
 }
 
 .tourney-roulette-view {
@@ -1582,6 +1657,8 @@ body {
     gap: 14px;
     padding: 14px;
   }
+
+  .tournament-hero-card > .tourney-info { flex: initial; }
 
   .tournament-hero-card .keycap-btn {
     width: 100%;

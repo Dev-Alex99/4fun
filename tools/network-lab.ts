@@ -1,6 +1,7 @@
 import Peer, { type DataConnection, type PeerOptions } from 'peerjs';
 import { MultiplayerRoomManager } from '../src/net/multiplayerRoom';
 import { readRtcConfiguration } from '../src/net/rtcConfiguration';
+import { PROTOCOL_VERSION } from '../src/net/protocol';
 import { ArenaEngine } from '../src/game/arenaEngine';
 import { ChainPanicEngine } from '../src/game/chainPanicEngine';
 import { PuttWarEngine } from '../src/game/puttWarEngine';
@@ -353,6 +354,7 @@ async function finish(reason: 'complete' | 'stopped' | 'connection-timeout'): Pr
   const relayRequired = rtcConfig.iceTransportPolicy === 'relay';
   const relayVerified = clients.length === 3 && clients.every((client) => client.selectedIcePairs.length > 0 && client.selectedIcePairs.every((pair) => pair.relay));
   results.textContent = JSON.stringify({
+    protocolVersion: PROTOCOL_VERSION,
     status: reason, completed: reason === 'complete', movementConverged: reason === 'complete' && converged,
     criterion: 'Final local and remote position error <= 8 game units, current snapshots, equal rosters and rounds. This is a laboratory criterion, not a network guarantee.',
     room, profile: selectedId, addedRttMs: selected.rtt, jitterPerMessageMs: selected.jitter, dropProbability: selected.loss,

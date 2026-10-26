@@ -5,6 +5,7 @@
  */
 
 import { RobotCosmetics, RobotHatId, RobotSkinId, RobotVisorId } from '../types';
+import { playerProgress } from './playerProgress';
 
 export interface CosmeticOption<T> {
   id: T;
@@ -37,8 +38,16 @@ export const ROBOT_SKINS: CosmeticOption<RobotSkinId>[] = [
   { id: 'STOCK', label: 'STOCK FACTORY', desc: 'Pintura según posición de jugador' },
   { id: 'STEALTH', label: 'SIGILO MATE', desc: 'Negro carbón militar con bisel dorado', color: '#27272a' },
   { id: 'WARNING', label: 'PELIGRO HAZARD', desc: 'Rayas amarillas y negras de precaución', color: '#f59e0b' },
-  { id: 'VAPOR', label: "SYNTHWAVE '84", desc: 'Degradado violeta y magenta retro', color: '#d946ef' }
+  { id: 'VAPOR', label: "SYNTHWAVE '84", desc: 'Degradado violeta y magenta retro', color: '#d946ef' },
+  { id: 'RESCUE', label: 'RESCATISTA', desc: 'Confirma 3 rescates', color: '#06b6d4' },
+  { id: 'CHAMPION', label: 'CAMPEÓN', desc: 'Gana 3 partidas o una copa', color: '#eab308' },
+  { id: 'CHROME', label: 'ACERO PULIDO', desc: 'Consigue 10 parries perfectos', color: '#94a3b8' },
+  { id: 'FREIGHT', label: 'OPERADOR', desc: 'Completa una ruta de CARGO-CREW', color: '#ea580c' }
 ];
+
+export function skinIsUnlocked(skin: RobotSkinId): boolean {
+  return ['STOCK', 'STEALTH', 'WARNING', 'VAPOR'].includes(skin) || playerProgress.unlockedSkins.includes(skin);
+}
 
 export const DEFAULT_ROBOT_COSMETICS: Readonly<RobotCosmetics> = Object.freeze({
   hat: 'NONE', visor: 'CYAN', skin: 'STOCK'
@@ -119,6 +128,10 @@ export class RobotWorkshopManager {
     if (skin === 'VAPOR') {
       return { body: '#d946ef', shade: '#86198f' };
     }
+    if (skin === 'RESCUE') return { body: '#06b6d4', shade: '#0e7490' };
+    if (skin === 'CHAMPION') return { body: '#facc15', shade: '#a16207' };
+    if (skin === 'CHROME') return { body: '#cbd5e1', shade: '#64748b' };
+    if (skin === 'FREIGHT') return { body: '#ea580c', shade: '#9a3412' };
     return { body: defaultBody, shade: defaultShade };
   }
 

@@ -109,7 +109,7 @@ export class RicochetRenderer extends CanvasViewportRenderer {
     ctx.save();
 
     // Flash glow on reflection
-    if (m.flashTimer > 0) {
+    if (m.flashTimer > 0 && !this.reducedFlashes) {
       ctx.shadowColor = '#00E5FF';
       ctx.shadowBlur = 18;
       ctx.strokeStyle = '#FFFFFF';

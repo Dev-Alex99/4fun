@@ -11,7 +11,13 @@ import { VoltCrownEngine } from '../game/voltCrownEngine';
 import { HexCrushEngine } from '../game/hexCrushEngine';
 import { RicochetEngine } from '../game/ricochetEngine';
 import { TournamentManager } from '../game/tournamentManager';
-import type { ActiveGameId, BotDifficulty, ChainGameMode, ClientInputPacket, WorldSnapshotPacket } from '../types';
+import { CargoCrewEngine } from '../game/cargoCrewEngine';
+import { validSessionResult } from '../game/matchResults';
+import { readLinkDiagnostic, type ConnectionDiagnostic } from './connectionDiagnostics';
+import { newVote, PARTY_GAMES, resolveVote, type PartyVote, type PlayableGame } from '../game/partyVote';
+import { challengeFromCode, validChallengeCode, type SharedChallenge } from '../game/sharedChallenge';
+import type { SessionResult } from '../types';
+import type { ActiveGameId, BotDifficulty, ChainCampaignSave, ChainGameMode, ClientInputPacket, TournamentOptions, WorldSnapshotPacket } from '../types';
 import { PROTOCOL_VERSION, MAX_MESSAGE_CHARS, GAME_IDS, BOT_LEVELS, MESSAGE_TYPES, record, finite, integer, text, peerId,
   cleanText, cleanName, boundedJson, validInput, validAction, validSnapshot } from './protocol';
 
@@ -23,20 +29,26 @@ export interface NetEnvelope {
   hostEpoch?: string;
   sender: string;
   type: 'JOIN_CLAIM' | 'SLOT_ASSIGN' | 'GAME_SWITCH' | 'ROOM_ACTION' | 'CLIENT_INPUT' | 'WORLD_SNAP' | 'DRAFT_PICK' |
-    'KICK_PEER' | 'PEER_LEAVE' | 'ROOM_EVENT' | 'PING_REQ' | 'PING_ACK';
+    'TOURNAMENT_READY' | 'GAME_VOTE' | 'KICK_PEER' | 'PEER_LEAVE' | 'ROOM_EVENT' | 'PING_REQ' | 'PING_ACK';
   payload: unknown;
 }
 export interface RoomActionMsg {
-  kind: 'BOT_DIFF' | 'LOAD_STAGE' | 'CHAIN_MODE' | 'RESET_MATCH' | 'START_TOURNAMENT' | 'STOP_TOURNAMENT';
+  kind: 'BOT_DIFF' | 'LOAD_STAGE' | 'CHAIN_MODE' | 'RESET_MATCH' | 'START_TOURNAMENT' | 'STOP_TOURNAMENT' | 'START_CAMPAIGN' | 'VOLT_MODE' | 'CARGO_ROUTE' | 'START_CHALLENGE';
   stateSeq?: number;
   botDifficulty?: BotDifficulty;
   levelIndex?: number;
   holeIndex?: number;
   arenaIndex?: number;
   chainMode?: ChainGameMode;
+  tournamentOptions?: TournamentOptions;
+  replaySame?: boolean;
+  campaignSave?: ChainCampaignSave;
+  voltMode?: 'FFA' | 'TEAMS';
+  cargoRoute?: number;
+  challengeCode?: string;
 }
 
-const HOST_ID_PREFIX = 'tp04-deck-room-v4-';
+const HOST_ID_PREFIX = 'tp04-deck-room-v8-';
 const DEFAULT_BOT_NAMES = ['UNIT-01', 'LEO-BOT', 'MAX-BOT', 'NICO-BOT'];
 /** Client-side lifetime of a queued discrete action that could not be sent yet. */
 const ACTION_QUEUE_MS = 250;
@@ -82,6 +94,9 @@ type Action = Pick<ClientInputPacket, 'parryPressed' | 'dashPressed' | 'yankPres
 
 /** Host-authoritative room. All received messages are tied to the current WebRTC connection. */
 export class MultiplayerRoomManager {
+  public get humanPlayers() { return this.arenaEngine.players.filter(p => !p.isBot); }
+  public gameVote: PartyVote = newVote();
+  public challenge: SharedChallenge | null = null;
   public roomCode = 'TP04';
   public localPeerId = uniqueId();
   public localSlotId = 0;
@@ -92,6 +107,13 @@ export class MultiplayerRoomManager {
   public clientStateSeq = 0;
   public connectionState: RoomConnectionState = 'HOSTING';
   public activeGame: ActiveGameId = 'HUB';
+  public sessionResult: SessionResult | null = null;
+  public get roomSessionId(): string { return this.hostEpoch; }
+  public publishSessionResult(result: SessionResult): void {
+    if (!this.isHost || this.sessionResult?.id === result.id || !validSessionResult(result, GAME_IDS)) return;
+    this.sessionResult = JSON.parse(JSON.stringify(result)) as SessionResult;
+    this.broadcastHostSnapshot(true);
+  }
   public connectedPeersCount = 0;
   public pingMs = 0;
   public bannedPeerIds = new Set<string>();
@@ -108,6 +130,7 @@ export class MultiplayerRoomManager {
   private peerToSlot = new Map<string, number>();
   private peerLastSeen = new Map<string, number>();
   private latestInputSeq = new Map<string, number>();
+  private cancelledThroughInputSeq = new Map<string, number>();
   private latestActionSeq = new Map<string, number>();
   private seenActionIds = new Map<string, Set<number>>();
   private dispatchedActionSeq = new Map<string, number>();
@@ -146,6 +169,7 @@ export class MultiplayerRoomManager {
   private lastRtcSnapSentAt = -10000;
   private lastClientInputSentAt = -10000;
   private lastChargingState = false;
+  private lastCancelState = false;
   private nextToastId = 1;
   private joinRetryTimer: ReturnType<typeof setInterval> | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -160,7 +184,7 @@ export class MultiplayerRoomManager {
   constructor(private arenaEngine: ArenaEngine, private chainEngine: ChainPanicEngine, private onStatusUpdate: () => void,
     private puttEngine?: PuttWarEngine, private hotCoreEngine?: HotCoreEngine, private voltCrownEngine?: VoltCrownEngine,
     private hexCrushEngine?: HexCrushEngine, public tournamentManager?: TournamentManager, private ricochetEngine?: RicochetEngine,
-    private networkOptions: RoomNetworkOptions = {}) {
+    private networkOptions: RoomNetworkOptions = {}, private cargoEngine?: CargoCrewEngine) {
     this.compressionEnabled = (networkOptions.compression ?? typeof RTCPeerConnection === 'function') && compressionSupported();
     if (typeof window !== 'undefined') {
       window.addEventListener('beforeunload', this.beforeUnload);
@@ -220,13 +244,30 @@ export class MultiplayerRoomManager {
     return { rttMs: Math.round(this.hostRtt.srtt), jitterMs: Math.round(this.hostRtt.rttvar), samples: this.hostRtt.samples };
   }
 
+  public async getConnectionDiagnostic(): Promise<ConnectionDiagnostic> {
+    let config: RTCConfiguration = {};
+    try { config = this.networkOptions.rtcConfig ?? readRtcConfiguration(); } catch { /* The report exposes only a boolean configuration error. */ }
+    const links = this.isHost ? [...this.clientConns].flatMap(([peer, connection]) => {
+      const slot = this.peerToSlot.get(this.connToLogicalPeer.get(peer) ?? peer);
+      return slot === undefined ? [] : [{ slot, connection }];
+    }) : this.hostConn ? [{ slot: 0, connection: this.hostConn }] : [];
+    return { version: 1, capturedAt: new Date().toISOString(), protocolVersion: PROTOCOL_VERSION, role: this.role,
+      state: this.connectionState, signalingReady: this.hostSignalingReady, synchronized: this.isSynchronized,
+      configurationError: this.networkConfigurationError !== null,
+      turnConfigured: Boolean(config.iceServers?.some(server => (Array.isArray(server.urls) ? server.urls : [server.urls]).some(url => /^turns?:/.test(url)))),
+      icePolicy: config.iceTransportPolicy === 'relay' ? 'relay' : 'all', humans: this.arenaEngine.players.filter(p => !p.isBot).length,
+      links: await Promise.all(links.map(({ slot, connection }) => readLinkDiagnostic(connection, slot))) };
+  }
+
   public get activeRoundEpoch(): number {
+    if (this.activeGame === 'CARGO_CREW') return this.cargoEngine?.roundEpoch ?? 0;
     if (this.activeGame === 'CHAIN_PANIC') return this.chainEngine.roundEpoch;
     if (this.activeGame === 'TURBO_PUTT') return this.puttEngine?.roundEpoch ?? 0;
     return this.currentArenaEngine()?.roundEpoch ?? this.arenaEngine.roundEpoch;
   }
 
   private get gameplayIsActive(): boolean {
+    if (this.activeGame === 'CARGO_CREW') return this.cargoEngine?.status === 'PLAYING';
     if (this.activeGame === 'HUB') return false;
     if (this.activeGame === 'BASH_BOT') return this.arenaEngine.phase === 'PLAYING';
     if (this.activeGame === 'CHAIN_PANIC') return this.chainEngine.status === 'PLAYING';
@@ -311,9 +352,9 @@ export class MultiplayerRoomManager {
 
   private sendToAllClients(env: NetEnvelope): void { this.clientConns.forEach(c => this.sendOverConn(c, env)); }
   private sendToHost(env: NetEnvelope): boolean { return this.sendOverConn(this.hostConn, env); }
-  private engines() { return [this.arenaEngine, this.chainEngine, this.puttEngine, this.hotCoreEngine, this.voltCrownEngine, this.hexCrushEngine, this.ricochetEngine]; }
+  private engines() { return [this.arenaEngine, this.chainEngine, this.puttEngine, this.hotCoreEngine, this.voltCrownEngine, this.hexCrushEngine, this.ricochetEngine, this.cargoEngine]; }
   private applyRemoteInput(input: ClientInputPacket): void {
-    const engine = this.activeGame === 'BASH_BOT' ? this.arenaEngine : this.activeGame === 'CHAIN_PANIC' ? this.chainEngine :
+    const engine = this.activeGame === 'CARGO_CREW' ? this.cargoEngine : this.activeGame === 'BASH_BOT' ? this.arenaEngine : this.activeGame === 'CHAIN_PANIC' ? this.chainEngine :
       this.activeGame === 'TURBO_PUTT' ? this.puttEngine : this.currentArenaEngine();
     engine?.applyRemoteInput({ ...input });
   }
@@ -364,25 +405,43 @@ export class MultiplayerRoomManager {
   }
 
   public syncEnginesRoster(): void {
+    if (this.isHost && this.challenge?.partySize !== undefined && this.challenge.partySize !== this.humanPlayers.length) this.challenge.eligible = false;
     const bots = this.arenaEngine.botDifficulty !== 'OFF';
     this.arenaEngine.players.forEach(p => { if (p.isBot && !bots) p.alive = false; });
     const roster = this.arenaEngine.players.map(p => ({ name: cleanName(p.name), isBot: p.isBot, cosmetics: p.cosmetics }));
     for (const e of this.engines().slice(1)) {
       (e as Exclude<typeof e, ArenaEngine | undefined> | undefined)?.syncPlayerIdentities(roster, bots);
     }
+    if (this.isHost && this.gameVote.open) {
+      for (const p of this.arenaEngine.players) if (p.isBot) this.gameVote.ballots[p.id] = null;
+      if (this.humanPlayers.every(p => this.gameVote.ballots[p.id] !== null)) this.finishGameVote();
+    }
+    if (this.isHost) this.tournamentManager?.syncParticipants(this.arenaEngine.players.filter(p => !p.isBot).map(p => p.id));
   }
 
-  public switchGame(next: ActiveGameId): void {
+  public switchGame(next: ActiveGameId, tournamentRound = false, preserveChallenge = false): void {
     if (this.disposed || !GAME_IDS.includes(next)) return;
     if (!this.isHost) { this.pushToast('👑 Solo el Anfitrión puede cambiar el juego de la sala'); return; }
+    if (!tournamentRound) this.tournamentManager?.stopTournament();
+    if (!preserveChallenge) this.clearChallenge();
+    if (this.gameVote.open) this.gameVote.open = false;
     this.stateSeq++;
     this.activeGame = next;
+    this.sessionResult = null;
     for (let slot = 1; slot < 4; slot++) this.clearRemoteSlot(slot);
     this.syncEnginesRoster();
-    if (next === 'BASH_BOT') { this.arenaEngine.phase = 'PLAYING'; this.arenaEngine.spawnRound(); }
-    else if (next === 'CHAIN_PANIC') this.chainEngine.loadLevel(this.chainEngine.levelIndex);
+    if (tournamentRound && next === 'VOLT_CROWN' && this.voltCrownEngine) this.voltCrownEngine.mode = 'FFA';
+    if (tournamentRound && next === 'BASH_BOT') this.arenaEngine.resetChampionship();
+    else if (tournamentRound && this.currentArenaEngine()) this.currentArenaEngine()!.resetChampionship();
+    else if (next === 'BASH_BOT') { this.arenaEngine.phase = 'PLAYING'; this.arenaEngine.spawnRound(); }
+    else if (next === 'CARGO_CREW') this.cargoEngine?.startRoute();
+    else if (next === 'CHAIN_PANIC') {
+      if (this.chainEngine.campaign.completed) this.chainEngine.stopCampaign();
+      this.chainEngine.loadLevel(this.chainEngine.levelIndex);
+    }
     else if (next === 'TURBO_PUTT') this.puttEngine?.loadHole(this.puttEngine.holeIndex);
     else this.currentArenaEngine()?.loadArena(this.currentArenaEngine()!.arenaIndex);
+    if (preserveChallenge && this.challenge) this.configureChallenge();
     const env: NetEnvelope = { sender: this.localPeerId, type: 'GAME_SWITCH', payload: {
       stateSeq: this.stateSeq, activeGame: next, botDifficulty: this.arenaEngine.botDifficulty,
       levelIndex: this.chainEngine.levelIndex, holeIndex: this.puttEngine?.holeIndex ?? 0, arenaIndex: this.currentArenaEngine()?.arenaIndex ?? 0
@@ -408,6 +467,9 @@ export class MultiplayerRoomManager {
     if (!validAction(action) || this.disposed) return;
     if (!this.isHost) { this.pushToast('👑 Solo el Anfitrión puede cambiar los ajustes de la sala'); return; }
     this.stateSeq++;
+    if (action.kind === 'START_CHALLENGE' && action.challengeCode) { this.startChallenge(action.challengeCode); return; }
+    if (action.kind === 'RESET_MATCH' && this.challenge) { this.startChallenge(this.challenge.code); return; }
+    if (['BOT_DIFF', 'LOAD_STAGE', 'CHAIN_MODE', 'VOLT_MODE', 'CARGO_ROUTE', 'START_CAMPAIGN', 'START_TOURNAMENT'].includes(action.kind)) this.clearChallenge();
     this.executeRoomAction(action);
     this.sendToAllClients({ sender: this.localPeerId, type: 'ROOM_ACTION', payload: { ...action, stateSeq: this.stateSeq } });
     this.broadcastHostSnapshot(true);
@@ -415,31 +477,48 @@ export class MultiplayerRoomManager {
   }
 
   private executeRoomAction(a: RoomActionMsg): void {
-    if (a.kind === 'BOT_DIFF' && a.botDifficulty) {
+    if (['RESET_MATCH', 'BOT_DIFF', 'LOAD_STAGE', 'VOLT_MODE'].includes(a.kind)) this.sessionResult = null;
+    if (a.kind === 'CARGO_ROUTE' && a.cargoRoute !== undefined) {
+      this.cargoEngine?.setRoute(a.cargoRoute); this.sessionResult = null;
+    } else if (a.kind === 'BOT_DIFF' && a.botDifficulty) {
       this.arenaEngine.botDifficulty = a.botDifficulty;
       this.syncEnginesRoster();
       if (this.isHost) {
         this.arenaEngine.spawnRound();
         this.chainEngine.loadLevel(this.chainEngine.levelIndex);
         this.puttEngine?.loadHole(this.puttEngine.holeIndex);
+        this.cargoEngine?.loadStage(this.cargoEngine.stageIndex, this.cargoEngine.checkpoint);
         for (const e of [this.hotCoreEngine, this.voltCrownEngine, this.hexCrushEngine, this.ricochetEngine]) e?.loadArena(e.arenaIndex);
       }
     } else if (a.kind === 'LOAD_STAGE') {
+      if (a.levelIndex !== undefined) this.chainEngine.stopCampaign();
       if (a.levelIndex !== undefined && this.chainEngine.levelIndex !== a.levelIndex) this.chainEngine.loadLevel(a.levelIndex);
       if (a.holeIndex !== undefined && this.puttEngine?.holeIndex !== a.holeIndex) this.puttEngine?.loadHole(a.holeIndex);
       const e = this.currentArenaEngine();
       if (a.arenaIndex !== undefined && e && e.arenaIndex !== a.arenaIndex) e.loadArena(a.arenaIndex);
     } else if (a.kind === 'CHAIN_MODE' && a.chainMode) {
+      this.chainEngine.stopCampaign();
       this.chainEngine.mode = a.chainMode;
       if (this.isHost) this.chainEngine.loadLevel(this.chainEngine.levelIndex);
     } else if (a.kind === 'RESET_MATCH' && this.isHost) {
-      if (this.activeGame === 'CHAIN_PANIC') this.chainEngine.loadLevel(this.chainEngine.levelIndex);
+      if (this.activeGame === 'CARGO_CREW') this.cargoEngine?.startRoute();
+      else if (this.activeGame === 'CHAIN_PANIC') {
+        if (this.chainEngine.campaign.active) this.chainEngine.retryCampaignSector();
+        else this.chainEngine.loadLevel(this.chainEngine.levelIndex);
+      }
       else if (this.activeGame === 'TURBO_PUTT') this.puttEngine?.loadHole(this.puttEngine.holeIndex);
       else if (this.activeGame === 'RICOCHET_1') this.ricochetEngine?.resetChampionship();
       else if (this.currentArenaEngine()) (this.currentArenaEngine() as HotCoreEngine | VoltCrownEngine | HexCrushEngine).resetChampionship();
       else this.arenaEngine.resetChampionship();
+    } else if (a.kind === 'VOLT_MODE' && this.voltCrownEngine && a.voltMode && !this.tournamentManager?.state.active) {
+      this.voltCrownEngine.mode = a.voltMode;
+      if (this.isHost) this.voltCrownEngine.resetChampionship();
+    } else if (a.kind === 'START_CAMPAIGN' && this.isHost) {
+      this.chainEngine.startCampaign(a.campaignSave);
+      this.switchGame('CHAIN_PANIC');
     } else if (a.kind === 'START_TOURNAMENT' && this.isHost) {
-      this.tournamentManager?.startTournament(game => this.switchGame(game));
+      const options = a.replaySame ? this.tournamentManager?.state.options : a.tournamentOptions;
+      this.tournamentManager?.startTournament(game => this.switchGame(game, true), options, a.replaySame);
     } else if (a.kind === 'STOP_TOURNAMENT' && this.isHost) {
       this.tournamentManager?.stopTournament(); this.switchGame('HUB');
     }
@@ -469,7 +548,7 @@ export class MultiplayerRoomManager {
 
   private freeSlotForPeer(id: string, reason?: string): void {
     const p = this.arenaEngine.players.find((p, i) => i > 0 && p.peerId === id && !p.isBot);
-    this.peerToSlot.delete(id); this.peerLastSeen.delete(id); this.latestInputSeq.delete(id); this.latestActionSeq.delete(id);
+    this.peerToSlot.delete(id); this.peerLastSeen.delete(id); this.latestInputSeq.delete(id); this.latestActionSeq.delete(id); this.cancelledThroughInputSeq.delete(id);
     this.seenActionIds.delete(id); this.dispatchedActionSeq.delete(id); this.continuousInputs.delete(id);
     this.inputLastSeen.delete(id); this.staleInputs.delete(id);
     this.joinReplies.delete(id); this.pendingPings.delete(id); this.peerRtt.delete(id); this.peerCaps.delete(id);
@@ -550,6 +629,7 @@ export class MultiplayerRoomManager {
 
   private cleanupConnections(): void {
     this.generation++;
+    this.gameVote = newVote(); this.clearChallenge();
     this.timers.forEach(clearTimeout); this.timers.clear();
     if (this.joinRetryTimer) clearInterval(this.joinRetryTimer);
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
@@ -558,7 +638,7 @@ export class MultiplayerRoomManager {
     const peer = this.peer;
     this.hostConn = null; this.peer = null; this.clientConns.clear(); this.connToLogicalPeer.clear();
     this.peerToSlot.clear(); this.peerLastSeen.clear(); this.rates.clear(); this.latestInputSeq.clear(); this.latestActionSeq.clear(); this.snapshotSentTimes.clear();
-    this.seenActionIds.clear(); this.dispatchedActionSeq.clear(); this.continuousInputs.clear();
+    this.seenActionIds.clear(); this.dispatchedActionSeq.clear(); this.continuousInputs.clear(); this.cancelledThroughInputSeq.clear();
     this.inputLastSeen.clear(); this.staleInputs.clear(); this.pendingActions = [];
     this.joinReplies.clear(); this.pendingPings.clear(); this.peerRtt.clear(); this.peerCaps.clear();
     // A new connection may take a different ICE path (direct vs TURN): measure it afresh.
@@ -575,7 +655,7 @@ export class MultiplayerRoomManager {
     this.cleanupConnections();
     this.roomCode = (rawCode.trim().toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8) || 'TP04');
     this.role = 'HOST'; this.isHost = true; this.localSlotId = 0; this.hostName = cleanName(playerName);
-    this.activeGame = 'HUB'; this.kickedNotice = null; this.tournamentManager?.stopTournament();
+    this.activeGame = 'HUB'; this.kickedNotice = null; this.sessionResult = null; this.tournamentManager?.stopTournament();
     this.hostEpoch = uniqueId(); this.snapshotSeq = 0; this.lastSnapshotSeq = 0; this.stateSeq = 1; this.clientStateSeq = 0;
     this.authoritativeHostPeerId = null; this.connectionState = 'HOSTING'; this.connectedPeersCount = 0;
     this.arenaEngine.players.forEach((p, i) => {
@@ -660,7 +740,7 @@ export class MultiplayerRoomManager {
         // Preserve this player's slot and score through a short Wi-Fi interruption.
         // An explicit leave/kick still frees it immediately; heartbeat expires the reservation.
         const slot = this.peerToSlot.get(id);
-        if (slot !== undefined) this.clearRemoteSlot(slot);
+        if (slot !== undefined) { this.clearRemoteSlot(slot); this.tournamentManager?.clearReady(slot); }
         if (slot !== undefined) this.continuousInputs.set(id, this.neutralInput(slot));
         this.inputLastSeen.delete(id);
         this.peerLastSeen.set(id, performance.now());
@@ -676,7 +756,8 @@ export class MultiplayerRoomManager {
     this.cleanupConnections();
     this.roomCode = rawCode.trim().toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8) || 'TP04';
     this.role = 'CLIENT'; this.isHost = false; this.localSlotId = 0; this.kickedNotice = null;
-    this.clientStateSeq = 0; this.connectionState = 'CONNECTING'; this.activeGame = 'HUB';
+    this.clientStateSeq = 0; this.connectionState = 'CONNECTING'; this.activeGame = 'HUB'; this.sessionResult = null;
+    this.tournamentManager?.stopTournament();
     this.arenaEngine.players.forEach((p, i) => { p.name = i === 0 ? cleanName(name) : DEFAULT_BOT_NAMES[i]; p.isBot = i !== 0; p.alive = i === 0; });
     this.syncEnginesRoster();
     this.connectAsPeerClient(name);
@@ -753,11 +834,11 @@ export class MultiplayerRoomManager {
     if (this.isHost) {
       if (this.clientConns.get(source.peer) !== source || env.sender !== source.peer || this.bannedPeerIds.has(source.peer)) return;
       if (env.type !== 'JOIN_CLAIM' && (this.connToLogicalPeer.get(source.peer) !== env.sender || !this.peerToSlot.has(env.sender))) return;
-      if (!['JOIN_CLAIM', 'PEER_LEAVE', 'PING_REQ', 'PING_ACK', 'CLIENT_INPUT', 'DRAFT_PICK'].includes(env.type)) return;
+      if (!['JOIN_CLAIM', 'PEER_LEAVE', 'PING_REQ', 'PING_ACK', 'CLIENT_INPUT', 'DRAFT_PICK', 'TOURNAMENT_READY', 'GAME_VOTE'].includes(env.type)) return;
       if (env.type !== 'JOIN_CLAIM' && env.type !== 'PING_REQ' && env.hostEpoch !== this.hostEpoch) return;
     } else {
       if (source !== this.hostConn || source.peer !== `${HOST_ID_PREFIX}${this.roomCode}`) return;
-      if (['JOIN_CLAIM', 'CLIENT_INPUT', 'DRAFT_PICK', 'PEER_LEAVE'].includes(env.type)) return;
+      if (['JOIN_CLAIM', 'CLIENT_INPUT', 'DRAFT_PICK', 'PEER_LEAVE', 'TOURNAMENT_READY', 'GAME_VOTE'].includes(env.type)) return;
       if (env.type !== 'SLOT_ASSIGN' && env.type !== 'KICK_PEER' && (!this.authoritativeHostPeerId || env.sender !== this.authoritativeHostPeerId || env.hostEpoch !== this.hostEpoch)) return;
       if (this.authoritativeHostPeerId && env.sender !== this.authoritativeHostPeerId) return;
     }
@@ -827,6 +908,14 @@ export class MultiplayerRoomManager {
       this.receiveInput(env.sender, p, now);
     } else if (env.type === 'WORLD_SNAP') {
       this.receiveSnapshot(p, now);
+    } else if (env.type === 'GAME_VOTE') {
+      if (!record(p) || p.slotId !== this.peerToSlot.get(env.sender) || p.voteId !== this.gameVote.id || !PARTY_GAMES.includes(p.game as PlayableGame)) return;
+      this.applyGameVote(p.slotId as number, p.game as PlayableGame);
+    } else if (env.type === 'TOURNAMENT_READY') {
+      if (!record(p) || p.slotId !== this.peerToSlot.get(env.sender) || !integer(p.preparationId, 1)) return;
+      if (this.tournamentManager?.markReady(p.slotId as number, p.preparationId)) {
+        this.peerLastSeen.set(env.sender, now); this.broadcastHostSnapshot(true); this.onStatusUpdate();
+      }
     } else if (env.type === 'DRAFT_PICK') {
       if (!record(p) || p.slotId !== this.peerToSlot.get(env.sender) || !text(p.modId, 80) || this.activeGame !== 'BASH_BOT' ||
           this.arenaEngine.phase !== 'CARD_DRAFT' || !this.arenaEngine.draftOptions.includes(p.modId)) return;
@@ -842,11 +931,19 @@ export class MultiplayerRoomManager {
     const rtt = this.peerRtt.get(id);
     const snapshotAt = this.snapshotSentTimes.get(p.lastSeenSnapshotSeq ?? 0);
     if (snapshotAt === undefined || now - snapshotAt > inputFreshnessMs(rtt)) return;
+    if (p.inputSeq <= (this.cancelledThroughInputSeq.get(id) ?? 0)) return;
     const newMovement = p.inputSeq > (this.latestInputSeq.get(id) ?? 0);
     const newAction = this.acceptAction(id, p);
     if (!newMovement && !newAction) return;
     this.peerLastSeen.set(id, now);
     const input = { ...p, name: cleanName(p.name) };
+    if (newMovement && input.cancelHeldActions) {
+      this.cancelledThroughInputSeq.set(id, p.inputSeq);
+      this.clearRemoteSlot(input.slotId);
+      input.moveX = input.moveY = 0;
+      input.parryPressed = input.dashPressed = input.yankPressed = input.chargingParry = input.anchorHeld = false;
+      input.emotePressed = 0; input.shotReleasedPower = undefined;
+    }
     // Client timestamps and claims never determine lag compensation on the host.
     input.lagCompensationMs = Math.min(180, (rtt?.srtt ?? 0) / 2 + 40);
     const length = Math.hypot(input.moveX, input.moveY); if (length > 1) { input.moveX /= length; input.moveY /= length; }
@@ -864,8 +961,7 @@ export class MultiplayerRoomManager {
       const dispatch = (this.dispatchedActionSeq.get(id) ?? 0) + 1;
       this.dispatchedActionSeq.set(id, dispatch); input.actionSeq = dispatch;
     }
-    const tournament = this.tournamentManager;
-    if (this.gameplayIsActive && !(tournament?.state.active && (tournament.state.rouletteSpinning || tournament.state.isFinished || tournament.isIntermission))) {
+    if (this.gameplayIsActive && !this.tournamentManager?.isPaused) {
       if (newAction) this.applyRemoteInput(input);
       if (newMovement && !newAction || newAction && !newMovement) {
         this.applyRemoteInput(this.continuousInputs.get(id) ?? this.neutralInput(input.slotId));
@@ -879,6 +975,7 @@ export class MultiplayerRoomManager {
     const snap = value as WorldSnapshotPacket;
     if (snap.hostEpoch !== this.hostEpoch || snap.stateSeq! < this.clientStateSeq || snap.snapshotSeq! <= this.lastSnapshotSeq) return;
     const prevGame = this.activeGame, prevDiff = this.arenaEngine.botDifficulty, prevPhase = this.arenaEngine.phase;
+    const previousResultId = this.sessionResult?.id;
     const prevHumans = this.arenaEngine.players.filter(p => !p.isBot).length;
     // Computed against the pre-snapshot game: a cartridge or round change resets players to host state anyway.
     const lead = Math.min(0.12, this.pingMs / 2000);
@@ -890,12 +987,16 @@ export class MultiplayerRoomManager {
     const hintFor = (game: ActiveGameId): PredictionHint => game === snap.activeGame ? hint : lead;
     this.arenaEngine.applySnapshot(snap, this.localSlotId, hintFor('BASH_BOT'));
     if (snap.chainState) this.chainEngine.applySnapshot(snap.chainState, this.localSlotId, hintFor('CHAIN_PANIC'));
+    if (snap.cargoState) this.cargoEngine?.applySnapshot(snap.cargoState, this.localSlotId, hintFor('CARGO_CREW'));
     if (snap.puttState) this.puttEngine?.applySnapshot(snap.puttState, this.localSlotId, hintFor('TURBO_PUTT'));
     if (snap.hotCoreState) this.hotCoreEngine?.applySnapshot(snap.hotCoreState, this.localSlotId, hintFor('HOT_CORE'));
     if (snap.voltCrownState) this.voltCrownEngine?.applySnapshot(snap.voltCrownState, this.localSlotId, hintFor('VOLT_CROWN'));
     if (snap.hexCrushState) this.hexCrushEngine?.applySnapshot(snap.hexCrushState, this.localSlotId, hintFor('HEX_CRUSH'));
     if (snap.ricochetState) this.ricochetEngine?.applySnapshot(snap.ricochetState, this.localSlotId, hintFor('RICOCHET_1'));
     if (snap.tournamentState) this.tournamentManager?.applySnapshot(snap.tournamentState);
+    this.sessionResult = snap.sessionResult ?? null;
+    this.gameVote = snap.gameVote ? { ...snap.gameVote, ballots: [...snap.gameVote.ballots] } : newVote();
+    this.challenge = snap.challenge ? { ...snap.challenge } : null;
     // Remember how far this snapshot moved the local player, so the recorded trajectory stays free of
     // corrections and later offsets measure only movement the host has not seen.
     const after = this.localPosition();
@@ -904,10 +1005,11 @@ export class MultiplayerRoomManager {
     } else this.trackContext = '';
     this.syncEnginesRoster();
     if (prevGame !== this.activeGame || prevDiff !== this.arenaEngine.botDifficulty || prevPhase !== this.arenaEngine.phase ||
-        prevHumans !== this.arenaEngine.players.filter(p => !p.isBot).length || snap.tick % 15 === 0) this.onStatusUpdate();
+        previousResultId !== this.sessionResult?.id || prevHumans !== this.arenaEngine.players.filter(p => !p.isBot).length || snap.tick % 15 === 0) this.onStatusUpdate();
   }
 
   private predictionEngine(): { players: { x: number; y: number; z?: number }[] } | undefined {
+    if (this.activeGame === 'CARGO_CREW') return this.cargoEngine;
     if (this.activeGame === 'HUB') return undefined;
     if (this.activeGame === 'BASH_BOT') return this.arenaEngine;
     if (this.activeGame === 'CHAIN_PANIC') return this.chainEngine;
@@ -980,8 +1082,9 @@ export class MultiplayerRoomManager {
     if (!this.disposed) this.localPilotName = cleanName(input.name);
     if (this.isHost || this.disposed || this.connectionState !== 'CONNECTED_CLIENT') return;
     const now = performance.now();
+    if (input.cancelHeldActions) this.pendingActions = [];
     this.sampleLocalTrack(now);
-    const discrete = input.parryPressed || input.dashPressed || input.yankPressed || input.emotePressed > 0 || input.shotReleasedPower !== undefined;
+    const discrete = !input.cancelHeldActions && (input.parryPressed || input.dashPressed || input.yankPressed || input.emotePressed > 0 || input.shotReleasedPower !== undefined);
     if (discrete) {
       this.pendingActions.push({ actionSeq: ++this.clientActionSeq, at: now, stateSeq: this.clientStateSeq, activeGame: this.activeGame, roundEpoch: this.activeRoundEpoch, parryPressed: input.parryPressed, dashPressed: input.dashPressed,
         yankPressed: input.yankPressed, emotePressed: input.emotePressed, shotReleasedPower: input.shotReleasedPower, feintPrimed: input.feintPrimed });
@@ -993,7 +1096,7 @@ export class MultiplayerRoomManager {
     // every direction change and let host and prediction diverge for the in-between steps.
     const moving = input.moveX !== 0 || input.moveY !== 0, wasMoving = this.lastSentMoveX !== 0 || this.lastSentMoveY !== 0;
     const turned = moving !== wasMoving || Math.abs(input.moveX - this.lastSentMoveX) + Math.abs(input.moveY - this.lastSentMoveY) > 0.3;
-    const urgent = this.pendingActions.length > 0 || input.chargingParry !== this.lastChargingState || turned;
+    const urgent = this.pendingActions.length > 0 || input.chargingParry !== this.lastChargingState || Boolean(input.cancelHeldActions) !== this.lastCancelState || turned;
     if (!urgent && now - this.lastClientInputSentAt < 35) return;
     if (!this.hostConn?.open || this.isCongested(this.hostConn)) return;
     const outgoing: ClientInputPacket = { ...input, slotId: this.localSlotId, inputSeq: ++this.inputSeq,
@@ -1003,6 +1106,7 @@ export class MultiplayerRoomManager {
     if (this.sendToHost({ sender: this.localPeerId, type: 'CLIENT_INPUT', payload: outgoing })) {
       if (action) this.pendingActions.shift();
       this.lastChargingState = input.chargingParry; this.lastClientInputSentAt = now;
+      this.lastCancelState = Boolean(input.cancelHeldActions);
       this.lastSentMoveX = input.moveX; this.lastSentMoveY = input.moveY;
       this.inputSentAt.set(outgoing.inputSeq!, now);
       if (this.inputSentAt.size > 512) this.inputSentAt.delete(this.inputSentAt.keys().next().value!);
@@ -1019,7 +1123,8 @@ export class MultiplayerRoomManager {
     while (this.snapshotSentTimes.size > 128) this.snapshotSentTimes.delete(this.snapshotSentTimes.keys().next().value!);
     snap.hostName = cleanName(this.arenaEngine.players[0]?.name || this.hostName); snap.activeGame = this.activeGame;
     snap.botDifficulty = this.arenaEngine.botDifficulty; snap.hostSentAtMs = now;
-    if (this.activeGame === 'CHAIN_PANIC') snap.chainState = this.chainEngine.getSnapshot();
+    if (this.activeGame === 'CARGO_CREW') snap.cargoState = this.cargoEngine?.getSnapshot();
+    else if (this.activeGame === 'CHAIN_PANIC') snap.chainState = this.chainEngine.getSnapshot();
     else if (this.activeGame === 'TURBO_PUTT') snap.puttState = this.puttEngine?.getSnapshot();
     else if (this.activeGame === 'HOT_CORE') snap.hotCoreState = this.hotCoreEngine?.getSnapshot();
     else if (this.activeGame === 'VOLT_CROWN') snap.voltCrownState = this.voltCrownEngine?.getSnapshot();
@@ -1027,6 +1132,8 @@ export class MultiplayerRoomManager {
     else if (this.activeGame === 'RICOCHET_1') snap.ricochetState = this.ricochetEngine?.getSnapshot();
     // Include inactive state too, so stopping a tournament also clears it on clients.
     if (this.tournamentManager) snap.tournamentState = this.tournamentManager.getSnapshot();
+    snap.sessionResult = this.sessionResult;
+    snap.gameVote = this.gameVote; snap.challenge = this.challenge;
     snap.inputAcks = this.arenaEngine.players.map((p, slot) => {
       const id = slot > 0 && !p.isBot ? p.peerId : null;
       const seq = id ? this.latestInputSeq.get(id) : undefined, at = id ? this.inputLastSeen.get(id) : undefined;
@@ -1039,5 +1146,59 @@ export class MultiplayerRoomManager {
     if (!text(modId, 80)) return;
     if (this.isHost) { this.arenaEngine.selectDraftMod(this.localSlotId, modId); this.broadcastHostSnapshot(true); }
     else this.sendToHost({ sender: this.localPeerId, type: 'DRAFT_PICK', payload: { slotId: this.localSlotId, modId } });
+  }
+
+  private clearChallenge(): void {
+    this.challenge = null; for (const engine of this.engines()) engine?.setRandomSeed(null);
+  }
+  private configureChallenge(): void {
+    const c = this.challenge!;
+    if (c.game === 'BASH_BOT') { this.arenaEngine.resetChampionship(); this.arenaEngine.roundIndex = c.stage; this.arenaEngine.spawnRound(); }
+    else if (c.game === 'CHAIN_PANIC') { this.chainEngine.stopCampaign(); this.chainEngine.resetMatchStats(); this.chainEngine.mode = 'COOP'; this.chainEngine.loadLevel(c.stage); }
+    else if (c.game === 'CARGO_CREW') this.cargoEngine?.setRoute(c.stage);
+    else if (c.game === 'TURBO_PUTT') this.puttEngine?.loadHole(c.stage);
+    else { const engine = this.currentArenaEngine(); engine?.resetChampionship(); engine?.loadArena(c.stage); }
+  }
+  public startChallenge(code: string): void {
+    if (!this.isHost || this.disposed || !validChallengeCode(code)) return;
+    const challenge = challengeFromCode(code); if (!challenge) return;
+    this.clearChallenge(); this.challenge = { ...challenge, partySize: this.humanPlayers.length, eligible: true };
+    this.arenaEngine.botDifficulty = 'NORMAL'; if (this.voltCrownEngine) this.voltCrownEngine.mode = 'FFA';
+    for (const engine of this.engines()) engine?.setRandomSeed(challenge.seed);
+    this.switchGame(challenge.game, false, true);
+  }
+  public startGameVote(): void {
+    if (!this.isHost || this.disposed || this.tournamentManager?.state.active || this.activeGame !== 'HUB') return;
+    this.gameVote = { ...newVote(this.gameVote.id + 1), open: true };
+    this.broadcastHostSnapshot(true); this.onStatusUpdate();
+  }
+  public submitGameVote(game: PlayableGame): void {
+    if (!this.gameVote.open || !PARTY_GAMES.includes(game) || !this.isSynchronized) return;
+    if (this.isHost) this.applyGameVote(this.localSlotId, game);
+    else this.sendToHost({ sender: this.localPeerId, type: 'GAME_VOTE', payload: { slotId: this.localSlotId, voteId: this.gameVote.id, game } });
+  }
+  private applyGameVote(slot: number, game: PlayableGame): void {
+    if (!this.isHost || !this.gameVote.open || this.activeGame !== 'HUB') return;
+    this.gameVote.ballots[slot] = game;
+    const humans = this.arenaEngine.players.filter(p => !p.isBot).map(p => p.id);
+    if (humans.every(id => this.gameVote.ballots[id] !== null)) this.finishGameVote();
+    else { this.broadcastHostSnapshot(true); this.onStatusUpdate(); }
+  }
+  public finishGameVote(): void {
+    if (!this.isHost || !this.gameVote.open) return;
+    this.gameVote.winner = resolveVote(this.gameVote, this.arenaEngine.players.filter(p => !p.isBot).map(p => p.id));
+    this.gameVote.open = false; this.broadcastHostSnapshot(true); this.onStatusUpdate();
+  }
+
+  public submitTournamentReady(): void {
+    const tournament = this.tournamentManager;
+    if (!tournament?.state.preparing || !this.isSynchronized) return;
+    if (this.isHost) {
+      if (tournament.markReady(this.localSlotId, tournament.state.preparationId)) {
+        this.broadcastHostSnapshot(true); this.onStatusUpdate();
+      }
+    } else this.sendToHost({ sender: this.localPeerId, type: 'TOURNAMENT_READY', payload: {
+      slotId: this.localSlotId, preparationId: tournament.state.preparationId
+    } });
   }
 }

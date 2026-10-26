@@ -230,7 +230,7 @@ export class PuttWarRenderer extends CanvasViewportRenderer {
     for (const b of engine.bombs) {
       ctx.save();
       ctx.translate(b.x, b.y);
-      const pulse = Math.sin(nowSec * 18) > 0;
+      const pulse = (this.reducedFlashes || Math.sin(nowSec * 18) > 0);
 
       ctx.fillStyle = pulse ? '#FF4F00' : '#18181B';
       ctx.beginPath();

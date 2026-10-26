@@ -1,11 +1,30 @@
 import './style.css';
+import './ui/playMode.css';
+import './ui/party.css';
+import type { PracticeRoom } from './ui/practiceRoom';
+import { PARTY_GAMES, type PlayableGame } from './game/partyVote';
+import { SharePanel, shareUrl } from './ui/sharePanel';
+import { PartyPanel } from './ui/partyPanel';
+import { ComfortSettings } from './ui/comfortSettings';
+import { playPreferences } from './game/playPreferences';
 import { ArenaEngine } from './game/arenaEngine';
-import { CHAIN_LEVELS, ChainPanicEngine } from './game/chainPanicEngine';
+import { CHAIN_CAMPAIGN_SECTORS, CHAIN_LEVELS, ChainPanicEngine } from './game/chainPanicEngine';
 import { HOT_CORE_ARENAS, HotCoreEngine } from './game/hotCoreEngine';
 import { VOLT_CROWN_ARENAS, VoltCrownEngine } from './game/voltCrownEngine';
 import { HEX_CRUSH_ARENAS, HexCrushEngine } from './game/hexCrushEngine';
 import { RICOCHET_ARENAS, RicochetEngine } from './game/ricochetEngine';
 import { TournamentManager } from './game/tournamentManager';
+import { validTournamentOptions } from './game/tournamentRules';
+import { GAME_INSTRUCTIONS, instructionControls } from './game/gameInstructions';
+import { campaignMedal, copyCampaign, validCampaignSave } from './game/chainCampaign';
+import { ResultDialog } from './ui/resultDialog';
+import { PlayModeUI } from './ui/playMode';
+import { actionPresentation } from './ui/actionHints';
+import { ConnectionPanel } from './ui/connectionPanel';
+import { cargoStageMedal, CARGO_ROUTE_NAMES, CARGO_STAGES, CargoCrewEngine } from './game/cargoCrewEngine';
+import { CargoCrewRenderer } from './render/cargoCrewRenderer';
+import { makeSessionResult } from './game/matchResults';
+import { playerProgress, SKIN_ACHIEVEMENTS } from './game/playerProgress';
 import { PUTT_HOLES, PuttWarEngine } from './game/puttWarEngine';
 import { HARDWARE_MODS } from './game/hardwareMods';
 import { CourtRenderer } from './render/courtRenderer';
@@ -19,8 +38,8 @@ import { generateRoomCode, MultiplayerRoomManager } from './net/multiplayerRoom'
 import { sfx } from './audio/mechanicalSfx';
 import { bgm } from './audio/chiptuneBgm';
 import { touchGamepad } from './input/touchGamepad';
-import { robotWorkshop, ROBOT_HATS, ROBOT_VISORS, ROBOT_SKINS } from './game/robotWorkshop';
-import { ActiveGameId, BotDifficulty, CHAOS_MUTATORS, ClientInputPacket } from './types';
+import { robotWorkshop, ROBOT_HATS, ROBOT_VISORS, ROBOT_SKINS, skinIsUnlocked } from './game/robotWorkshop';
+import { ActiveGameId, BotDifficulty, CHAOS_MUTATORS, ClientInputPacket, TournamentGameId, TournamentOptions } from './types';
 import { FixedStepClock } from './runtime/fixedStepClock';
 import { escapeHtml, normalizePilotName, readPilotName, writePilotName, readStorage, removeStorage, writeStorage } from './utils/browser';
 
@@ -53,6 +72,9 @@ const toggleBotsBtn = document.getElementById('toggleBotsBtn') as HTMLButtonElem
 const prevSectorBtn = document.getElementById('prevSectorBtn') as HTMLButtonElement;
 const nextSectorBtn = document.getElementById('nextSectorBtn') as HTMLButtonElement;
 const chainModeBtn = document.getElementById('chainModeBtn') as HTMLButtonElement;
+const cargoRouteBtn = document.getElementById('cargoRouteBtn') as HTMLButtonElement;
+cargoRouteBtn.addEventListener('click', () => net.sendOrApplyRoomAction({ kind: 'CARGO_ROUTE', cargoRoute: (cargoEngine.routeIndex + 1) % 3 }));
+const voltModeBtn = document.getElementById('voltModeBtn') as HTMLButtonElement;
 const controlsLegendStrip = document.getElementById('controlsLegendStrip') as HTMLDivElement;
 const installedModsStrip = document.getElementById('installedModsStrip') as HTMLDivElement;
 const roomToastContainer = document.getElementById('roomToastContainer') as HTMLDivElement;
@@ -110,6 +132,31 @@ const tourneyPodiumView = document.getElementById('tourneyPodiumView') as HTMLDi
 const tourneyChampName = document.getElementById('tourneyChampName') as HTMLHeadingElement;
 const tourneyRestartBtn = document.getElementById('tourneyRestartBtn') as HTMLButtonElement;
 const tourneyExitHubBtn = document.getElementById('tourneyExitHubBtn') as HTMLButtonElement;
+const tourneyShuffleBtn = document.getElementById('tourneyShuffleBtn') as HTMLButtonElement;
+const tourneyCancelBtn = document.getElementById('tourneyCancelBtn') as HTMLButtonElement;
+const tourneyPreparationView = document.getElementById('tourneyPreparationView') as HTMLDivElement;
+const tourneyReadyBtn = document.getElementById('tourneyReadyBtn') as HTMLButtonElement;
+const tourneySettings = document.getElementById('tourneySettings') as HTMLFieldSetElement;
+const tourneyRoundsSelect = document.getElementById('tourneyRoundsSelect') as HTMLSelectElement;
+const tourneyMutatorsInput = document.getElementById('tourneyMutatorsInput') as HTMLInputElement;
+const tourneyGameInputs = [...document.querySelectorAll<HTMLInputElement>('[data-tournament-game]')];
+const tourneySettingsHint = document.getElementById('tourneySettingsHint') as HTMLParagraphElement;
+const tourneyObjective = document.getElementById('tourneyObjective') as HTMLParagraphElement;
+const tourneyControls = document.getElementById('tourneyControls') as HTMLDListElement;
+const tourneyTip = document.getElementById('tourneyTip') as HTMLParagraphElement;
+const tourneyMutator = document.getElementById('tourneyMutator') as HTMLParagraphElement;
+const tourneyReadyRoster = document.getElementById('tourneyReadyRoster') as HTMLDivElement;
+const tourneyReadyStatus = document.getElementById('tourneyReadyStatus') as HTMLParagraphElement;
+const tourneyFinalLeaderboard = document.getElementById('tourneyFinalLeaderboard') as HTMLDivElement;
+const virtualGamepad = document.getElementById('virtualGamepad') as HTMLDivElement;
+const adventureHud = document.getElementById('adventureHud') as HTMLDivElement;
+const startChainCampaignBtn = document.getElementById('startChainCampaignBtn') as HTMLButtonElement;
+const continueChainCampaignBtn = document.getElementById('continueChainCampaignBtn') as HTMLButtonElement;
+const resultDialog = new ResultDialog();
+const actionHint = document.getElementById('actionHint') as HTMLDivElement;
+const playMode = new PlayModeUI({ onBlockControls: () => releaseInputState(), onChange: () => syncOverlaysAndHUD() });
+let cancelHeldInput = false;
+let lastCampaignSaveKey = '';
 
 // Robot Workshop Elements
 const workshopOverlay = document.getElementById('workshopOverlay') as HTMLDivElement;
@@ -182,6 +229,7 @@ const hotCoreEngine = new HotCoreEngine();
 const voltCrownEngine = new VoltCrownEngine();
 const hexCrushEngine = new HexCrushEngine();
 const ricochetEngine = new RicochetEngine();
+const cargoEngine = new CargoCrewEngine();
 const tournament = new TournamentManager();
 const courtRenderer = new CourtRenderer(canvas);
 const chainRenderer = new ChainPanicRenderer(canvas);
@@ -190,11 +238,13 @@ const hotCoreRenderer = new HotCoreRenderer(canvas);
 const voltCrownRenderer = new VoltCrownRenderer(canvas);
 const hexCrushRenderer = new HexCrushRenderer(canvas);
 const ricochetRenderer = new RicochetRenderer(canvas);
-const engines = [arenaEngine, chainEngine, puttEngine, hotCoreEngine, voltCrownEngine, hexCrushEngine, ricochetEngine];
-const renderers = [courtRenderer, chainRenderer, puttRenderer, hotCoreRenderer, voltCrownRenderer, hexCrushRenderer, ricochetRenderer];
+const cargoRenderer = new CargoCrewRenderer(canvas);
+const engines = [arenaEngine, chainEngine, puttEngine, hotCoreEngine, voltCrownEngine, hexCrushEngine, ricochetEngine, cargoEngine];
+const renderers = [courtRenderer, chainRenderer, puttRenderer, hotCoreRenderer, voltCrownRenderer, hexCrushRenderer, ricochetRenderer, cargoRenderer];
 
 function getActiveRenderer() {
   switch (net.activeGame) {
+    case 'CARGO_CREW': return cargoRenderer;
     case 'CHAIN_PANIC': return chainRenderer;
     case 'TURBO_PUTT': return puttRenderer;
     case 'HOT_CORE': return hotCoreRenderer;
@@ -207,6 +257,7 @@ function getActiveRenderer() {
 
 function getActiveEngine() {
   switch (net.activeGame) {
+    case 'CARGO_CREW': return cargoEngine;
     case 'CHAIN_PANIC': return chainEngine;
     case 'TURBO_PUTT': return puttEngine;
     case 'HOT_CORE': return hotCoreEngine;
@@ -225,8 +276,32 @@ const net = new MultiplayerRoomManager(
   voltCrownEngine,
   hexCrushEngine,
   tournament,
-  ricochetEngine
+  ricochetEngine,
+  {},
+  cargoEngine
 );
+const connectionPanel = new ConnectionPanel(net);
+let practiceRoom: PracticeRoom | null = null;
+let practiceLoading: Promise<PracticeRoom> | null = null;
+const practiceSelect = document.getElementById('practiceGameSelect') as HTMLSelectElement;
+for (const game of PARTY_GAMES) practiceSelect.add(new Option(GAME_INSTRUCTIONS[game].title, game));
+async function openPractice(game: PlayableGame): Promise<void> {
+  releaseInputState();
+  const start = document.getElementById('startPracticeBtn') as HTMLButtonElement;
+  const help = document.getElementById('helpPracticeBtn') as HTMLButtonElement;
+  start.disabled = help.disabled = true;
+  try {
+    practiceLoading ??= import('./ui/practiceRoom').then(({ PracticeRoom }) => new PracticeRoom({ touch: () => touchGamepad.enabled, game: () => net.activeGame, block: () => releaseInputState() }));
+    practiceRoom = await practiceLoading; practiceRoom.open(game);
+  } catch { practiceLoading = null; net.pushToast('No se pudo abrir la práctica. Inténtalo de nuevo.', 'warn'); }
+  finally { start.disabled = help.disabled = false; }
+}
+document.getElementById('startPracticeBtn')!.addEventListener('click', () => { void openPractice(practiceSelect.value as PlayableGame); });
+document.getElementById('helpPracticeBtn')!.addEventListener('click', () => { void openPractice(net.activeGame === 'HUB' ? practiceSelect.value as PlayableGame : net.activeGame); });
+const sharePanel = new SharePanel(() => releaseInputState());
+const partyPanel = new PartyPanel(net, sharePanel);
+new ComfortSettings();
+function localControlsBlocked(): boolean { return playMode.blocksControls || Boolean(practiceRoom?.isOpen) || sharePanel.isOpen; }
 
 // 5. UI & HUD Synchronization Function
 // The HUD refreshes every 100 ms. Rewriting unchanged markup would replace buttons between mousedown and
@@ -241,6 +316,7 @@ function setHtmlIfChanged(element: Element, html: string): void {
 /** Mod chosen locally; cards stay disabled until the host's snapshot ends the draft (may take one RTT). */
 let pendingDraftPick: string | null = null;
 let pendingDraftPickAt = 0;
+let tournamentFocusKey = '';
 
 draftCardsGrid.addEventListener('click', (event) => {
   const card = (event.target as HTMLElement | null)?.closest<HTMLButtonElement>('[data-mod-id]');
@@ -343,13 +419,21 @@ function syncOverlaysAndHUD(): void {
   const hostControls = [
     ...tabButtons, ...launchGameButtons, tabTournamentBtn, topBotsToggleBtn,
     toggleBotsBtn, hubBotsToggleBtn, resetMatchBtn, prevSectorBtn, nextSectorBtn,
-    chainModeBtn, newChampionshipBtn, hubStartTournamentBtn, tourneyRestartBtn, tourneyExitHubBtn
+    chainModeBtn, cargoRouteBtn, newChampionshipBtn, hubStartTournamentBtn, tourneyRestartBtn, tourneyExitHubBtn,
+    tourneyShuffleBtn, tourneyCancelBtn, startChainCampaignBtn, continueChainCampaignBtn, voltModeBtn
   ];
   hostControls.forEach((button) => {
     if (!button) return;
     button.disabled = !net.isHost;
     if (!net.isHost) button.title = 'El anfitrión controla el juego y la configuración de la sala';
   });
+  tourneySettings.disabled = !net.isHost;
+  cargoRouteBtn.classList.toggle('hidden', net.activeGame !== 'CARGO_CREW');
+  cargoRouteBtn.textContent = CARGO_ROUTE_NAMES[cargoEngine.routeIndex];
+  voltModeBtn.classList.toggle('hidden', net.activeGame !== 'VOLT_CROWN');
+  voltModeBtn.textContent = voltCrownEngine.mode === 'TEAMS' ? 'MODO: EQUIPOS 2 CONTRA 2' : 'MODO: INDIVIDUAL';
+  voltModeBtn.disabled = !net.isHost || tournament.state.active;
+  if (hubStartTournamentBtn) hubStartTournamentBtn.disabled = !net.isHost || !validTournamentOptions(readTournamentSettings());
 
   tabButtons.forEach((btn) => {
     if (btn.dataset.game === net.activeGame) {
@@ -369,7 +453,11 @@ function syncOverlaysAndHUD(): void {
     bgm.setTrack(net.activeGame === 'HUB' ? 'HUB' : 'BATTLE');
   }
 
-  if (net.activeGame === 'CHAIN_PANIC') {
+  if (net.activeGame === 'CARGO_CREW') {
+    prevSectorBtn.classList.add('hidden'); nextSectorBtn.classList.add('hidden'); chainModeBtn.classList.add('hidden');
+    setHtmlIfChanged(controlsLegendStrip, `<span><strong>[WASD]</strong> MOVER</span><span><strong>[CLIC / ESPACIO / A]</strong> ENGANCHAR / SOLTAR CERCA DE LA BATERÍA</span><span><strong>[SHIFT / B]</strong> MANTENER ANCLA</span><span><strong>[E]</strong> REPARAR CERCA DE LA BATERÍA</span>`);
+    installedModsStrip.textContent = `ETAPA ${cargoEngine.stageIndex + 1}/3 · INTEGRIDAD ${Math.ceil(cargoEngine.integrity)}% · ${cargoEngine.definition.hint}`;
+  } else if (net.activeGame === 'CHAIN_PANIC') {
     prevSectorBtn.classList.remove('hidden');
     nextSectorBtn.classList.remove('hidden');
     prevSectorBtn.textContent = '◀ SECTOR';
@@ -543,14 +631,14 @@ function syncOverlaysAndHUD(): void {
       const ricoP = ricochetEngine.players[p.id];
       const isKing = voltCrownEngine.crown.holderId === p.id;
       const scoreBadge =
-        net.activeGame === 'CHAIN_PANIC'
+        net.activeGame === 'CARGO_CREW' ? `🚚 ${cargoEngine.stageIndex + 1}/3` : net.activeGame === 'CHAIN_PANIC'
           ? `S${chainEngine.levelIndex + 1}`
           : net.activeGame === 'TURBO_PUTT'
             ? `${puttP ? puttP.totalPoints : 0}P`
             : net.activeGame === 'HOT_CORE'
               ? `${hotP ? hotP.score : 0}★`
               : net.activeGame === 'VOLT_CROWN'
-                ? `${isKing ? '👑' : '⚡'}${Math.floor(voltP ? voltP.score : 0)}%`
+                ? `${voltCrownEngine.mode === 'TEAMS' ? (voltCrownEngine.teamFor(p.id) === 0 ? 'A · ' : 'B · ') : ''}${isKing ? '👑' : '⚡'}${Math.floor(voltP ? voltP.score : 0)}%`
                 : net.activeGame === 'HEX_CRUSH'
                   ? `${hexP ? hexP.score : 0}/3🏆`
                   : net.activeGame === 'RICOCHET_1'
@@ -643,7 +731,7 @@ function syncOverlaysAndHUD(): void {
     pendingDraftPick = null;
   }
 
-  if (net.activeGame === 'BASH_BOT' && arenaEngine.phase === 'MATCH_OVER') {
+  if (!net.sessionResult && !tournament.state.active && net.activeGame === 'BASH_BOT' && arenaEngine.phase === 'MATCH_OVER') {
     championOverlay.classList.remove('hidden');
     const winner =
       arenaEngine.lastRoundWinnerId !== null
@@ -656,75 +744,242 @@ function syncOverlaysAndHUD(): void {
     championOverlay.classList.add('hidden');
   }
 
-  // Tournament Overlay Synchronization
-  if (tournament.state.active) {
-    if (tournament.state.rouletteSpinning) {
-      tournamentOverlay.classList.remove('hidden');
-      tourneyRouletteView.classList.remove('hidden');
-      tourneyStandingsView.classList.add('hidden');
-      tourneyPodiumView.classList.add('hidden');
+  syncAdventureUI();
+  playMode.sync({ game: net.activeGame, room: net.roomCode, name: normalizePilotName(playerNameInput.value), humans: humanCount,
+    touch: touchGamepad.enabled,
+    objective: net.activeGame === 'VOLT_CROWN' && voltCrownEngine.mode === 'TEAMS' ? 'Protege a tu portador y carga la batería compartida de tu equipo al 100%. Los jugadores 1 y 3 forman el equipo A; 2 y 4, el equipo B.' :
+      net.activeGame === 'BASH_BOT' && arenaEngine.botDifficulty === 'OFF' && humanCount === 1 ? 'Practica el parry y sobrevive a la bola. En el torneo, superar 30 segundos sin KO gana la ronda.' : undefined });
+  syncTournamentHUD();
+  syncActionHints();
+  connectionPanel.sync();
+  partyPanel.sync();
+}
 
-      const mutDef =
-        CHAOS_MUTATORS[tournament.state.rouletteDisplayId] || CHAOS_MUTATORS['NONE'];
-      tourneyModalEyebrow.textContent = `TORNEO DEL CAOS // RONDA ${
-        tournament.state.roundIndex + 1
-      } DE ${tournament.state.totalRounds}`;
-      tourneyModalTitle.textContent = 'RULETA DE MUTADORES';
-      rouletteIcon.textContent = mutDef.icon;
-      rouletteName.textContent = mutDef.name;
-      rouletteDesc.textContent = mutDef.desc;
-    } else if (tournament.state.isFinished) {
-      tournamentOverlay.classList.remove('hidden');
-      tourneyRouletteView.classList.add('hidden');
-      tourneyStandingsView.classList.add('hidden');
-      tourneyPodiumView.classList.remove('hidden');
+function syncActionHints(): void {
+  const blocked = isGameplayPaused() || localControlsBlocked();
+  const presentation = actionPresentation({ game: net.activeGame, slot: net.localSlotId, touch: touchGamepad.enabled,
+    connected: net.isSynchronized, blocked, holdingA: touchGamepad.isHoldingA,
+    arena: arenaEngine, chain: chainEngine, cargo: cargoEngine, putt: puttEngine,
+    hot: hotCoreEngine, volt: voltCrownEngine, hex: hexCrushEngine, ricochet: ricochetEngine });
+  for (const key of ['A', 'B', 'E'] as const) touchGamepad.presentButton(key, presentation[key]);
+  actionHint.classList.toggle('hidden', net.activeGame === 'HUB' || tournament.isPaused || resultDialog.isOpen || localControlsBlocked());
+  actionHint.dataset.tone = presentation.tone;
+  const actionMessage = `${net.challenge ? `RETO ${net.challenge.code}${net.challenge.eligible === false ? ' · GRUPO CAMBIÓ, SIN RÉCORD' : ''} · ` : ''}${presentation.message}`;
+  if (actionHint.textContent !== actionMessage) actionHint.textContent = actionMessage;
+  document.body.classList.toggle('landscape-play', window.innerWidth > window.innerHeight);
+  const visible = !virtualGamepad.classList.contains('hidden');
+  document.body.classList.toggle('touch-controls-visible', visible);
+  document.getElementById('mobileMatchStatus')!.textContent = rpmBadge.textContent;
+  const compact = document.body.classList.contains('compact-play');
+  const landscape = window.innerWidth > window.innerHeight;
+  const hintHeight = actionHint.classList.contains('hidden') ? 0 : actionHint.getBoundingClientRect().height + 12;
+  const top = compact && !adventureHud.classList.contains('hidden') ? adventureHud.getBoundingClientRect().height + 14 : 8;
+  const scale = playPreferences.controlScale;
+  const insets = compact ? { top, bottom: landscape ? hintHeight + 8 : (visible ? 184 * scale : 8) + hintHeight,
+    left: visible && landscape ? 124 * scale : 0, right: visible && landscape ? 144 * scale : 0, compact: true } :
+    { top: 48, bottom: hintHeight + 40, left: visible ? 124 * scale : 0, right: visible ? 144 * scale : 0, compact: false };
+  renderers.forEach(renderer => renderer.setPlayInsets(insets));
+}
 
-      const champ = tournament.state.champId === null ? null : arenaEngine.players[tournament.state.champId];
-      tourneyModalEyebrow.textContent = 'TORNEO FINALIZADO // 5 RONDAS';
-      tourneyModalTitle.textContent = '🏆 GRAN CAMPEÓN DEL CAOS';
-      tourneyChampName.textContent = champ
-        ? `¡${champ.name} ES EL GRAN CAMPEÓN!`
-        : 'TORNEO EMPATADO — SIN CAMPEÓN';
-    } else if (
-      tournament.isIntermission ||
-      tournament.state.scores.some((sc) => sc > 0)
-    ) {
-      // Show standings if pending next round
-      if (tournament.isIntermission) {
-        tournamentOverlay.classList.remove('hidden');
-        tourneyRouletteView.classList.add('hidden');
-        tourneyStandingsView.classList.remove('hidden');
-        tourneyPodiumView.classList.add('hidden');
+function formatTime(seconds: number): string {
+  return `${Math.floor(seconds / 60)}:${Math.floor(seconds % 60).toString().padStart(2, '0')}`;
+}
 
-        tourneyModalEyebrow.textContent = `FIN DE LA RONDA ${
-          tournament.state.roundIndex + 1
-        } DE ${tournament.state.totalRounds}`;
-        tourneyModalTitle.textContent = 'TABLA DE POSICIONES';
-        const sorted = [...arenaEngine.players].sort(
-          (a, b) =>
-            (tournament.state.scores[b.id] || 0) -
-            (tournament.state.scores[a.id] || 0)
-        );
-        const medals = ['🥇', '🥈', '🥉', '4°'];
-        setHtmlIfChanged(tourneyLeaderboard, sorted
-          .map(
-            (p, idx) => `
-          <div class="leaderboard-row" style="background: ${escapeHtml(p.bodyColor)}">
-            <span>${medals[idx]} ${escapeHtml(p.name)}</span>
-            <span>${tournament.state.scores[p.id] || 0} PUNTOS</span>
-          </div>
-        `
-          )
-          .join(''));
-        tourneyIntermissionText.textContent = `Siguiente juego en camino...`;
-      } else {
-        tournamentOverlay.classList.add('hidden');
+function readCampaignSave() {
+  try {
+    const save: unknown = JSON.parse(readStorage('local', 'tp04_chain_campaign') ?? 'null');
+    return validCampaignSave(save) ? save : undefined;
+  } catch { return undefined; }
+}
+
+function syncAdventureUI(): void {
+  captureSessionResult();
+  const session = net.sessionResult;
+  if (session) {
+    const unlocked = playerProgress.record(session, net.localSlotId);
+    if (unlocked.length) queueMicrotask(() => net.pushToast(`🏅 NUEVAS PINTURAS: ${unlocked.join(', ')} · disponibles en el taller`, 'info'));
+  }
+  const progress = playerProgress.data;
+  setHtmlIfChanged(document.getElementById('playerProgressPanel')!, `<p>En este dispositivo: <strong>${progress.played} partidas · ${progress.wins} victorias · ${progress.rescues} rescates · ${progress.perfectParries} parries perfectos</strong>.</p>
+    <div class="result-grid">${SKIN_ACHIEVEMENTS.map(achievement => `<article class="result-card"><strong>${playerProgress.unlockedSkins.includes(achievement.skin) ? '✓' : '○'} ${achievement.label}</strong><p>${achievement.requirement}</p></article>`).join('')}</div>
+    <p>Récords cooperativos: ${Object.entries(progress.bestTimes).map(([game, seconds]) => `${escapeHtml(game.replaceAll('_', '-'))}: ${formatTime(seconds)}`).join(' · ') || 'Completa una expedición para registrar tu primer tiempo.'}</p>
+    <p>${progress.recent.slice(0, 3).map(result => `${result.won ? '🏆' : '🏁'} ${escapeHtml(result.title)} · ${formatTime(result.seconds)}`).join('<br>')}</p>`);
+  const campaign = chainEngine.campaign;
+  continueChainCampaignBtn.disabled = !net.isHost || !readCampaignSave();
+  const playingCampaign = net.activeGame === 'CHAIN_PANIC' && campaign.active;
+  const cargo = net.activeGame === 'CARGO_CREW';
+  const teams = net.activeGame === 'VOLT_CROWN' && voltCrownEngine.mode === 'TEAMS';
+  adventureHud.classList.toggle('hidden', !playingCampaign && !teams && !cargo);
+  if (cargo) setHtmlIfChanged(adventureHud, `<strong>CARGO-CREW · ${CARGO_ROUTE_NAMES[cargoEngine.routeIndex]} · ${cargoEngine.stageIndex + 1}/3 · ⏱ ${formatTime(cargoEngine.elapsedSeconds)}</strong>
+    <span>⚡ ${Math.ceil(cargoEngine.integrity)}% INTEGRIDAD · ${cargoEngine.checkpoint ? '✓ CHECKPOINT' : 'CHECKPOINT A MITAD DE ETAPA'} · ${cargoEngine.craneActive ? '🚨 GRÚA ABAJO' : cargoEngine.craneWarning ? '⚠ GRÚA EN 1 SEGUNDO' : 'TRANSPORTE SEGURO'}</span>
+    <span>${touchGamepad.enabled ? 'A' : 'ESPACIO'}: enganchar / soltar · ${touchGamepad.enabled ? 'B' : 'SHIFT'}: anclar · E: reparar · ${cargoEngine.switches.length ? `${cargoEngine.switches.filter(sw => sw.pressed).length}/2 SEGUROS` : cargoEngine.definition.hint}</span>`);
+  if (teams) setHtmlIfChanged(adventureHud, `<strong>2 CONTRA 2 · BATERÍA COMPARTIDA</strong>${[0, 1].map(team =>
+    `<span>EQUIPO ${team === 0 ? 'A' : 'B'}: ${Math.floor(voltCrownEngine.teamScores[team])}% · ${voltCrownEngine.getActiveParticipants().filter(p => voltCrownEngine.teamFor(p.id) === team).map(p => escapeHtml(p.name)).join(' + ')}</span>`).join('')}<span>Protege a tu portador. Las trampas del escenario afectan a ambos equipos.</span>`);
+  if (playingCampaign) {
+    prevSectorBtn.classList.add('hidden'); nextSectorBtn.classList.add('hidden'); chainModeBtn.classList.add('hidden');
+    setHtmlIfChanged(adventureHud, `<div class="sector-progress" aria-label="Progreso de campaña">${CHAIN_LEVELS.slice(0, CHAIN_CAMPAIGN_SECTORS).map((_, i) =>
+      `<span class="${i < campaign.sectorTimes.length ? 'sector-done' : i === chainEngine.levelIndex ? 'sector-current' : ''}">${i < campaign.sectorTimes.length ? '✓' : i + 1}</span>`).join('')}</div>
+      <span>⏱ ${formatTime(campaign.elapsedSeconds)} · ${campaign.checkpointUnlocked ? '✓ CHECKPOINT' : 'ABRE EL PUENTE PARA GUARDAR CHECKPOINT'} · ⛓ ${campaign.rescues.reduce((sum, n) => sum + n, 0)} RESCATES</span>
+      <span>${touchGamepad.enabled ? 'A' : 'ESPACIO'}: saltar · ${touchGamepad.enabled ? 'B' : 'SHIFT'}: anclar · E: rescatar al compañero</span>`);
+    if (net.isHost && !campaign.completed && chainEngine.status !== 'LEVEL_CLEAR') {
+      const saveKey = `${campaign.runId}:${chainEngine.levelIndex}:${campaign.checkpointUnlocked}:${chainEngine.wipes}:${Math.floor(campaign.elapsedSeconds / 5)}`;
+      if (saveKey !== lastCampaignSaveKey) {
+        lastCampaignSaveKey = saveKey;
+        writeStorage('local', 'tp04_chain_campaign', JSON.stringify({ version: 1, levelIndex: chainEngine.levelIndex, campaign: copyCampaign(campaign) }));
       }
-    } else {
-      tournamentOverlay.classList.add('hidden');
     }
+  }
+  if (playingCampaign && campaign.completed) {
+    if (net.isHost) removeStorage('local', 'tp04_chain_campaign');
+    resultDialog.show({ key: `chain:${campaign.runId}:${net.isHost}`, eyebrow: 'EXPEDICIÓN COOPERATIVA · 6 DE 6 SECTORES',
+      title: '⛓️ ¡EQUIPO EXTRAÍDO!', primaryLabel: 'NUEVA EXPEDICIÓN',
+      body: `<p>Tiempo del equipo: <strong>${formatTime(campaign.elapsedSeconds)}</strong> · ${chainEngine.wipes} caídas · ${campaign.rescues.reduce((sum, n) => sum + n, 0)} rescates.</p>
+        <div class="result-grid">${campaign.sectorTimes.map((seconds, i) => `<article class="result-card"><strong>SECTOR ${i + 1} · ${campaignMedal(seconds, campaign.sectorWipes[i])}</strong><p>${formatTime(seconds)} · ${campaign.sectorWipes[i]} caídas</p></article>`).join('')}</div>
+        <p>Oro: hasta 2:30 sin caídas. Plata: hasta 4:00 y como máximo dos caídas. Cada sector conserva su medalla.</p>
+        <div class="result-grid">${chainEngine.getActivePlayers().map(p => `<article class="result-card"><strong>${escapeHtml(p.name)}</strong><p>${campaign.rescues[p.id]} rescates confirmados</p></article>`).join('')}</div>${session ? resultHighlights(session) : ''}`,
+      onPrimary: net.isHost ? () => net.sendOrApplyRoomAction({ kind: 'START_CAMPAIGN' }) : undefined,
+      onExit: net.isHost ? () => net.switchGame('HUB') : undefined });
+  } else if (session && !tournament.state.active) {
+    resultDialog.show({ key: `${session.id}:${net.isHost}`, eyebrow: 'RESULTADOS · HAZAÑAS DE LA PARTIDA',
+      title: session.title, primaryLabel: 'JUGAR REVANCHA',
+      body: `<p>Duración: ${formatTime(session.durationSeconds)}.${session.gameId === 'CARGO_CREW' ? ` Ruta completada · ${cargoEngine.damageTaken} daños · ${cargoEngine.retries} recuperaciones.` : ''}</p>
+        ${session.gameId === 'CARGO_CREW' ? `<div class="result-grid">${cargoEngine.stageTimes.map((seconds, i) => `<article class="result-card"><strong>${escapeHtml(CARGO_STAGES[i].title)}</strong><p>${formatTime(seconds)} · ${cargoStageMedal(seconds, cargoEngine.stageDamage[i] ?? cargoEngine.damageTaken)}</p><p>${cargoEngine.stageDamage[i] === 0 ? '✓ SIN DAÑOS' : `${cargoEngine.stageDamage[i] ?? cargoEngine.damageTaken} daños`} · ${cargoEngine.stageRepairs[i] === 0 ? '✓ SIN REPARACIONES' : `${cargoEngine.stageRepairs[i] ?? 0} reparaciones`}</p></article>`).join('')}</div>` : ''}
+        ${session.gameId === 'CARGO_CREW' ? '<p>Medallas por entrega: oro hasta 1:30 sin daño; plata hasta 2:30 con un máximo de 30 daños; bronce al completar. Objetivos extra: entregar sin daños y sin reparaciones.</p>' : ''}<div class="result-grid">${[...session.players].sort((a, b) => session.gameId === 'TURBO_PUTT' ? a.score - b.score : b.score - a.score).map(player =>
+        `<article class="result-card"><strong>${session.winnerSlots.includes(player.slot) ? '🏆 ' : ''}${escapeHtml(player.name)}${player.isBot ? ' · BOT' : ''}</strong><p>${session.gameId === 'CARGO_CREW' ? `${player.stats.deliveries} entregas del equipo` : `${Math.floor(player.score)} ${session.gameId === 'TURBO_PUTT' ? 'golpes' : session.gameId === 'VOLT_CROWN' ? '% de batería' : 'puntos'}${player.stats.parries ? ` · ${player.stats.parries} devoluciones` : ''}`}</p></article>`).join('')}</div>${resultHighlights(session)}`,
+      onPrimary: net.isHost ? () => net.sendOrApplyRoomAction({ kind: 'RESET_MATCH' }) : undefined,
+      secondaryLabel: 'VOTAR SIGUIENTE JUEGO',
+      onSecondary: net.isHost ? () => { net.switchGame('HUB'); net.startGameVote(); (document.getElementById('partyPanel') as HTMLDetailsElement).open = true; (document.getElementById('playExtras') as HTMLDetailsElement).open = true; } : undefined,
+      onExit: net.isHost ? () => net.switchGame('HUB') : undefined });
+    championOverlay.classList.add('hidden');
+  } else resultDialog.hide();
+}
+
+function resultHighlights(result: import('./types').SessionResult): string {
+  return `<div class="result-grid">${result.highlights.map(highlight => `<article class="result-card"><strong>${escapeHtml(highlight.title)}</strong><p>${escapeHtml(result.players.find(p => p.slot === highlight.slot)?.name ?? 'PILOTO')} · ${highlight.value} ${escapeHtml(highlight.unit)}</p></article>`).join('')}</div>`;
+}
+
+function captureSessionResult(): void {
+  if (!net.isHost || net.activeGame === 'HUB') return;
+  const cup = tournament.state.active;
+  if (cup && !tournament.state.isFinished) return;
+  let winners: number[] = [];
+  let title = '';
+  let cooperative = false;
+  const engine = getActiveEngine();
+  let participants: Array<{ id: number; name: string; isBot: boolean; score?: number }> = engine.players.filter(p => !p.isBot || arenaEngine.botDifficulty !== 'OFF');
+  if (net.activeGame === 'HOT_CORE') participants = hotCoreEngine.getActiveParticipants();
+  if (net.activeGame === 'VOLT_CROWN') participants = voltCrownEngine.getActiveParticipants();
+  if (net.activeGame === 'HEX_CRUSH') participants = hexCrushEngine.getActiveParticipants();
+  if (net.activeGame === 'RICOCHET_1') participants = ricochetEngine.getActiveParticipants();
+  if (cup) {
+    participants = arenaEngine.players.filter(p => !p.isBot || arenaEngine.botDifficulty !== 'OFF' || tournament.state.scores[p.id] > 0);
+    winners = tournament.state.champId === null ? [] : [tournament.state.champId];
+    title = winners.length ? `🏆 ${arenaEngine.players[winners[0]].name} GANA LA COPA` : 'COPA COMPLETADA';
+  } else if (net.activeGame === 'CARGO_CREW' && cargoEngine.status === 'ROUTE_COMPLETE') {
+    winners = cargoEngine.getActivePlayers().map(p => p.id); title = '🚚 ¡CARGO-CREW · RUTA COMPLETADA!'; cooperative = true;
+  } else if (net.activeGame === 'CHAIN_PANIC' && net.challenge && chainEngine.status === 'LEVEL_CLEAR') {
+    winners = chainEngine.getActivePlayers().map(p => p.id); title = '⛓️ ¡RETO DE SECTOR COMPLETADO!'; cooperative = true;
+  } else if (net.activeGame === 'CHAIN_PANIC' && chainEngine.campaign.completed && chainEngine.campaign.active) {
+    winners = chainEngine.getActivePlayers().map(p => p.id); title = 'CHAIN-PANIC · EXPEDICIÓN COMPLETADA'; cooperative = true;
   } else {
-    tournamentOverlay.classList.add('hidden');
+    let winner: number | null = null;
+    if (net.activeGame === 'BASH_BOT' && arenaEngine.phase === 'MATCH_OVER') winner = arenaEngine.lastRoundWinnerId;
+    else if (net.activeGame === 'HOT_CORE' && hotCoreEngine.status === 'MATCH_OVER') winner = hotCoreEngine.lastWinnerId;
+    else if (net.activeGame === 'VOLT_CROWN' && voltCrownEngine.status === 'MATCH_OVER') winner = voltCrownEngine.lastWinnerId;
+    else if (net.activeGame === 'HEX_CRUSH' && hexCrushEngine.status === 'MATCH_OVER') winner = hexCrushEngine.matchWinnerId;
+    else if (net.activeGame === 'RICOCHET_1' && ricochetEngine.status === 'MATCH_OVER') winner = ricochetEngine.matchWinnerId;
+    else if (net.activeGame === 'TURBO_PUTT' && puttEngine.status === 'HOLE_COMPLETE') winner = puttEngine.getRoundWinnerId();
+    else return;
+    winners = winner === null ? [] : [winner];
+    if (net.activeGame === 'VOLT_CROWN' && voltCrownEngine.winningTeam !== null) {
+      winners = participants.filter(p => voltCrownEngine.teamFor(p.id) === voltCrownEngine.winningTeam).map(p => p.id);
+      title = `👑 ¡EQUIPO ${voltCrownEngine.winningTeam === 0 ? 'A' : 'B'} GANA!`;
+    } else title = winner === null ? 'PARTIDA EMPATADA' : `🏆 ¡${engine.players[winner].name} GANA!`;
+  }
+  const chainCampaign = cooperative && net.activeGame === 'CHAIN_PANIC' && chainEngine.campaign.active;
+  const id = `${net.roomSessionId}:${cup ? `cup-${tournament.state.preparationId}` : chainCampaign ? chainEngine.campaign.runId : `${net.activeGame}-${net.activeRoundEpoch}`}`;
+  if (net.sessionResult?.id === id) return;
+  net.publishSessionResult(makeSessionResult({ id, gameId: cup ? 'TOURNAMENT' : net.activeGame, title, cooperative,
+    durationSeconds: cup ? tournament.state.elapsedSeconds ?? 0 : chainCampaign ? chainEngine.campaign.elapsedSeconds : net.activeGame === 'CARGO_CREW' ? cargoEngine.elapsedSeconds : engine.matchSeconds,
+    winnerSlots: winners, players: participants.map(p => ({ slot: p.id, name: p.name, isBot: p.isBot,
+      score: cup ? tournament.state.scores[p.id] : net.activeGame === 'TURBO_PUTT' ? puttEngine.players[p.id].strokes : net.activeGame === 'CARGO_CREW' ? cargoEngine.stageTimes.length : p.score ?? chainEngine.campaign.sectorTimes.length,
+      stats: cup ? { ...tournament.state.matchStats[p.id] } : chainCampaign ? { ...engine.matchStats[p.id], rescues: chainEngine.campaign.rescues[p.id] } : { ...engine.matchStats[p.id] } })) }));
+}
+
+function tournamentStandings(): string {
+  const sorted = arenaEngine.players.filter(p => !p.isBot || arenaEngine.botDifficulty !== 'OFF').sort((a, b) =>
+    tournament.state.scores[b.id] - tournament.state.scores[a.id] ||
+    Number(b.id === tournament.state.champId) - Number(a.id === tournament.state.champId));
+  return sorted.map((p, index) => `<div class="leaderboard-row" style="background:${escapeHtml(p.bodyColor)}">
+    <span>${index + 1}. ${escapeHtml(p.name)}${p.isBot ? ' · BOT' : ''}</span>
+    <span>${tournament.state.scores[p.id]} PTOS</span></div>`).join('');
+}
+
+function syncTournamentHUD(): void {
+  const state = tournament.state;
+  // Keep the selected input mode while freeing the hub and dialogs from touch button overlays.
+  virtualGamepad.classList.toggle('hidden', !touchGamepad.enabled || net.activeGame === 'HUB' || tournament.isPaused || resultDialog.isOpen || localControlsBlocked());
+  const view = !state.active ? '' : state.rouletteSpinning ? 'roulette' : state.preparing ? 'prepare' :
+    state.isFinished ? 'podium' : tournament.isIntermission ? 'standings' : '';
+  tournamentOverlay.classList.toggle('hidden', !view);
+  tourneyRouletteView.classList.toggle('hidden', view !== 'roulette');
+  tourneyPreparationView.classList.toggle('hidden', view !== 'prepare');
+  tourneyStandingsView.classList.toggle('hidden', view !== 'standings');
+  tourneyPodiumView.classList.toggle('hidden', view !== 'podium');
+  tourneyCancelBtn.classList.toggle('hidden', !net.isHost || view === 'podium');
+  tourneyModalEyebrow.textContent = `TORNEO DEL CAOS // RONDA ${state.roundIndex + 1} DE ${state.totalRounds}`;
+
+  if (view === 'roulette') {
+    const mutator = CHAOS_MUTATORS[state.rouletteDisplayId] || CHAOS_MUTATORS.NONE;
+    tourneyModalTitle.textContent = 'RULETA DE MUTADORES';
+    rouletteIcon.textContent = mutator.icon;
+    rouletteName.textContent = mutator.name;
+    rouletteDesc.textContent = mutator.desc;
+  } else if (view === 'prepare') {
+    const game = state.gameSequence[state.roundIndex] as TournamentGameId;
+    const instructions = GAME_INSTRUCTIONS[game];
+    if (!instructions) return;
+    tourneyModalTitle.textContent = instructions.title;
+    const soloBash = game === 'BASH_BOT' && arenaEngine.botDifficulty === 'OFF' && state.requiredSlots.length === 1;
+    tourneyObjective.textContent = soloBash ? 'Sobrevive 30 segundos sin sufrir un KO para ganar esta ronda de práctica.' : instructions.objective;
+    setHtmlIfChanged(tourneyControls, instructionControls(game, touchGamepad.enabled)
+      .map(control => `<dt>${escapeHtml(control.key)}</dt><dd>${escapeHtml(control.action)}</dd>`).join(''));
+    tourneyTip.textContent = `💡 ${instructions.tip}`;
+    const mutator = tournament.getCurrentMutatorDef();
+    tourneyMutator.textContent = `${mutator.icon} ${mutator.name} · ${mutator.desc}`;
+    setHtmlIfChanged(tourneyReadyRoster, state.requiredSlots.map(slot => {
+      const player = arenaEngine.players[slot];
+      const ready = state.readySlots.includes(slot);
+      return `<div class="tourney-ready-player${ready ? ' is-ready' : ''}">${ready ? '✓' : '○'} ${escapeHtml(player.name)}${slot === net.localSlotId ? ' (TÚ)' : ''} · ${ready ? 'LISTO' : 'LEYENDO'}</div>`;
+    }).join(''));
+    const ready = state.readySlots.includes(net.localSlotId);
+    tourneyReadyBtn.disabled = ready || !net.isSynchronized;
+    tourneyReadyBtn.textContent = ready ? '✓ LISTO · ESPERANDO AL GRUPO' : '✓ ESTOY LISTO';
+    const status = !net.isSynchronized ? 'Reconectando con la sala…' : state.countdown > 0
+      ? `¡Todos listos! Empezamos en ${Math.ceil(state.countdown)}…`
+      : `${state.readySlots.length} de ${state.requiredSlots.length} pilotos listos · los bots están preparados`;
+    if (tourneyReadyStatus.textContent !== status) tourneyReadyStatus.textContent = status;
+  } else if (view === 'standings') {
+    tourneyModalTitle.textContent = 'TABLA DE POSICIONES';
+    setHtmlIfChanged(tourneyLeaderboard, tournamentStandings());
+    const next = GAME_INSTRUCTIONS[state.gameSequence[state.roundIndex + 1] as TournamentGameId];
+    tourneyIntermissionText.textContent = `Siguiente: ${next?.title ?? 'otro juego'} · podrás prepararte antes de empezar`;
+  } else if (view === 'podium') {
+    const champion = state.champId === null ? null : arenaEngine.players[state.champId];
+    tourneyModalEyebrow.textContent = `TORNEO FINALIZADO // ${state.totalRounds} RONDAS`;
+    tourneyModalTitle.textContent = '🏆 GRAN CAMPEÓN DEL CAOS';
+    tourneyChampName.textContent = champion ? `¡${champion.name} ES EL GRAN CAMPEÓN!` : 'TORNEO EMPATADO — SIN CAMPEÓN';
+    setHtmlIfChanged(tourneyFinalLeaderboard, tournamentStandings());
+    setHtmlIfChanged(document.getElementById('tourneyHighlights')!, net.sessionResult?.gameId === 'TOURNAMENT' ? resultHighlights(net.sessionResult) : '');
+  }
+
+  const focusKey = view ? `${state.preparationId}:${view}` : '';
+  if (focusKey !== tournamentFocusKey) {
+    const focusedInModal = tournamentOverlay.contains(document.activeElement);
+    tournamentFocusKey = focusKey;
+    if (view === 'prepare' && !tourneyReadyBtn.disabled) tourneyReadyBtn.focus({ preventScroll: true });
+    else if (view) tournamentOverlay.querySelector<HTMLElement>('.tournament-modal-box')?.focus({ preventScroll: true });
+    else if (focusedInModal) (net.activeGame === 'HUB' ? hubOverlay : canvas).focus({ preventScroll: true });
   }
 }
 
@@ -735,6 +990,7 @@ function requestGameSwitch(gameId: ActiveGameId): void {
   if (document.activeElement instanceof HTMLElement) {
     document.activeElement.blur();
   }
+  if (net.isHost && gameId === 'CHAIN_PANIC') chainEngine.stopCampaign();
   net.switchGame(gameId);
   if (gameId === 'HUB') {
     hubOverlay.focus();
@@ -859,20 +1115,71 @@ hubRandomGameBtn?.addEventListener('click', () => {
   }
 });
 
+function readTournamentSettings(): TournamentOptions {
+  return {
+    totalRounds: Number(tourneyRoundsSelect.value) as TournamentOptions['totalRounds'],
+    games: tourneyGameInputs.filter(input => input.checked).map(input => input.dataset.tournamentGame as TournamentGameId),
+    mutatorsEnabled: tourneyMutatorsInput.checked
+  };
+}
+
+try {
+  const saved = JSON.parse(readStorage('local', 'tp04_tournament_options') || 'null') as unknown;
+  if (validTournamentOptions(saved)) {
+    tourneyRoundsSelect.value = String(saved.totalRounds);
+    tourneyMutatorsInput.checked = saved.mutatorsEnabled;
+    tourneyGameInputs.forEach(input => { input.checked = saved.games.includes(input.dataset.tournamentGame as TournamentGameId); });
+  }
+} catch { /* Ignore unavailable storage or older settings. */ }
+
+tourneySettings.addEventListener('change', () => {
+  const options = readTournamentSettings();
+  const valid = validTournamentOptions(options);
+  if (hubStartTournamentBtn) hubStartTournamentBtn.disabled = !net.isHost || !valid;
+  tourneySettingsHint.textContent = valid
+    ? 'Se sortean sin repetir hasta agotar los juegos elegidos. Los cooperativos se juegan aparte.'
+    : 'Elige al menos un juego para iniciar la copa.';
+  if (valid && net.isHost) writeStorage('local', 'tp04_tournament_options', JSON.stringify(options));
+});
+
 hubStartTournamentBtn?.addEventListener('click', () => {
+  const options = readTournamentSettings();
+  if (!validTournamentOptions(options)) return;
+  sfx.unlock();
   sfx.playCartridgeClick();
-  net.sendOrApplyRoomAction({ kind: 'START_TOURNAMENT' });
+  net.sendOrApplyRoomAction({ kind: 'START_TOURNAMENT', tournamentOptions: options });
 });
 
 tourneyRestartBtn?.addEventListener('click', () => {
   sfx.playCartridgeClick();
-  net.sendOrApplyRoomAction({ kind: 'START_TOURNAMENT' });
+  net.sendOrApplyRoomAction({ kind: 'START_TOURNAMENT', replaySame: true });
 });
 
-tourneyExitHubBtn?.addEventListener('click', () => {
+tourneyShuffleBtn.addEventListener('click', () => {
+  sfx.playCartridgeClick();
+  net.sendOrApplyRoomAction({ kind: 'START_TOURNAMENT', tournamentOptions: tournament.state.options });
+});
+
+tourneyReadyBtn.addEventListener('click', () => {
+  sfx.unlock();
+  sfx.playCartridgeClick();
+  clearPendingActions();
+  net.submitTournamentReady();
+  syncOverlaysAndHUD();
+});
+
+function exitTournament(): void {
   sfx.playCartridgeClick();
   net.sendOrApplyRoomAction({ kind: 'STOP_TOURNAMENT' });
+}
+tourneyExitHubBtn?.addEventListener('click', exitTournament);
+tourneyCancelBtn.addEventListener('click', exitTournament);
+startChainCampaignBtn.addEventListener('click', () => { sfx.unlock(); net.sendOrApplyRoomAction({ kind: 'START_CAMPAIGN' }); });
+continueChainCampaignBtn.addEventListener('click', () => {
+  const campaignSave = readCampaignSave();
+  if (campaignSave) net.sendOrApplyRoomAction({ kind: 'START_CAMPAIGN', campaignSave });
 });
+voltModeBtn.addEventListener('click', () => net.sendOrApplyRoomAction({ kind: 'VOLT_MODE', voltMode: voltCrownEngine.mode === 'FFA' ? 'TEAMS' : 'FFA' }));
 
 function isTypingInInput(): boolean {
   const el = document.activeElement;
@@ -896,7 +1203,7 @@ function clearPendingActions(): void {
 function isGameplayPaused(): boolean {
   return net.activeGame === 'HUB' ||
     (!net.isHost && !net.isSynchronized) ||
-    (tournament.state.active && (tournament.state.rouletteSpinning || tournament.isIntermission || tournament.state.isFinished));
+    tournament.isPaused || resultDialog.isOpen || (!tournament.state.active && net.sessionResult !== null);
 }
 
 function buildInputPacket(): ClientInputPacket {
@@ -904,7 +1211,7 @@ function buildInputPacket(): ClientInputPacket {
   const player = engine.players[net.localSlotId] || engine.players[0];
   const myArenaPlayer = arenaEngine.players[net.localSlotId] || arenaEngine.players[0];
   let moveX = 0, moveY = 0;
-  if (!isTypingInInput()) {
+  if (!isTypingInInput() && !localControlsBlocked()) {
     if (keys['KeyW'] || keys['ArrowUp']) moveY--;
     if (keys['KeyS'] || keys['ArrowDown']) moveY++;
     if (keys['KeyA'] || keys['ArrowLeft']) moveX--;
@@ -917,7 +1224,8 @@ function buildInputPacket(): ClientInputPacket {
     ? Math.atan2(touchGamepad.moveY, touchGamepad.moveX)
     : Math.atan2(mouseCourtPos.y - player.y, mouseCourtPos.x - player.x);
   const primaryBall = arenaEngine.balls[0];
-  return {
+  if (!localControlsBlocked() && (moveX || moveY || pendingParry || pendingDash || pendingYank || pendingEmote || chargingParry || anchorHeld || touchGamepad.isHoldingA || touchGamepad.isHoldingB)) cancelHeldInput = false;
+  const packet: ClientInputPacket = {
     slotId: net.localSlotId, activeGame: net.activeGame, roundEpoch: engine.roundEpoch,
     name: normalizePilotName(playerNameInput.value), cosmetics: robotWorkshop.cosmetics,
     moveX, moveY, aimAngle,
@@ -930,14 +1238,19 @@ function buildInputPacket(): ClientInputPacket {
     emotePressed: pendingEmote,
     clientBallDist: primaryBall ? Math.hypot(primaryBall.x - myArenaPlayer.x, primaryBall.y - myArenaPlayer.y) : 999,
     clientX: player.x, clientY: player.y, clientZ: 'z' in player ? player.z : 0,
-    sentAtMs: performance.now()
+    sentAtMs: performance.now(), cancelHeldActions: localControlsBlocked() || cancelHeldInput
   };
+  if (packet.cancelHeldActions) {
+    packet.moveX = packet.moveY = 0; packet.parryPressed = packet.dashPressed = packet.yankPressed = false;
+    packet.chargingParry = packet.anchorHeld = packet.feintPrimed = false; packet.emotePressed = 0; packet.shotReleasedPower = undefined;
+  }
+  return packet;
 }
 
 function flushImmediateClientAction(): void {
   if (net.isHost) return;
   const packet = buildInputPacket();
-  if (isGameplayPaused()) {
+  if (isGameplayPaused() || localControlsBlocked() || packet.cancelHeldActions) {
     packet.moveX = packet.moveY = 0;
     packet.parryPressed = packet.dashPressed = packet.yankPressed = false;
     packet.chargingParry = packet.anchorHeld = false;
@@ -946,6 +1259,8 @@ function flushImmediateClientAction(): void {
     if (net.activeGame === 'BASH_BOT') {
       if (packet.parryPressed) arenaEngine.triggerParry(arenaEngine.players[net.localSlotId]);
       if (packet.dashPressed) arenaEngine.triggerDash(arenaEngine.players[net.localSlotId], packet.moveX || Math.cos(packet.aimAngle), packet.moveY || Math.sin(packet.aimAngle));
+    } else if (net.activeGame === 'CARGO_CREW') {
+      if (packet.parryPressed) cargoEngine.triggerGrip(cargoEngine.players[net.localSlotId]);
     } else if (net.activeGame === 'CHAIN_PANIC') {
       if (packet.parryPressed) chainEngine.triggerJump(chainEngine.players[net.localSlotId]);
     } else if (net.activeGame === 'TURBO_PUTT') {
@@ -970,6 +1285,25 @@ function flushImmediateClientAction(): void {
 }
 
 window.addEventListener('keydown', (e) => {
+  if (practiceRoom?.isOpen) { practiceRoom.handleKey(e, true); return; }
+  if (sharePanel.isOpen) { sharePanel.handleKey(e); return; }
+  if (playMode.handleKey(e)) return;
+  if (resultDialog.handleKey(e)) return;
+  if (tournament.isPaused) {
+    // Keep native Enter/Space button activation and keyboard focus inside the dialog.
+    if (e.code === 'Tab') {
+      const buttons = [...tournamentOverlay.querySelectorAll<HTMLButtonElement>('button:not(:disabled)')]
+        .filter(button => !button.closest('.hidden'));
+      const first = buttons[0], last = buttons[buttons.length - 1];
+      if (!first) e.preventDefault();
+      else if (e.shiftKey && (document.activeElement === first || !buttons.includes(document.activeElement as HTMLButtonElement))) {
+        e.preventDefault(); last.focus();
+      } else if (!e.shiftKey && (document.activeElement === last || !buttons.includes(document.activeElement as HTMLButtonElement))) {
+        e.preventDefault(); first.focus();
+      }
+    }
+    return;
+  }
   if (e.code === 'Enter' && document.activeElement === onboardingNameInput) {
     confirmOnboardingBtn?.click();
     return;
@@ -1001,7 +1335,7 @@ window.addEventListener('keydown', (e) => {
     e.preventDefault();
     sfx.unlock();
     if (
-      net.activeGame === 'CHAIN_PANIC' ||
+      net.activeGame === 'CARGO_CREW' || net.activeGame === 'CHAIN_PANIC' ||
       net.activeGame === 'TURBO_PUTT' ||
       net.activeGame === 'HOT_CORE' ||
       net.activeGame === 'VOLT_CROWN' ||
@@ -1029,6 +1363,7 @@ window.addEventListener('keydown', (e) => {
 });
 
 window.addEventListener('keyup', (e) => {
+  if (practiceRoom?.isOpen) { practiceRoom.handleKey(e, false); return; }
   keys[e.code] = false;
   if (e.code === 'Space') {
     if (!isTypingInInput()) {
@@ -1049,6 +1384,7 @@ canvas.addEventListener('pointermove', (e) => {
 });
 
 canvas.addEventListener('pointerdown', (e) => {
+  if (localControlsBlocked()) return;
   canvas.focus();
   sfx.unlock();
   mouseCourtPos = getActiveRenderer().screenToCourt(e.clientX, e.clientY);
@@ -1147,20 +1483,13 @@ hubNewRoomBtn?.addEventListener('click', createFreshRoom);
 hubLeaveRoomBtn?.addEventListener('click', createFreshRoom);
 
 function copyRoomInviteLink(): void {
-  sfx.playCartridgeClick();
-  const inviteUrl = new URL(window.location.href);
-  inviteUrl.searchParams.set('room', net.roomCode);
-  inviteUrl.searchParams.set('join', '1');
-  navigator.clipboard.writeText(inviteUrl.toString()).then(() => {
-    net.pushToast(`🔗 LINK DE INVITADO (#${net.roomCode}) COPIADO AL PORTAPAPELES`, 'join');
-    const prevTop = copyInviteBtn.textContent;
-    copyInviteBtn.textContent = '¡LINK COPIADO!';
-    if (hubCopyInviteBtn) hubCopyInviteBtn.textContent = '¡LINK COPIADO!';
-    setTimeout(() => {
-      copyInviteBtn.textContent = prevTop;
-      if (hubCopyInviteBtn) hubCopyInviteBtn.textContent = '📋 COPIAR LINK DE SALA';
-    }, 1600);
-  });
+  const url = shareUrl(window.location.href, { room: net.roomCode });
+  void (async () => {
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error('Clipboard unavailable');
+      await navigator.clipboard.writeText(url); net.pushToast(`LINK DE SALA #${net.roomCode} COPIADO`, 'join');
+    } catch { partyPanel.invite(); }
+  })();
 }
 
 copyInviteBtn.addEventListener('click', copyRoomInviteLink);
@@ -1195,6 +1524,7 @@ window.addEventListener('keydown', unlockBgmOnFirstGesture, { passive: true });
 
 touchGamepad.init('virtualGamepad', {
   onPressA: () => {
+    if (localControlsBlocked()) return;
     sfx.unlock();
     pendingParry = true;
     chargingParry = true;
@@ -1207,6 +1537,7 @@ touchGamepad.init('virtualGamepad', {
     }
   },
   onPressB: () => {
+    if (localControlsBlocked()) return;
     sfx.unlock();
     pendingDash = true;
     anchorHeld = true;
@@ -1216,9 +1547,10 @@ touchGamepad.init('virtualGamepad', {
     anchorHeld = false;
   },
   onPressE: () => {
+    if (localControlsBlocked()) return;
     sfx.unlock();
     if (
-      net.activeGame === 'CHAIN_PANIC' ||
+      net.activeGame === 'CARGO_CREW' || net.activeGame === 'CHAIN_PANIC' ||
       net.activeGame === 'TURBO_PUTT' ||
       net.activeGame === 'HOT_CORE' ||
       net.activeGame === 'VOLT_CROWN' ||
@@ -1241,6 +1573,7 @@ if (touchToggleBtn) {
     const isNowOn = touchGamepad.toggle();
     touchToggleBtn.textContent = isNowOn ? '📱 TOUCH: ON' : '📱 TOUCH: OFF';
     sfx.playCartridgeClick();
+    syncOverlaysAndHUD();
   });
 }
 
@@ -1407,8 +1740,8 @@ hubBotsToggleBtn?.addEventListener('click', cycleBotMode);
 
 // 7. Game Step & Main Loop
 function stepGameFrame(dt: number): void {
-  if (net.shouldStepLocally() && tournament.state.active) tournament.step(dt, (nextGame) => net.switchGame(nextGame));
-  const mutator = tournament.state.active && !isGameplayPaused() ? tournament.state.currentMutator : 'NONE';
+  if (net.shouldStepLocally() && tournament.state.active) tournament.step(dt, (nextGame) => net.switchGame(nextGame, true));
+  const mutator = tournament.state.active && !isGameplayPaused() ? tournament.state.currentMutator : net.challenge?.mutator ?? 'NONE';
   engines.forEach((engine) => engine.setChaosMutator(mutator));
   if (isGameplayPaused()) {
     clearPendingActions();
@@ -1427,7 +1760,11 @@ function stepGameFrame(dt: number): void {
   const quickClickPutt = inputPacket.shotReleasedPower;
 
   if (net.shouldStepLocally()) {
-    if (net.activeGame === 'CHAIN_PANIC') {
+    if (net.activeGame === 'CARGO_CREW') {
+      if (pendingParry) cargoEngine.triggerGrip(cargoEngine.players[net.localSlotId]);
+      if (pendingYank) cargoEngine.triggerRepair(cargoEngine.players[net.localSlotId]);
+      cargoEngine.step(dt, inputPacket);
+    } else if (net.activeGame === 'CHAIN_PANIC') {
       if (pendingEmote > 0) chainEngine.triggerEmote(myChainPlayer, pendingEmote);
       if (pendingParry) chainEngine.triggerJump(myChainPlayer);
       if (pendingYank) chainEngine.triggerCableYank(myChainPlayer);
@@ -1487,28 +1824,31 @@ function stepGameFrame(dt: number): void {
 
     // Solo BASH OFF uses a 30s survival challenge; Putt uses a completed hole.
     if (tournament.state.active && !tournament.evaluateSoloBashRound(
-      net.activeGame, arenaEngine.botDifficulty, arenaEngine.players, arenaEngine.roundTimer
+      net.activeGame, arenaEngine.botDifficulty, arenaEngine.players, arenaEngine.roundTimer, arenaEngine.matchStats
     )) {
       if (net.activeGame === 'TURBO_PUTT' && puttEngine.status === 'HOLE_COMPLETE') {
-        tournament.recordRoundWinner(puttEngine.getRoundWinnerId());
+        tournament.recordRoundWinner(puttEngine.getRoundWinnerId(), puttEngine.matchStats);
       } else if (net.activeGame === 'BASH_BOT' && arenaEngine.phase === 'MATCH_OVER') {
-        tournament.recordRoundWinner(arenaEngine.lastRoundWinnerId);
+        tournament.recordRoundWinner(arenaEngine.lastRoundWinnerId, arenaEngine.matchStats);
       } else if (net.activeGame === 'HOT_CORE' && hotCoreEngine.status === 'MATCH_OVER') {
-        tournament.recordRoundWinner(hotCoreEngine.lastWinnerId);
+        tournament.recordRoundWinner(hotCoreEngine.lastWinnerId, hotCoreEngine.matchStats);
       } else if (net.activeGame === 'VOLT_CROWN' && voltCrownEngine.status === 'MATCH_OVER') {
-        tournament.recordRoundWinner(voltCrownEngine.lastWinnerId);
+        tournament.recordRoundWinner(voltCrownEngine.lastWinnerId, voltCrownEngine.matchStats);
       } else if (net.activeGame === 'HEX_CRUSH' && hexCrushEngine.status === 'MATCH_OVER') {
-        tournament.recordRoundWinner(hexCrushEngine.matchWinnerId);
+        tournament.recordRoundWinner(hexCrushEngine.matchWinnerId, hexCrushEngine.matchStats);
       } else if (net.activeGame === 'RICOCHET_1' && ricochetEngine.status === 'MATCH_OVER') {
-        tournament.recordRoundWinner(ricochetEngine.matchWinnerId);
+        tournament.recordRoundWinner(ricochetEngine.matchWinnerId, ricochetEngine.matchStats);
       }
     }
 
+    captureSessionResult();
     net.broadcastHostSnapshot();
   } else {
     // Predict presentation and local movement; game results remain host-authoritative.
     if (net.activeGame === 'BASH_BOT') {
       arenaEngine.stepClientPrediction(dt, net.localSlotId, inputPacket);
+    } else if (net.activeGame === 'CARGO_CREW') {
+      cargoEngine.stepClientPrediction(dt, net.localSlotId, inputPacket);
     } else if (net.activeGame === 'CHAIN_PANIC') {
       chainEngine.stepClientPrediction(dt, net.localSlotId, inputPacket);
     } else if (net.activeGame === 'TURBO_PUTT') {
@@ -1563,9 +1903,12 @@ const stopBackgroundPump = startBackgroundPump(() => {
 window.addEventListener('pageshow', (event) => { if (event.persisted) window.location.reload(); });
 
 function releaseInputState(): void {
+  cancelHeldInput = true;
   Object.keys(keys).forEach((key) => { keys[key] = false; });
   chargingParry = anchorHeld = false;
   clearPendingActions();
+  getActiveEngine().clearRemoteInput(net.localSlotId);
+  touchGamepad.cancelInput();
   flushImmediateClientAction();
 }
 window.addEventListener('blur', releaseInputState);
@@ -1596,8 +1939,12 @@ function animate(now: number): void {
   renderers.forEach((renderer) => renderer.setGhostPulse(ghostActive, engine.simulationTime));
 
   const primaryBall = arenaEngine.balls[0];
-  if (net.activeGame === 'CHAIN_PANIC') {
-    rpmBadge.textContent = `SECTOR 0${chainEngine.levelIndex + 1}/0${CHAIN_LEVELS.length}`;
+  if (net.activeGame === 'CARGO_CREW') {
+    rpmBadge.textContent = `🚚 CARGA ${Math.ceil(cargoEngine.integrity)}% · ${cargoEngine.stageIndex + 1}/3`;
+    rpmBadge.style.background = cargoEngine.integrity < 35 ? '#dc2626' : '#0e7490';
+    cargoRenderer.render(cargoEngine, net.localSlotId, touchGamepad.enabled);
+  } else if (net.activeGame === 'CHAIN_PANIC') {
+    rpmBadge.textContent = `SECTOR 0${chainEngine.levelIndex + 1}/0${chainEngine.campaign.active ? CHAIN_CAMPAIGN_SECTORS : CHAIN_LEVELS.length}`;
     rpmBadge.style.background = chainEngine.windActive ? '#FF4F00' : '#1B4DFF';
     chainRenderer.render(chainEngine, net.localSlotId);
   } else if (net.activeGame === 'TURBO_PUTT') {
@@ -1641,7 +1988,7 @@ function animate(now: number): void {
   // Override top RPM badge if Tournament Fiesta is in progress
   if (tournament.state.active) {
     const mut = tournament.getCurrentMutatorDef();
-    rpmBadge.textContent = `🏆 R0${tournament.state.roundIndex + 1}/05 • ${mut.icon} ${mut.name}`;
+    rpmBadge.textContent = `🏆 R${tournament.state.roundIndex + 1}/${tournament.state.totalRounds} • ${mut.icon} ${mut.name}`;
     rpmBadge.style.background = mut.color;
   }
 
@@ -1650,6 +1997,7 @@ function animate(now: number): void {
   }
 
   getActiveRenderer().renderChaosBombs(engine.chaosBombs);
+  practiceRoom?.frame(now);
   animationFrame = requestAnimationFrame(animate);
 }
 
@@ -1699,6 +2047,8 @@ function initWorkshopUI(): void {
     ROBOT_SKINS.forEach((s) => {
       const btn = document.createElement('button');
       btn.className = `skin-card-btn ${robotWorkshop.cosmetics.skin === s.id ? 'active-cosmetic' : ''}`;
+      btn.disabled = !skinIsUnlocked(s.id);
+      if (btn.disabled) { btn.classList.add('cosmetic-locked'); btn.title = s.desc ?? 'Completa la hazaña para desbloquear'; }
       btn.innerHTML = `
         <span class="skin-title">${s.label}</span>
         <span class="skin-desc">${s.desc || ''}</span>
@@ -1746,6 +2096,14 @@ initWorkshopUI();
 animationFrame = requestAnimationFrame(animate);
 
 function disposeSession(): void {
+  playMode.dispose();
+  connectionPanel.dispose();
+  arenaEngine.dispose();
+  practiceRoom?.dispose();
+  if (net.isHost && net.activeGame === 'CHAIN_PANIC' && chainEngine.campaign.active && !chainEngine.campaign.completed) {
+    const save = { version: 1, levelIndex: chainEngine.levelIndex, campaign: copyCampaign(chainEngine.campaign) };
+    if (validCampaignSave(save)) writeStorage('local', 'tp04_chain_campaign', JSON.stringify(save));
+  }
   stopBackgroundPump();
   cancelAnimationFrame(animationFrame);
   net.dispose();

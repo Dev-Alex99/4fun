@@ -33,8 +33,8 @@ export class HexCrushRenderer extends CanvasViewportRenderer {
 
     if (engine.screenShake > 0) {
       ctx.translate(
-        (Math.random() - 0.5) * engine.screenShake,
-        (Math.random() - 0.5) * engine.screenShake
+        (Math.random() - 0.5) * this.shakeAmount(engine.screenShake),
+        (Math.random() - 0.5) * this.shakeAmount(engine.screenShake)
       );
     }
 
@@ -102,7 +102,7 @@ export class HexCrushRenderer extends CanvasViewportRenderer {
 
     // 5. Pinball Bumpers
     for (const b of engine.bumpers) {
-      const flash = b.hitAnim > 0;
+      const flash = b.hitAnim > 0 && !this.reducedFlashes;
       ctx.beginPath();
       ctx.arc(b.x, b.y + 4, b.radius, 0, Math.PI * 2);
       ctx.fillStyle = 'rgba(24, 24, 27, 0.25)';
@@ -246,8 +246,8 @@ export class HexCrushRenderer extends CanvasViewportRenderer {
     let ty = tile.y + tile.fallOffset;
 
     if (tile.shakeTimer > 0) {
-      tx += (Math.random() - 0.5) * 4;
-      ty += (Math.random() - 0.5) * 4;
+      tx += (Math.random() - 0.5) * this.shakeAmount(4);
+      ty += (Math.random() - 0.5) * this.shakeAmount(4);
     }
 
     ctx.globalAlpha = Math.max(0, tile.fadeAlpha);

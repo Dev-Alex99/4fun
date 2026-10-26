@@ -1,3 +1,5 @@
+import type { ActionCue } from '../ui/actionHints';
+
 /**
  * VIRTUAL TOUCH GAMEPAD FOR MOBILE / TOUCH SCREENS
  * - Floating/fixed thumbstick with normalized (moveX, moveY) vectors.
@@ -8,6 +10,7 @@
  */
 
 export interface TouchGamepadOptions {
+  idPrefix?: string;
   onPressA?: () => void;
   onReleaseA?: () => void;
   onPressB?: () => void;
@@ -52,9 +55,9 @@ export class TouchGamepad {
     this.callbacks = options;
     this.container = document.getElementById(containerId);
     if (!this.container) return;
-    this.joystickZone = this.container.querySelector('#touchJoystickZone');
-    this.joystickBase = this.container.querySelector('#touchJoystickBase');
-    this.joystickThumb = this.container.querySelector('#touchJoystickThumb');
+    this.joystickZone = this.container.querySelector('#' + (options.idPrefix ?? '') + 'touchJoystickZone');
+    this.joystickBase = this.container.querySelector('#' + (options.idPrefix ?? '') + 'touchJoystickBase');
+    this.joystickThumb = this.container.querySelector('#' + (options.idPrefix ?? '') + 'touchJoystickThumb');
     this.bindJoystickEvents();
     this.bindButton('touchBtnA', 'isHoldingA', () => this.callbacks.onPressA?.(), () => this.callbacks.onReleaseA?.());
     this.bindButton('touchBtnB', 'isHoldingB', () => this.callbacks.onPressB?.(), () => this.callbacks.onReleaseB?.());
@@ -86,6 +89,29 @@ export class TouchGamepad {
   public toggle(): boolean {
     if (this.enabled) this.hide(); else this.show();
     return this.enabled;
+  }
+
+  public cancelInput(): void { this.releaseAll(); }
+
+  public presentButton(key: 'A' | 'B' | 'E', cue: ActionCue): void {
+    const prop: HoldingButton = key === 'A' ? 'isHoldingA' : key === 'B' ? 'isHoldingB' : 'isHoldingE';
+    const button = this.buttons.get(prop)?.element;
+    if (!button) return;
+    button.classList.toggle('hidden', Boolean(cue.hidden));
+    button.classList.toggle('is-unavailable', !cue.available && cue.cooldown <= 0 && !cue.active);
+    button.classList.toggle('is-cooling', cue.cooldown > 0 && !cue.active);
+    button.classList.toggle('is-action-active', Boolean(cue.active));
+    button.setAttribute('aria-disabled', String(!cue.available && !cue.active));
+    button.setAttribute('aria-label', `${key}: ${cue.label}. ${cue.hint}${cue.cooldown > 0 ? `. Recarga: ${cue.cooldown.toFixed(1)} segundos` : ''}`);
+    button.title = cue.hint;
+    button.style.setProperty('--action-ready', String(cue.progress));
+    const label = button.querySelector('.touch-btn-sub');
+    if (label && label.textContent !== cue.label) label.textContent = cue.label;
+    let timer = button.querySelector<HTMLElement>('.touch-btn-time');
+    if (!timer) { timer = document.createElement('span'); timer.className = 'touch-btn-time'; timer.setAttribute('aria-hidden', 'true'); button.appendChild(timer); }
+    const value = cue.cooldown > 0 ? `${cue.cooldown.toFixed(1)}s` : '';
+    if (timer.textContent !== value) timer.textContent = value;
+    if (cue.hidden) this.releaseButton(prop);
   }
 
   public triggerHaptic(durationMs = 12): void {
@@ -169,13 +195,13 @@ export class TouchGamepad {
   }
 
   private bindButton(id: string, prop: HoldingButton, press: () => void, release: () => void): void {
-    const element = this.container?.querySelector<HTMLElement>('#' + id);
+    const element = this.container?.querySelector<HTMLElement>('#' + (this.callbacks.idPrefix ?? '') + id);
     if (!element) return;
     const button = { element, pointerId: null as number | null, release };
     this.buttons.set(prop, button);
     this.preparePointerSurface(element);
     this.listen(element, 'pointerdown', (event) => {
-      if (!this.enabled || this[prop] || event.button > 0) return;
+      if (!this.enabled || this[prop] || event.button > 0 || element.getAttribute('aria-disabled') === 'true' || element.classList.contains('hidden')) return;
       event.preventDefault();
       event.stopPropagation();
       button.pointerId = event.pointerId;

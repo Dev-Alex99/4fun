@@ -1,0 +1,30 @@
+.practice-overlay.hidden, .share-overlay.hidden { display: none !important; }
+.practice-overlay, .share-overlay { position: fixed; z-index: 180; inset: 0; background: rgba(24,24,27,.86); padding: max(8px,env(safe-area-inset-top)) max(8px,env(safe-area-inset-right)) max(8px,env(safe-area-inset-bottom)) max(8px,env(safe-area-inset-left)); display: flex; align-items: center; justify-content: center; }
+.practice-box { width: min(1100px,100%); height: min(880px,100%); background: var(--panel); border: 3px solid var(--ink); border-radius: 12px; padding: 10px; display: flex; flex-direction: column; gap: 6px; min-height: 0; }
+.practice-box header { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 6px; }
+.practice-box h2, .share-box h2 { font: 800 17px var(--mono); margin: 0; }
+.practice-box header button, .share-box button { min-height: 44px; }
+#practiceTask { margin: 0; background: #fef9c3; padding: 10px; font: 800 13px var(--mono); border-radius: 6px; }
+#practiceTask.practice-complete { background: #dcfce7; }
+#practiceSurface { flex: 1; min-height: 0; position: relative; overflow: hidden; border-radius: 8px; }
+#practiceCanvas { width: 100%; height: 100%; display: block; touch-action: none; }
+.practice-notice { margin: 0; font: 600 11px/1.4 var(--mono); }
+.share-box { width: min(480px,100%); max-height: 100%; overflow-y: auto; background: var(--panel); border: 3px solid var(--ink); border-radius: 12px; padding: 16px; font: 600 12px/1.5 var(--mono); }
+#shareQr { max-width: 260px; margin: 12px auto; background: #fff; }
+#shareQr svg { display: block; width: 100%; height: auto; }
+#shareUrlInput { width: 100%; box-sizing: border-box; min-height: 44px; }
+.party-vote-grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(135px,1fr)); gap: 6px; margin-bottom: 8px; }
+.party-vote-grid button { min-height: 44px; }
+.party-vote-grid button[aria-pressed="true"] { background: #dcfce7; outline: 2px solid #15803d; }
+.comfort-grid { display: flex; flex-wrap: wrap; gap: 12px; }
+.comfort-grid label { display: flex; align-items: center; gap: 6px; min-height: 44px; }
+.comfort-grid input[type="range"] { width: 110px; }
+.control-deck { max-height: 45dvh; overflow-y: auto; overscroll-behavior: contain; }
+#partyPanel select, #partyPanel input, #practicePanel select, #comfortPanel select { min-height: 44px; max-width: 100%; padding: 6px; font: 700 12px var(--mono); }
+.touch-joystick-zone, .touch-action-cluster { scale: var(--control-scale,1); }
+.touch-joystick-zone { transform-origin: left bottom; }
+.touch-action-cluster { transform-origin: right bottom; }
+.reduced-motion *, .reduced-motion *::before, .reduced-motion *::after { scroll-behavior: auto !important; animation-duration: 0s !important; transition-duration: 0s !important; }
+@media(max-height:500px) { .practice-box { padding: 5px; } .practice-box header { flex-wrap: nowrap; } .practice-box h2 { font-size: 12px; } .practice-box header button { font-size: 10px; padding: 4px; } .practice-notice { display: none; } #practiceTask { padding: 5px; font-size: 11px; } #practiceGamepad.virtual-gamepad { height: 120px; bottom: 5px; } #practiceGamepad .touch-btn-a, #practiceGamepad .touch-btn-b { width: 56px; height: 56px; } #practiceGamepad .touch-joystick-zone { width: 110px; height: 110px; } }
+
+.touch-btn-e { min-width: calc(44px / var(--control-scale,1)); min-height: calc(44px / var(--control-scale,1)); }

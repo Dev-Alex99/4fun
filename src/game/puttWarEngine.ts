@@ -256,6 +256,12 @@ const PALETTE = [
 
 const EMOTES = ['¡HOYO EN 1!', '¡COME MINA!', '¡FORE!', '¡JAJAJA!'];
 
+PUTT_HOLES.push({ title: 'HOYO 07 // DOS CAMINOS AL REACTOR', par: 4, teeX: 145, teeY: 258, cupX: 845, cupY: 258,
+  walls: [...OUTER_WALLS, { x: 420, y: 185, w: 165, h: 146 }],
+  hazards: [{ x: 335, y: 80, w: 310, h: 55, type: 'BOOST', boostVx: 200, boostVy: 0 }, { x: 335, y: 382, w: 310, h: 55, type: 'SAND' }],
+  bumpers: [{ x: 705, y: 180, radius: 22 }, { x: 705, y: 336, radius: 22 }],
+  windmills: [{ cx: 315, cy: 258, length: 65, speed: 1.6 }], crates: [{ x: 665, y: 405, type: 'NITRO' }] });
+
 export class PuttWarEngine extends ChaosPhysics {
   public holeIndex = 0;
   public holeTitle = PUTT_HOLES[0].title;
@@ -343,6 +349,7 @@ export class PuttWarEngine extends ChaosPhysics {
   }
 
   public loadHole(index: number): void {
+    this.resetMatchStats();
     this.resetChaosRound();
     this.holeIndex = ((index % PUTT_HOLES.length) + PUTT_HOLES.length) % PUTT_HOLES.length;
     const cfg = PUTT_HOLES[this.holeIndex];
@@ -992,16 +999,16 @@ export class PuttWarEngine extends ChaosPhysics {
     if (p.botShotTimer > 0) return;
 
     // Reset timer for next shot (humanized cadence: 1.3s to 2.2s)
-    p.botShotTimer = 1.35 + Math.random() * 0.85;
+    p.botShotTimer = 1.35 + this.random() * 0.85;
 
     // Occasionally use held powerups or lob a bomb at a nearby rival
-    if (p.heldPowerup !== 'NONE' && Math.random() < 0.65) {
+    if (p.heldPowerup !== 'NONE' && this.random() < 0.65) {
       if (p.heldPowerup === 'BAZOOKA') {
         this.lobBombOrWeapon(p);
       } else {
         this.triggerShockwaveOrPowerup(p);
       }
-    } else if (p.bombCooldown <= 0 && Math.random() < 0.25) {
+    } else if (p.bombCooldown <= 0 && this.random() < 0.25) {
       const rival = activePlayers.find(
         (o) => o.id !== p.id && !o.sunkInCup && Math.hypot(o.x - p.x, o.y - p.y) < 220
       );
@@ -1023,7 +1030,7 @@ export class PuttWarEngine extends ChaosPhysics {
     }
 
     const baseAngle = Math.atan2(targetY - p.y, targetX - p.x);
-    const jitter = (Math.random() - 0.5) * 0.22;
+    const jitter = (this.random() - 0.5) * 0.22;
     const dist = Math.hypot(targetX - p.x, targetY - p.y);
     const desiredPower = Math.min(0.92, Math.max(0.28, dist / 460));
 

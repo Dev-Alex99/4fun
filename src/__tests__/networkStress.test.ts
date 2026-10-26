@@ -7,6 +7,7 @@ import { VoltCrownEngine } from '../game/voltCrownEngine';
 import { HexCrushEngine } from '../game/hexCrushEngine';
 import { RicochetEngine } from '../game/ricochetEngine';
 import { TournamentManager } from '../game/tournamentManager';
+import { CargoCrewEngine } from '../game/cargoCrewEngine';
 import { MultiplayerRoomManager } from '../net/multiplayerRoom';
 import type { ActiveGameId, ClientInputPacket } from '../types';
 
@@ -117,7 +118,7 @@ const wire = vi.hoisted(() => {
 
 vi.mock('peerjs', () => ({ default: wire.Peer }));
 
-const GAMES: Exclude<ActiveGameId, 'HUB'>[] = ['BASH_BOT', 'CHAIN_PANIC', 'TURBO_PUTT', 'HOT_CORE', 'VOLT_CROWN', 'HEX_CRUSH', 'RICOCHET_1'];
+const GAMES: Exclude<ActiveGameId, 'HUB'>[] = ['BASH_BOT', 'CHAIN_PANIC', 'TURBO_PUTT', 'HOT_CORE', 'VOLT_CROWN', 'HEX_CRUSH', 'RICOCHET_1', 'CARGO_CREW'];
 const PROFILES = [{ rtt: 100, jitter: 20, loss: 0.01 }, { rtt: 200, jitter: 60, loss: 0.05 }, { rtt: 350, jitter: 100, loss: 0.1 }];
 const SEEDS = [17, 91];
 const DT = 1 / 60;
@@ -125,13 +126,15 @@ const all: MultiplayerRoomManager[] = [];
 function instance() {
   const arena = new ArenaEngine(), chain = new ChainPanicEngine(), putt = new PuttWarEngine(), hot = new HotCoreEngine();
   const volt = new VoltCrownEngine(), hex = new HexCrushEngine(), rico = new RicochetEngine(), tournament = new TournamentManager();
-  const net = new MultiplayerRoomManager(arena, chain, () => {}, putt, hot, volt, hex, tournament, rico);
+  const cargo = new CargoCrewEngine();
+  const net = new MultiplayerRoomManager(arena, chain, () => {}, putt, hot, volt, hex, tournament, rico, {}, cargo);
   all.push(net);
-  return { net, arena, chain, putt, hot, volt, hex, rico, tournament };
+  return { net, arena, chain, putt, hot, volt, hex, rico, tournament, cargo };
 }
 type Room = ReturnType<typeof instance>;
 function engine(room: Room) {
   switch (room.net.activeGame) {
+    case 'CARGO_CREW': return room.cargo;
     case 'CHAIN_PANIC': return room.chain;
     case 'TURBO_PUTT': return room.putt;
     case 'HOT_CORE': return room.hot;
@@ -210,7 +213,7 @@ afterAll(() => {
 });
 
 describe('four-player deterministic network stress', () => {
-  for (const profile of PROFILES) it(`recovers all seven games at RTT ${profile.rtt}, jitter ±${profile.jitter}, loss ${profile.loss * 100}% for two seeds`, () => {
+  for (const profile of PROFILES) it(`recovers all eight games at RTT ${profile.rtt}, jitter ±${profile.jitter}, loss ${profile.loss * 100}% for two seeds`, () => {
     for (const seed of SEEDS) for (const game of GAMES) {
       wire.reset(seed);
       let physicsSeed = seed;

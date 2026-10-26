@@ -25,8 +25,8 @@ export class ChainPanicRenderer extends CanvasViewportRenderer {
 
     if (engine.screenShake > 0) {
       ctx.translate(
-        (Math.random() - 0.5) * engine.screenShake,
-        (Math.random() - 0.5) * engine.screenShake
+        (Math.random() - 0.5) * this.shakeAmount(engine.screenShake),
+        (Math.random() - 0.5) * this.shakeAmount(engine.screenShake)
       );
     }
 
@@ -63,8 +63,8 @@ export class ChainPanicRenderer extends CanvasViewportRenderer {
         ctx.strokeRect(ft.x + 2, ft.y + 2, ft.w - 4, ft.h - 4);
         ctx.restore();
       } else {
-        const shakeX = ft.state === 'CRACKING' ? (Math.random() - 0.5) * 5 : 0;
-        const shakeY = ft.state === 'CRACKING' ? (Math.random() - 0.5) * 5 : 0;
+        const shakeX = ft.state === 'CRACKING' && !this.reducedMotion ? (Math.random() - 0.5) * 5 : 0;
+        const shakeY = ft.state === 'CRACKING' && !this.reducedMotion ? (Math.random() - 0.5) * 5 : 0;
         this.drawPlatform34(
           { x: ft.x + shakeX, y: ft.y + shakeY, w: ft.w, h: ft.h },
           ft.state === 'CRACKING' ? '#FDBA74' : '#FED7AA',

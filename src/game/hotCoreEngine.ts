@@ -90,6 +90,11 @@ const ARENA_MIN_Y = 66;
 const ARENA_MAX_Y = 450;
 const WINNING_SCORE = 5;
 
+HOT_CORE_ARENAS.push({ title: 'CÁMARA 05 // CRUCE DE IMPULSOS',
+  bumpers: [{ x: 500, y: 160, radius: 26 }, { x: 500, y: 356, radius: 26 }],
+  pillars: [{ x: 330, y: 225, w: 35, h: 65 }, { x: 635, y: 225, w: 35, h: 65 }],
+  boostPads: [{ x: 420, y: 225, w: 75, h: 65, vx: 0, vy: -230 }, { x: 505, y: 225, w: 75, h: 65, vx: 0, vy: 230 }] });
+
 export class HotCoreEngine extends ChaosPhysics {
   public arenaIndex = 0;
   public arenaTitle = HOT_CORE_ARENAS[0].title;
@@ -186,6 +191,7 @@ export class HotCoreEngine extends ChaosPhysics {
   }
 
   public resetChampionship(): void {
+    this.resetMatchStats();
     this.players.forEach((p) => {
       p.score = 0;
     });
@@ -237,7 +243,7 @@ export class HotCoreEngine extends ChaosPhysics {
   private assignNewCoreToRandomSurvivor(fuseSeconds: number): void {
     const alive = this.players.filter((p) => p.alive);
     const chosen =
-      alive.length > 0 ? alive[Math.floor(Math.random() * alive.length)] : this.players[0];
+      alive.length > 0 ? alive[Math.floor(this.random() * alive.length)] : this.players[0];
 
     this.core = {
       holderId: chosen.id,
@@ -395,6 +401,7 @@ export class HotCoreEngine extends ChaosPhysics {
     this.core.vx = Math.cos(reflectAngle) * 820;
     this.core.vy = Math.sin(reflectAngle) * 820;
     defender.passImmunityTimer = 0.55;
+    this.noteParry(defender.id, true);
     this.screenShake = 9;
     sfx.playBatParry(this.core.passCount + 2, true, false);
     this.addCallout(defender.x, defender.y - 36, '⚡ ¡CONTRA-PARRY! (-1.2s)', '#15803D', '#FFFFFF');
@@ -710,9 +717,9 @@ export class HotCoreEngine extends ChaosPhysics {
       bot.vx += (dx / dist) * moveSpeed * 7.8 * dt;
       bot.vy += (dy / dist) * moveSpeed * 7.8 * dt;
 
-      if (dist < 250 && dist > 95 && bot.passImmunityTimer <= 0 && Math.random() < 0.025) {
+      if (dist < 250 && dist > 95 && bot.passImmunityTimer <= 0 && this.random() < 0.025) {
         this.triggerThrowOrShield(bot, bot.aimAngle);
-      } else if (dist < 150 && bot.dashCooldown <= 0 && Math.random() < 0.04) {
+      } else if (dist < 150 && bot.dashCooldown <= 0 && this.random() < 0.04) {
         this.triggerDash(bot, dx, dy);
       }
     } else {
@@ -735,7 +742,7 @@ export class HotCoreEngine extends ChaosPhysics {
       bot.vy += (fleeY / fLen) * moveSpeed * 7.2 * dt;
 
       // Attempt shield parry if flying core or carrier gets close!
-      if (dist < 85 && bot.shieldCooldown <= 0 && Math.random() < 0.14) {
+      if (dist < 85 && bot.shieldCooldown <= 0 && this.random() < 0.14) {
         this.triggerThrowOrShield(bot, bot.aimAngle);
       }
     }
@@ -1020,8 +1027,8 @@ export class HotCoreEngine extends ChaosPhysics {
 
   public spawnDust(x: number, y: number, count: number): void {
     for (let i = 0; i < count; i++) {
-      const ang = Math.random() * Math.PI * 2;
-      const spd = 25 + Math.random() * 80;
+      const ang = this.random() * Math.PI * 2;
+      const spd = 25 + this.random() * 80;
       this.particles.push({
         type: 'dust',
         x,
@@ -1029,9 +1036,9 @@ export class HotCoreEngine extends ChaosPhysics {
         vx: Math.cos(ang) * spd,
         vy: Math.sin(ang) * spd,
         life: 1.0,
-        decay: 2.2 + Math.random(),
+        decay: 2.2 + this.random(),
         color: '#F4F0E8',
-        size: 5 + Math.random() * 4
+        size: 5 + this.random() * 4
       });
     }
   }
@@ -1039,15 +1046,15 @@ export class HotCoreEngine extends ChaosPhysics {
   public spawnDebris(x: number, y: number, bodyColor: string): void {
     this.spawnDust(x, y, 10);
     for (let i = 0; i < 5; i++) {
-      const ang = Math.random() * Math.PI * 2;
-      const spd = 70 + Math.random() * 140;
+      const ang = this.random() * Math.PI * 2;
+      const spd = 70 + this.random() * 140;
       this.looseParts.push({
         x,
         y,
         vx: Math.cos(ang) * spd,
         vy: Math.sin(ang) * spd,
-        rot: Math.random() * Math.PI * 2,
-        vRot: (Math.random() - 0.5) * 12,
+        rot: this.random() * Math.PI * 2,
+        vRot: (this.random() - 0.5) * 12,
         color: i % 2 === 0 ? bodyColor : '#71717A',
         life: 3.2,
         maxLife: 3.2

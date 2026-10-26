@@ -1,9 +1,12 @@
 # Only scripts/turn-lab.mjs supplies these values. Never publish these ports on 0.0.0.0.
 services:
   turn:
-    image: coturn/coturn:4.18.0-r0
+    image: tp04-coturn-lab:4.18.0-r0
+    build:
+      context: .
+      dockerfile: Dockerfile.lab
     container_name: ${TURN_LAB_CONTAINER_NAME:?Use scripts/turn-lab.mjs}
-    entrypoint: ["/usr/bin/turnserver"]
+    entrypoint: ["/usr/local/bin/turnserver-lab"]
     command: ["-c", "/etc/coturn/turnserver.conf"]
     user: "${TURN_LAB_UID:-65534}:${TURN_LAB_GID:-65534}"
     restart: "no"

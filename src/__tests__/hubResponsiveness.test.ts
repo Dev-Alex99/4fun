@@ -19,9 +19,9 @@ describe('Hub Usability and Responsiveness Test Suite', () => {
     expect(hubGrid).not.toBeNull();
   });
 
-  it('verifies all 7 cartridges exist with correct categories and launch targets', () => {
+  it('verifies all 8 cartridges exist with correct categories and launch targets', () => {
     const cartridges = document.querySelectorAll<HTMLElement>('.game-cartridge');
-    expect(cartridges.length).toBe(7);
+    expect(cartridges.length).toBe(8);
 
     const expectedGames = [
       'BASH_BOT',
@@ -30,7 +30,8 @@ describe('Hub Usability and Responsiveness Test Suite', () => {
       'HOT_CORE',
       'VOLT_CROWN',
       'HEX_CRUSH',
-      'RICOCHET_1'
+      'RICOCHET_1',
+      'CARGO_CREW'
     ];
 
     expectedGames.forEach((gameId) => {
@@ -82,7 +83,7 @@ describe('Hub Usability and Responsiveness Test Suite', () => {
     const coopMatches = Array.from(cartridges).filter((c) =>
       (c.dataset.category || '').split(' ').includes('COOP')
     );
-    expect(coopMatches.length).toBe(1);
+    expect(coopMatches.length).toBe(2);
     expect(coopMatches[0].querySelector('button')?.dataset.launch).toBe('CHAIN_PANIC');
 
     // Simulate filter for PVP

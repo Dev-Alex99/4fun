@@ -1,6 +1,12 @@
 class MechanicalAudioEngine {
   private ctx: AudioContext | null = null;
   public enabled = true;
+  private masterGain: GainNode | null = null;
+  private volume = 1;
+  public setVolume(volume: number): void {
+    this.volume = Math.max(0, Math.min(1, Number.isFinite(volume) ? volume : 1));
+    if (this.ctx && this.masterGain) this.masterGain.gain.setTargetAtTime(this.volume, this.ctx.currentTime, 0.02);
+  }
 
   private ensureContext(): AudioContext | null {
     if (!this.enabled || typeof window === 'undefined') return null;
@@ -11,6 +17,8 @@ class MechanicalAudioEngine {
       if (typeof AC !== 'function') return null;
       try {
         this.ctx = new AC();
+        this.masterGain = this.ctx.createGain(); this.masterGain.gain.value = this.volume;
+        this.masterGain.connect(this.ctx.destination);
       } catch {
         return null;
       }
@@ -27,7 +35,7 @@ class MechanicalAudioEngine {
 
   public dispose(): void {
     const context = this.ctx;
-    this.ctx = null;
+    this.ctx = null; this.masterGain = null;
     if (context && context.state !== 'closed') void context.close().catch(() => {});
   }
 
@@ -47,7 +55,7 @@ class MechanicalAudioEngine {
       gain.gain.setValueAtTime(0.24, now);
       gain.gain.exponentialRampToValueAtTime(0.001, now + 0.15);
       osc.connect(gain);
-      gain.connect(ac.destination);
+      gain.connect(this.masterGain!);
       osc.start(now);
       osc.stop(now + 0.16);
       return;
@@ -62,7 +70,7 @@ class MechanicalAudioEngine {
     gain.gain.exponentialRampToValueAtTime(0.001, now + 0.115);
 
     osc.connect(gain);
-    gain.connect(ac.destination);
+    gain.connect(this.masterGain!);
     osc.start(now);
     osc.stop(now + 0.12);
   }
@@ -82,7 +90,7 @@ class MechanicalAudioEngine {
     gain.gain.exponentialRampToValueAtTime(0.001, now + 0.14);
 
     osc.connect(gain);
-    gain.connect(ac.destination);
+    gain.connect(this.masterGain!);
     osc.start(now);
     osc.stop(now + 0.15);
   }
@@ -103,7 +111,7 @@ class MechanicalAudioEngine {
     gain.gain.exponentialRampToValueAtTime(0.001, now + 0.36);
 
     osc.connect(gain);
-    gain.connect(ac.destination);
+    gain.connect(this.masterGain!);
     osc.start(now);
     osc.stop(now + 0.38);
   }
@@ -126,7 +134,7 @@ class MechanicalAudioEngine {
     gain.gain.exponentialRampToValueAtTime(0.001, now + 0.16);
 
     osc.connect(gain);
-    gain.connect(ac.destination);
+    gain.connect(this.masterGain!);
     osc.start(now);
     osc.stop(now + 0.17);
   }
@@ -146,7 +154,7 @@ class MechanicalAudioEngine {
     gain.gain.exponentialRampToValueAtTime(0.001, now + 0.085);
 
     osc.connect(gain);
-    gain.connect(ac.destination);
+    gain.connect(this.masterGain!);
     osc.start(now);
     osc.stop(now + 0.09);
   }
@@ -166,7 +174,7 @@ class MechanicalAudioEngine {
     gain.gain.exponentialRampToValueAtTime(0.001, now + 0.31);
 
     osc.connect(gain);
-    gain.connect(ac.destination);
+    gain.connect(this.masterGain!);
     osc.start(now);
     osc.stop(now + 0.32);
   }
@@ -186,7 +194,7 @@ class MechanicalAudioEngine {
     gain.gain.exponentialRampToValueAtTime(0.001, now + 0.09);
 
     osc.connect(gain);
-    gain.connect(ac.destination);
+    gain.connect(this.masterGain!);
     osc.start(now);
     osc.stop(now + 0.1);
   }
@@ -206,7 +214,7 @@ class MechanicalAudioEngine {
     gain.gain.exponentialRampToValueAtTime(0.001, now + 0.22);
 
     osc.connect(gain);
-    gain.connect(ac.destination);
+    gain.connect(this.masterGain!);
     osc.start(now);
     osc.stop(now + 0.23);
   }
@@ -227,7 +235,7 @@ class MechanicalAudioEngine {
     gain.gain.exponentialRampToValueAtTime(0.001, now + 0.28);
 
     osc.connect(gain);
-    gain.connect(ac.destination);
+    gain.connect(this.masterGain!);
     osc.start(now);
     osc.stop(now + 0.29);
   }
@@ -247,7 +255,7 @@ class MechanicalAudioEngine {
     gain.gain.exponentialRampToValueAtTime(0.001, now + 0.15);
 
     osc.connect(gain);
-    gain.connect(ac.destination);
+    gain.connect(this.masterGain!);
     osc.start(now);
     osc.stop(now + 0.16);
   }
@@ -267,7 +275,7 @@ class MechanicalAudioEngine {
     gain.gain.exponentialRampToValueAtTime(0.001, now + 0.15);
 
     osc.connect(gain);
-    gain.connect(ac.destination);
+    gain.connect(this.masterGain!);
     osc.start(now);
     osc.stop(now + 0.16);
   }

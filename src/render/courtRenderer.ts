@@ -32,8 +32,8 @@ export class CourtRenderer extends CanvasViewportRenderer {
 
     if (engine.screenShake > 0) {
       ctx.translate(
-        (Math.random() - 0.5) * engine.screenShake,
-        (Math.random() - 0.5) * engine.screenShake
+        (Math.random() - 0.5) * this.shakeAmount(engine.screenShake),
+        (Math.random() - 0.5) * this.shakeAmount(engine.screenShake)
       );
     }
 
@@ -104,7 +104,7 @@ export class CourtRenderer extends CanvasViewportRenderer {
     ctx.fillStyle = 'rgba(24, 24, 27, 0.28)';
     ctx.textAlign = 'center';
     const layoutTag =
-      engine.courtLayout === 'PINBALL'
+      engine.courtLayout === 'CROSS' ? 'MESA 04 // REBOTES CRUZADOS' : engine.courtLayout === 'PINBALL'
         ? 'MESA 01 // PINBALL BUMPERS'
         : engine.courtLayout === 'CORE'
         ? 'MESA 03 // NÚCLEO CENTRAL'

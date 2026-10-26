@@ -1,7 +1,9 @@
 import { reconcilePlayer, type PredictionHint } from './reconciliation';
 import { ChaosPhysics } from './chaosPhysics';
+import { copyCampaign, newChainCampaign, validCampaignSave } from './chainCampaign';
 import {
   ChainGameMode,
+  ChainCampaignSave,
   ChainPanicSnapshot,
   ChainPlayerState,
   ClientInputPacket,
@@ -179,11 +181,24 @@ const SLOT_COLORS = [
 
 const CHAIN_EMOTES = ['¡SALTA!', '¡ANCLA!', '¡JALA CON [E]!', '¡CORRE!'];
 
+export const CHAIN_CAMPAIGN_SECTORS = 6;
+CHAIN_LEVELS.push({ title: 'SECTOR 07 // BIFURCACIÓN DE RESCATE', subtitle: 'Elijan el camino superior o inferior y reúnanse para abrir el puente',
+  spawnX: 115, spawnY: 260,
+  platforms: [{ x: 45, y: 120, w: 170, h: 280 }, { x: 205, y: 120, w: 235, h: 100 }, { x: 205, y: 300, w: 235, h: 100 }, { x: 425, y: 110, w: 230, h: 300 }],
+  bridgeRect: { x: 645, y: 200, w: 150, h: 120 }, goalRect: { x: 785, y: 155, w: 165, h: 210 },
+  switches: [{ x: 500, y: 160 }, { x: 580, y: 360 }], lasers: [{ x1: 330, y1: 120, x2: 330, y2: 220, sweepRange: 35, sweepSpeed: 1.4 }] },
+  { title: 'SECTOR 08 // ATRAQUE ENTRE TURBINAS', subtitle: 'Transporten la batería por la pasarela y anclen durante las ráfagas',
+  spawnX: 110, spawnY: 260,
+  platforms: [{ x: 45, y: 140, w: 175, h: 240 }, { x: 210, y: 185, w: 235, h: 150 }, { x: 435, y: 115, w: 225, h: 290 }],
+  bridgeRect: { x: 650, y: 195, w: 145, h: 130 }, goalRect: { x: 785, y: 155, w: 165, h: 210 },
+  switches: [{ x: 510, y: 160 }, { x: 580, y: 360 }], lasers: [], batterySpawn: { x: 180, y: 260 }, hasWindTurbine: true });
+
 export class ChainPanicEngine extends ChaosPhysics {
   public levelIndex = 0;
   public mode: ChainGameMode = 'COOP';
   public botsEnabled = true;
-  public status: 'PLAYING' | 'LEVEL_CLEAR' | 'TEAM_WIPE' = 'PLAYING';
+  public status: 'PLAYING' | 'LEVEL_CLEAR' | 'TEAM_WIPE' | 'CAMPAIGN_COMPLETE' = 'PLAYING';
+  public campaign = newChainCampaign();
   public statusTimer = 0;
   public doorOpen = false;
   public windWarning = false;
@@ -206,6 +221,26 @@ export class ChainPanicEngine extends ChaosPhysics {
   private lastActionSeqBySlot = new Map<number, number>();
   private time = 0;
   private windCycleTimer = 0;
+  private rescueAttempts = new Map<number, { slot: number; expiresAt: number }>();
+
+  public startCampaign(save?: ChainCampaignSave): void {
+    this.resetMatchStats();
+    this.mode = 'COOP';
+    this.campaign = save && validCampaignSave(save) ? copyCampaign(save.campaign) : newChainCampaign(true);
+    this.completions = this.campaign.sectorTimes.length;
+    this.wipes = this.campaign.sectorWipes.reduce((sum, n) => sum + n, 0);
+    this.levelIndex = save && validCampaignSave(save) ? save.levelIndex : 0;
+    this.loadLevel(this.levelIndex);
+  }
+
+  public stopCampaign(): void { this.campaign.active = false; }
+
+  public retryCampaignSector(): void {
+    if (!this.campaign.active || this.campaign.completed) return;
+    this.wipes++;
+    this.campaign.sectorWipes[this.levelIndex]++;
+    this.loadLevel(this.levelIndex);
+  }
 
   constructor() {
     super();
@@ -268,7 +303,11 @@ export class ChainPanicEngine extends ChaosPhysics {
 
   public loadLevel(idx: number): void {
     this.resetChaosRound();
+    if (idx !== this.levelIndex && this.campaign.active) this.campaign.checkpointUnlocked = false;
     this.levelIndex = (idx + CHAIN_LEVELS.length) % CHAIN_LEVELS.length;
+    this.rescueAttempts.clear();
+    this.remoteInputs.clear();
+    this.lastActionSeqBySlot.clear();
     const def = this.getCurrentLevelDef();
     this.status = 'PLAYING';
     this.statusTimer = 0;
@@ -280,7 +319,7 @@ export class ChainPanicEngine extends ChaosPhysics {
 
     // Pick random saboteur if in SABOTAGE mode
     const saboteurIdx =
-      this.mode === 'SABOTAGE' ? Math.floor(Math.random() * this.players.length) : -1;
+      this.mode === 'SABOTAGE' ? Math.floor(this.random() * this.players.length) : -1;
 
     this.players.forEach((p, i) => {
       p.isSaboteur = i === saboteurIdx;
@@ -346,6 +385,12 @@ export class ChainPanicEngine extends ChaosPhysics {
           delivered: false
         }
       : null;
+    if (this.campaign.active && this.campaign.checkpointUnlocked) {
+      this.doorOpen = true;
+      this.switches.forEach(sw => { sw.pressed = true; });
+      this.players.forEach((p, i) => { p.x = 700 + (i % 2) * 30; p.y = 230 + Math.floor(i / 2) * 40; });
+      if (this.battery) { this.battery.x = 760; this.battery.y = 260; }
+    }
   }
 
   public clearRemoteInput(slotId: number): void {
@@ -413,9 +458,10 @@ export class ChainPanicEngine extends ChaosPhysics {
       size: 10
     });
 
-    // Pull immediate chain neighbors (id - 1 and id + 1) toward p
-    this.players.forEach((other) => {
-      if (Math.abs(other.id - p.id) === 1) {
+    const activePlayers = this.getActivePlayers();
+    const index = activePlayers.indexOf(p);
+    activePlayers.forEach((other, otherIndex) => {
+      if (index >= 0 && Math.abs(otherIndex - index) === 1) {
         const dx = p.x - other.x;
         const dy = p.y - other.y;
         const d = Math.hypot(dx, dy) || 1;
@@ -424,6 +470,7 @@ export class ChainPanicEngine extends ChaosPhysics {
         other.vy += (dy / d) * pullPower;
         if (other.isDangling) {
           other.vz = 150; // Pop dangling friend up onto ledge!
+          if (!p.isDangling) this.rescueAttempts.set(other.id, { slot: p.id, expiresAt: this.time + 2 });
         }
       }
     });
@@ -475,12 +522,18 @@ export class ChainPanicEngine extends ChaosPhysics {
     this.status = 'TEAM_WIPE';
     this.statusTimer = 1.35;
     this.wipes++;
+    if (this.campaign.active) this.campaign.sectorWipes[this.levelIndex]++;
     this.screenShake = 14;
     sfx.playKODisassembly();
     this.addCallout(x, y - 24, reason, '#FF4F00');
   }
 
   public step(dt: number, localInput: ClientInputPacket): void {
+    if (this.status === 'CAMPAIGN_COMPLETE') return;
+    if (this.campaign.active && this.status === 'PLAYING') {
+      this.campaign.elapsedSeconds += dt;
+      this.campaign.sectorSeconds += dt;
+    }
     this.advanceChaos(dt, true, this.status === 'PLAYING', (bomb) => {
       this.applyChaosBlast(bomb, this.players, this.botsEnabled);
       this.addCallout(bomb.x, bomb.y - 26, 'BOOM', '#EF4444', '#FFFFFF');
@@ -596,7 +649,7 @@ export class ChainPanicEngine extends ChaosPhysics {
       } else {
         // Cooperative Bot AI
         const neighborDangling = this.players.find(
-          (other) => Math.abs(other.id - p.id) === 1 && other.isDangling
+          (other) => Math.abs(activePlayers.indexOf(other) - idx) === 1 && activePlayers.includes(other) && other.isDangling
         );
 
         if (this.windWarning || this.windActive) {
@@ -615,9 +668,14 @@ export class ChainPanicEngine extends ChaosPhysics {
             // Bot 1 helps push battery from behind
             targetX = this.battery.x - 18;
             targetY = this.battery.y;
-          } else if (this.doorOpen && (!this.battery || this.battery.delivered)) {
-            targetX = def.goalRect.x + def.goalRect.w * 0.5;
-            targetY = def.goalRect.y + 45 + idx * 35;
+          } else if (this.doorOpen) {
+            if (this.battery && !this.battery.delivered) {
+              targetX = this.battery.x + 35;
+              targetY = this.battery.y + (idx % 2 ? 38 : -38);
+            } else {
+              targetX = def.goalRect.x + def.goalRect.w * 0.5;
+              targetY = def.goalRect.y + 45 + idx * 35;
+            }
           } else {
             const assignedSwitch = this.switches[idx % this.switches.length];
             if (this.players[0].x > 340 && assignedSwitch) {
@@ -707,6 +765,12 @@ export class ChainPanicEngine extends ChaosPhysics {
         p.isDangling = false;
         p.dangleTime = 0;
         this.addCallout(p.x, p.y - 25, '¡RESCATADO!', '#15803D');
+        const rescue = this.rescueAttempts.get(p.id);
+        if (rescue && rescue.expiresAt >= this.time) {
+          this.matchStats[rescue.slot].rescues++;
+          if (this.campaign.active) this.campaign.rescues[rescue.slot]++;
+        }
+        this.rescueAttempts.delete(p.id);
       }
 
       const damping = p.isAnchored ? 0.62 : 0.82;
@@ -723,7 +787,7 @@ export class ChainPanicEngine extends ChaosPhysics {
     // 5. Heavy Battery CORE-99 Physics (Pushed by Bots & Snagged by Cable!)
     if (this.battery) {
       const bat = this.battery;
-      this.players.forEach((p) => {
+      activePlayers.forEach((p) => {
         if (p.isDangling) return;
         const d = Math.hypot(bat.x - p.x, bat.y - p.y);
         const minDist = bat.radius + p.radius;
@@ -739,9 +803,9 @@ export class ChainPanicEngine extends ChaosPhysics {
       });
 
       // Also allow the steel cable between players to pull the battery!
-      for (let i = 0; i < this.players.length - 1; i++) {
-        const a = this.players[i];
-        const b = this.players[i + 1];
+      for (let i = 0; i < activePlayers.length - 1; i++) {
+        const a = activePlayers[i];
+        const b = activePlayers[i + 1];
         const midX = (a.x + b.x) / 2;
         const midY = (a.y + b.y) / 2;
         const dMid = Math.hypot(bat.x - midX, bat.y - midY);
@@ -863,6 +927,10 @@ export class ChainPanicEngine extends ChaosPhysics {
 
     if (!this.doorOpen && this.switches.every((sw) => sw.pressed)) {
       this.doorOpen = true;
+      if (this.campaign.active) {
+        this.campaign.checkpointUnlocked = true;
+        this.addCallout(580, 100, '✓ CHECKPOINT · PUENTE SEGURO', '#15803D');
+      }
       sfx.playCartridgeClick();
       this.screenShake = 6;
       this.addCallout(
@@ -892,6 +960,15 @@ export class ChainPanicEngine extends ChaosPhysics {
       this.status = 'LEVEL_CLEAR';
       this.statusTimer = 1.65;
       this.completions++;
+      if (this.campaign.active) {
+        this.campaign.sectorTimes.push(this.campaign.sectorSeconds);
+        this.campaign.sectorSeconds = 0;
+        this.campaign.checkpointUnlocked = false;
+        if (this.levelIndex === CHAIN_CAMPAIGN_SECTORS - 1) {
+          this.campaign.completed = true;
+          this.status = 'CAMPAIGN_COMPLETE';
+        }
+      }
       sfx.playBatParry(14, true);
       this.addCallout(g.x + g.w / 2, g.y + g.h / 2, '🏆 ¡SECTOR COMPLETADO!', '#15803D');
     }
@@ -903,6 +980,7 @@ export class ChainPanicEngine extends ChaosPhysics {
       simulationTime: this.simulationTime,
       chaosBombs: this.chaosBombs.map((bomb) => ({ ...bomb })),
       levelIndex: this.levelIndex,
+      campaign: copyCampaign(this.campaign),
       levelTitle: this.getCurrentLevelDef().title,
       mode: this.mode,
       status: this.status,
@@ -997,6 +1075,7 @@ export class ChainPanicEngine extends ChaosPhysics {
   public applySnapshot(snap: ChainPanicSnapshot, localSlotId?: number, prediction: PredictionHint = 0): void {
     const reset = this.levelIndex !== snap.levelIndex || this.status !== snap.status || (snap.roundEpoch !== undefined && snap.roundEpoch !== this.roundEpoch);
     this.levelIndex = snap.levelIndex;
+    this.campaign = snap.campaign ? copyCampaign(snap.campaign) : newChainCampaign();
     this.mode = snap.mode;
     this.status = snap.status;
     this.statusTimer = snap.statusTimer;
@@ -1025,8 +1104,8 @@ export class ChainPanicEngine extends ChaosPhysics {
 
   public spawnDust(x: number, y: number, count: number): void {
     for (let i = 0; i < count; i++) {
-      const ang = Math.random() * Math.PI * 2;
-      const spd = 25 + Math.random() * 80;
+      const ang = this.random() * Math.PI * 2;
+      const spd = 25 + this.random() * 80;
       this.particles.push({
         type: 'dust',
         x,
@@ -1034,9 +1113,9 @@ export class ChainPanicEngine extends ChaosPhysics {
         vx: Math.cos(ang) * spd,
         vy: Math.sin(ang) * spd,
         life: 1.0,
-        decay: 2.2 + Math.random(),
+        decay: 2.2 + this.random(),
         color: '#F4F0E8',
-        size: 5 + Math.random() * 4
+        size: 5 + this.random() * 4
       });
     }
   }

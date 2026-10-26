@@ -1,0 +1,57 @@
+.mobile-play-bar.hidden, .room-panel-scrim.hidden, .mobile-game-settings.hidden, .action-hint.hidden { display: none !important; }
+.mobile-play-bar { display: flex; flex: 0 0 auto; align-items: center; justify-content: space-between; gap: 8px; padding: 5px 8px; border: 2px solid var(--ink); border-radius: 10px; background: var(--panel); }
+.play-bar-identity { display: flex; flex-direction: column; min-width: 0; font-family: var(--mono); }
+.play-bar-identity strong { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.play-bar-identity span { font-size: 9px; line-height: 1.4; white-space: nowrap; text-overflow: ellipsis; overflow: hidden; }
+.play-bar-actions { display: flex; gap: 5px; flex-shrink: 0; }
+.play-bar-actions .keycap-btn { min-width: 44px; min-height: 44px; padding: 4px 8px; }
+.room-panel-scrim { position: fixed; inset: 0; z-index: 110; border: 0; background: rgba(24,24,27,0.6); cursor: pointer; }
+.mobile-game-settings { display: flex; flex-wrap: wrap; gap: 8px; width: 100%; }
+.mobile-game-settings > button { min-height: 44px; flex: 1 1 auto; }
+.close-room-panel { width: 100%; min-height: 44px; }
+.compact-play .control-deck { display: none; }
+.compact-play.room-panel-open .control-deck { display: flex; position: fixed; z-index: 120; top: max(8px, env(safe-area-inset-top)); left: max(8px, env(safe-area-inset-left)); right: max(8px, env(safe-area-inset-right)); max-height: calc(100dvh - 24px - env(safe-area-inset-top)); overflow-y: auto; overscroll-behavior: contain; box-shadow: 0 16px 40px rgba(0,0,0,0.35); }
+.compact-play .hardware-chassis { max-height: none; padding: 5px; gap: 5px; border-radius: 12px; }
+.compact-play #app { padding: max(3px, env(safe-area-inset-top)) max(3px, env(safe-area-inset-right)) max(3px, env(safe-area-inset-bottom)) max(3px, env(safe-area-inset-left)); }
+.compact-play .hud-top-bar, .compact-play .hud-bottom-bar { display: none; }
+.compact-play .adventure-hud { top: 6px; left: 6px; right: 6px; padding: 6px 8px; gap: 5px 8px; font-size: 10px; }
+.compact-play .adventure-hud > span:last-child { display: none; }
+.compact-play .room-toast-container { top: auto; bottom: 8px; left: 25%; right: 25%; pointer-events: none; }
+.immersive-play .hardware-chassis { max-height: none; max-width: none; }
+.action-hint { position: absolute; z-index: 8; left: 12px; right: 12px; bottom: 48px; max-width: 700px; margin: 0 auto; padding: 8px 12px; border: 2px solid var(--ink); border-radius: 8px; background: rgba(244,240,232,0.97); font: 700 11px/1.45 var(--mono); pointer-events: none; text-align: center; }
+.action-hint[data-tone="danger"] { background: #fee2e2; border-color: #b91c1c; color: #7f1d1d; }
+.action-hint[data-tone="success"] { background: #dcfce7; border-color: #15803d; color: #14532d; }
+.action-hint[data-tone="warning"] { background: #fef9c3; border-color: #a16207; }
+.touch-controls-visible .action-hint { bottom: 190px; }
+.compact-play .action-hint { bottom: 10px; left: 8px; right: 8px; padding: 6px 8px; font-size: 10px; }
+.compact-play.touch-controls-visible:not(.landscape-play) .action-hint { bottom: var(--touch-reserve,184px); }
+.compact-play.landscape-play.touch-controls-visible .action-hint { left: calc(130px * var(--control-scale,1)); right: calc(150px * var(--control-scale,1)); bottom: 8px; }
+.compact-play.landscape-play .virtual-gamepad { height: 122px; bottom: 8px; }
+.compact-play.landscape-play .touch-joystick-zone { width: 116px; height: 116px; }
+.compact-play.landscape-play .touch-joystick-base { width: 94px; height: 94px; }
+.compact-play.landscape-play .touch-joystick-thumb { width: 46px; height: 46px; }
+.compact-play.landscape-play .touch-action-cluster { gap: 8px; }
+.compact-play.landscape-play .touch-primary-row { gap: 9px; }
+.compact-play.landscape-play .touch-btn-a, .compact-play.landscape-play .touch-btn-b { width: 58px; height: 58px; }
+.compact-play.landscape-play .touch-top-row { padding-right: 22px; }
+.compact-play .keycap-btn, .connection-panel .keycap-btn { touch-action: manipulation; }
+.touch-btn { position: relative; }
+.touch-btn.hidden { display: none !important; }
+.touch-btn.is-unavailable { opacity: 0.48; filter: saturate(0.4); }
+.touch-btn.is-cooling { filter: saturate(0.55); }
+.touch-btn.is-action-active { outline: 3px solid #22c55e; outline-offset: 2px; }
+.touch-btn::after { content: ''; position: absolute; height: 3px; bottom: 7px; left: 12px; right: 12px; background: currentColor; opacity: 0.6; border-radius: 3px; transform-origin: left; transform: scaleX(var(--action-ready, 1)); }
+.touch-btn-time { position: absolute; top: -6px; right: -4px; background: #18181b; color: #fff; border: 1px solid #fff; padding: 2px 4px; border-radius: 6px; font: 800 9px var(--mono); }
+.touch-btn-time:empty { display: none; }
+.touch-btn-sub { max-width: 58px; font-size: 8px; letter-spacing: 0; }
+.game-help-overlay { position: fixed; z-index: 140; inset: 0; padding: max(12px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) max(12px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left)); }
+.game-help-box { max-width: 620px; }
+.game-help-box .keycap-btn { min-height: 44px; }
+.help-live-notice { margin-top: 16px; padding: 10px; background: #fef9c3; border-radius: 6px; font-size: 13px; }
+.connection-panel { width: 100%; border-top: 1px solid #a8a29e; padding-top: 8px; font: 700 11px/1.5 var(--mono); }
+.connection-panel summary { cursor: pointer; padding: 5px 0; }
+.connection-panel p { margin: 8px 0; overflow-wrap: anywhere; }
+.connection-panel-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.connection-panel-actions button { min-height: 44px; }
+.connection-link { border: 1px solid #a8a29e; padding: 8px; border-radius: 6px; margin: 6px 0; }
+@media (prefers-reduced-motion: reduce) { .touch-btn, .touch-joystick-thumb { transition: none; } }

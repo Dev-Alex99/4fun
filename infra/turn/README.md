@@ -1,6 +1,8 @@
 # TURN local y plantilla para servidor
 
-El laboratorio usa la imagen del proyecto Coturn fijada en `coturn/coturn:4.18.0-r0`. Esa versión aparece en el [repositorio oficial de la imagen](https://github.com/coturn/coturn/blob/master/docker/coturn/README.md). Sus [notas de versión](https://github.com/coturn/coturn/releases/tag/4.18.0) cambian opciones antiguas; las plantillas usan `cli=false`, administración web desactivada y DTLS sin habilitar.
+El laboratorio construye `tp04-coturn-lab:4.18.0-r0` con [Dockerfile.lab](Dockerfile.lab), usando como base la imagen oficial fijada en `coturn/coturn:4.18.0-r0`. Copia el binario sin conservar sus atributos de capabilities para poder ejecutarlo sin privilegios: se mantienen `cap_drop: ALL`, `no-new-privileges`, usuario sin root y sistema de archivos de sólo lectura. No necesita puertos privilegiados. El contexto de construcción excluye credenciales y archivos runtime mediante `.dockerignore`.
+
+La imagen base aparece en el [repositorio oficial](https://github.com/coturn/coturn/blob/master/docker/coturn/README.md). Sus [notas de versión](https://github.com/coturn/coturn/releases/tag/4.18.0) cambian opciones antiguas; las plantillas usan `cli=false`, administración web desactivada y DTLS sin habilitar.
 
 Desde la raíz del proyecto, con Node 20.12+ y Docker Desktop ejecutándose con contenedores Linux:
 
